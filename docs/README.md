@@ -1,6 +1,7 @@
 # imtoagent
 
-> **IM ↔ Agent Unified Gateway** — Connect IM platforms to AI coding agents
+> **IM ↔ Agent Unified Gateway**
+>  — Connect IM platforms to AI coding agents
 
 [![npm version](https://img.shields.io/npm/v/imtoagent.svg)](https://www.npmjs.com/package/imtoagent)
 [![npm downloads](https://img.shields.io/npm/dt/imtoagent.svg)](https://www.npmjs.com/package/imtoagent)
