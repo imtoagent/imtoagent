@@ -2,7 +2,7 @@
 
 ## Overview
 
-imtoagent is a unified gateway that connects **IM platforms** (Feishu, Telegram, WeChat, WeCom) to **AI coding agents** (Claude Code, Codex, OpenCode). Send messages to your bot in any IM, and it routes to the appropriate AI agent.
+IMtoAgent is a unified gateway that connects **IM platforms** (Feishu, Telegram, WeChat, WeCom) to **AI coding agents** (Claude Code, Codex, OpenCode). Send messages to your bot in any IM, and it routes to the appropriate AI agent.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ IM Platform (Feishu/Telegram/WeChat/WeCom)
          │
          ▼
    ┌─────────────┐
-   │  imtoagent  │  ← Unified Gateway
+   │  IMtoAgent  │  ← Unified Gateway
    │   :18899    │
    └─────────────┘
          │

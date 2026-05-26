@@ -8,7 +8,7 @@ npm install -g opencode
 
 ## Integration
 
-imtoagent starts and manages `opencode serve` on port `4096`. The adapter communicates via HTTP API.
+IMtoAgent starts and manages `opencode serve` on port `4096`. The adapter communicates via HTTP API.
 
 ## Features
 

@@ -8,7 +8,7 @@ npm install -g @openai/codex
 
 ## Integration
 
-imtoagent supports Codex via two paths:
+IMtoAgent supports Codex via two paths:
 
 1. **App-Server (preferred)** — Process-local HTTP streaming with persistent threads
 2. **CLI fallback** — `codex exec` / `codex exec resume` subprocess

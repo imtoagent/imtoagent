@@ -1,4 +1,4 @@
-# imtoagent
+# IMtoAgent
 
 > **IM ↔ Agent Unified Gateway**
 >  — Connect IM platforms to AI coding agents
@@ -9,7 +9,7 @@
 
 ## What is it?
 
-imtoagent bridges **IM platforms** (Feishu, Telegram, WeChat, WeCom) with **AI coding agents** (Claude Code, Codex, OpenCode) through a unified gateway. Send messages to your bot in any IM, and it routes to the appropriate AI agent — all through a single proxy port (`:18899`).
+IMtoAgent bridges **IM platforms** (Feishu, Telegram, WeChat, WeCom) with **AI coding agents** (Claude Code, Codex, OpenCode) through a unified gateway. Send messages to your bot in any IM, and it routes to the appropriate AI agent — all through a single proxy port (`:18899`).
 
 ## Quick Install
 
@@ -30,7 +30,7 @@ IM Platform (Feishu / Telegram / WeChat / WeCom)
          │
          ▼
    ┌─────────────┐
-   │  imtoagent  │  ← Unified Gateway
+   │  IMtoAgent  │  ← Unified Gateway
    │   :18899    │
    └─────────────┘
          │

@@ -1,6 +1,6 @@
 # Quick Start
 
-Get imtoagent running in 5 minutes.
+Get IMtoAgent running in 5 minutes.
 
 ## Step 1: Install
 

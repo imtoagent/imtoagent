@@ -1,4 +1,4 @@
-# imtoagent
+# IMtoAgent
 
 > **IM ↔ Agent Unified Gateway** — Connect IM platforms to AI coding agents
 

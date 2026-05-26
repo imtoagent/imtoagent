@@ -15,7 +15,7 @@
 | Codex | `npm install -g @openai/codex` |
 | OpenCode | `npm install -g opencode` |
 
-You can install backends before or after imtoagent.
+You can install backends before or after IMtoAgent.
 
 ## Method 1: One-Click Install (Recommended)
 
@@ -27,7 +27,7 @@ The script:
 1. Detects your OS and environment
 2. Installs Bun if missing
 3. Installs Node.js if missing (Homebrew / nvm fallback)
-4. Installs or upgrades imtoagent
+4. Installs or upgrades IMtoAgent
 5. Runs the setup wizard if no config exists
 6. Starts the gateway
 

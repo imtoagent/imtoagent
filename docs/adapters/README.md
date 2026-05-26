@@ -1,6 +1,6 @@
 # IM Adapters
 
-imtoagent supports 4 IM platforms out of the box.
+IMtoAgent supports 4 IM platforms out of the box.
 
 | Adapter | Connection | Capabilities |
 |---------|------------|--------------|

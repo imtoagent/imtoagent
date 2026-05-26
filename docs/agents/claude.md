@@ -8,7 +8,7 @@ npm install -g @anthropic-ai/claude-agent-sdk
 
 ## Integration
 
-imtoagent integrates Claude Code via the **Claude Agent SDK**. Each bot message spawns a query to the SDK with the configured model and system prompt.
+IMtoAgent integrates Claude Code via the **Claude Agent SDK**. Each bot message spawns a query to the SDK with the configured model and system prompt.
 
 ## Features
 
