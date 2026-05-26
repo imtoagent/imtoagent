@@ -1,4 +1,4 @@
-# imtoagent — IM ↔ Agent Unified Gateway
+# IMtoAgent — IM ↔ Agent Unified Gateway
 
 Connect Feishu, Telegram, personal WeChat, and WeCom to AI coding agents like Claude Code, Codex (GPT), OpenCode, and more.
 
