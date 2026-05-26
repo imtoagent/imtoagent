@@ -9,6 +9,7 @@
   - [Feishu](adapters/feishu.md)
   - [Telegram](adapters/telegram.md)
   - [WeChat](adapters/wechat.md)
+  - [WeCom](adapters/wecom.md)
 
 - [Agent Backends](agents/README.md)
   - [Claude Code](agents/claude.md)
