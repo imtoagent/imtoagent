@@ -1,16 +1,19 @@
-* [Home](/)
-* Getting Started
-  * [Quick Start](guide/quick-start)
-  * [Installation](guide/installation)
-  * [Configuration](guide/configuration)
-* IM Adapters
-  * [Feishu](adapters/feishu)
-  * [Telegram](adapters/telegram)
-  * [WeCom](adapters/wecom)
-  * [WeChat](adapters/wechat)
-* Agent Backends
-  * [Claude Code](agents/claude)
-  * [Codex](agents/codex)
-  * [OpenCode](agents/opencode)
-* [Architecture](architecture/)
-* [CLI Reference](cli/)
+- [Home](/)
+
+- [Getting Started](guide/README.md)
+  - [Quick Start](guide/quick-start.md)
+  - [Installation](guide/installation.md)
+  - [Configuration](guide/configuration.md)
+
+- [IM Adapters](adapters/README.md)
+  - [Feishu](adapters/feishu.md)
+  - [Telegram](adapters/telegram.md)
+  - [WeChat](adapters/wechat.md)
+
+- [Agent Backends](agents/README.md)
+  - [Claude Code](agents/claude.md)
+  - [Codex](agents/codex.md)
+  - [OpenCode](agents/opencode.md)
+
+- [Architecture](architecture/README.md)
+- [CLI Reference](cli/README.md)
