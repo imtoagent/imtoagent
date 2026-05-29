@@ -7,19 +7,69 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+export type InstallSource = 'npm' | 'brew' | 'manual' | 'unknown';
+
 export interface BackendInfo {
   type: 'claude' | 'codex' | 'opencode';
   label: string;
   installed: boolean;
   version: string | null;
   installHint: string;
+  installSource: InstallSource;
+  binaryPath: string | null;
+  upgradeCommand: string | null;
 }
 
-const BACKEND_DEFS: Omit<BackendInfo, 'installed' | 'version'>[] = [
+const BACKEND_DEFS: Omit<BackendInfo, 'installed' | 'version' | 'installSource' | 'binaryPath' | 'upgradeCommand'>[] = [
   { type: 'claude', label: 'Claude Code', installHint: 'npm install -g @anthropic-ai/claude-agent-sdk' },
   { type: 'codex',  label: 'Codex',       installHint: 'npm install -g @openai/codex' },
   { type: 'opencode', label: 'OpenCode',   installHint: 'curl -fsSL https://opencode.ai/install | bash' },
 ];
+
+// ================================================================
+// 安装来源检测
+// ================================================================
+
+/**
+ * 根据二进制路径判断安装来源
+ */
+export function detectInstallSource(binaryPath: string, type: string): InstallSource {
+  if (binaryPath.includes('/opt/homebrew/') || binaryPath.includes('/usr/local/Cellar/')) {
+    return 'brew';
+  }
+  if (binaryPath.includes('node_modules/')) {
+    return 'npm';
+  }
+  if (type === 'opencode' && binaryPath.includes('.opencode/')) {
+    return 'manual';
+  }
+  return 'unknown';
+}
+
+/**
+ * 根据安装来源和后端类型生成升级命令
+ */
+export function getUpgradeCommand(source: InstallSource, type: string): string | null {
+  switch (source) {
+    case 'brew':
+      const brewPkg: Record<string, string> = { claude: undefined, codex: 'codex', opencode: undefined };
+      if (brewPkg[type]) return `brew upgrade ${brewPkg[type]}`;
+      return null; // claude/opencode not on brew
+    case 'npm':
+      const npmPkg: Record<string, string> = {
+        claude: '@anthropic-ai/claude-agent-sdk',
+        codex: '@openai/codex',
+        opencode: 'opencode',
+      };
+      if (npmPkg[type]) return `npm update -g ${npmPkg[type]}`;
+      return null;
+    case 'manual':
+      if (type === 'opencode') return 'curl -fsSL https://opencode.ai/install | bash';
+      return null;
+    case 'unknown':
+      return null;
+  }
+}
 
 // ================================================================
 // 获取 npm 全局 bin 目录
@@ -49,47 +99,75 @@ export function getNpmGlobalBin(): string | null {
   }
 }
 
-function checkOne(b: Omit<BackendInfo, 'installed' | 'version'>): BackendInfo {
+/**
+ * 定位后端可执行文件（按优先级）
+ * 返回 { path, version } 或 null
+ */
+function findBackendBinary(type: string): { binaryPath: string; version: string } | null {
   const versionCmd: Record<string, string> = {
     claude: 'claude --version',
     codex: 'codex --version',
     opencode: 'opencode version',
   };
 
-  // 先尝试 PATH 中的命令
+  // 1) PATH 中的命令（最常见）
   try {
-    const version = execSync(versionCmd[b.type], { encoding: 'utf-8', timeout: 5000 }).trim();
-    return { ...b, installed: true, version };
-  } catch {
-    // PATH 中找不到，继续尝试 fallback
-  }
+    const version = execSync(versionCmd[type], { encoding: 'utf-8', timeout: 5000 }).trim();
+    // 解析真实路径（处理 symlink）
+    const binName = type;
+    const realPath = execSync(`command -v ${binName}`, { encoding: 'utf-8', timeout: 3000 }).trim();
+    return { binaryPath: realPath, version };
+  } catch {}
 
-  // fallback 1: npm global bin
+  // 2) npm global bin
   const npmBin = getNpmGlobalBin();
   if (npmBin) {
-    const binPath = path.join(npmBin, b.type);
+    const binPath = path.join(npmBin, type);
     try {
       if (fs.existsSync(binPath)) {
         const version = execSync(`"${binPath}" --version`, { encoding: 'utf-8', timeout: 5000 }).trim();
-        return { ...b, installed: true, version };
-      }
-    } catch {
-      // bin 存在但执行失败，视为未安装
-    }
-  }
-
-  // fallback 2: OpenCode custom install path
-  if (b.type === 'opencode') {
-    const opencodePath = path.join(os.homedir(), '.opencode', 'bin', 'opencode');
-    try {
-      if (fs.existsSync(opencodePath)) {
-        const version = execSync(`"${opencodePath}" version`, { encoding: 'utf-8', timeout: 5000 }).trim();
-        return { ...b, installed: true, version };
+        return { binaryPath: binPath, version };
       }
     } catch {}
   }
 
-  return { ...b, installed: false, version: null };
+  // 3) OpenCode custom install path
+  if (type === 'opencode') {
+    const opencodePath = path.join(os.homedir(), '.opencode', 'bin', 'opencode');
+    try {
+      if (fs.existsSync(opencodePath)) {
+        const version = execSync(`"${opencodePath}" version`, { encoding: 'utf-8', timeout: 5000 }).trim();
+        return { binaryPath: opencodePath, version };
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+function checkOne(b: Omit<BackendInfo, 'installed' | 'version' | 'installSource' | 'binaryPath' | 'upgradeCommand'>): BackendInfo {
+  const found = findBackendBinary(b.type);
+  if (found) {
+    const installSource = detectInstallSource(found.binaryPath, b.type);
+    const upgradeCommand = getUpgradeCommand(installSource, b.type);
+    return {
+      ...b,
+      installed: true,
+      version: found.version,
+      installSource,
+      binaryPath: found.binaryPath,
+      upgradeCommand,
+    };
+  }
+
+  return {
+    ...b,
+    installed: false,
+    version: null,
+    installSource: 'unknown',
+    binaryPath: null,
+    upgradeCommand: null,
+  };
 }
 
 export function checkAllBackends(): BackendInfo[] {
@@ -106,8 +184,9 @@ export function formatBackendStatus(backends: BackendInfo[]): string {
   return backends.map(b => {
     const icon = b.installed ? '✅' : '❌';
     const ver = b.version ? ` v${b.version}` : '';
+    const source = b.installed && b.installSource !== 'unknown' ? ` (${b.installSource})` : '';
     const hint = b.installed ? '' : ` → ${b.installHint}`;
-    return `  ${icon} ${b.label}${ver}${hint}`;
+    return `  ${icon} ${b.label}${ver}${source}${hint}`;
   }).join('\n');
 }
 
@@ -141,6 +220,90 @@ function ensurePathInConfig(configPath: string, binDir: string): void {
     // Also update current process.env for immediate detection
     process.env.PATH = `${binDir}:${process.env.PATH}`;
   } catch {}
+}
+
+// ================================================================
+// 升级后端 CLI
+// ================================================================
+
+/**
+ * 升级已安装的后端到最新版
+ * 根据检测到的 installSource 自动选择正确的升级命令
+ */
+export async function upgradeBackend(
+  type: 'claude' | 'codex' | 'opencode',
+): Promise<{ success: boolean; oldVer: string; newVer: string }> {
+  const b = BACKEND_DEFS.find((x) => x.type === type);
+  if (!b) {
+    return { success: false, oldVer: '', newVer: '' };
+  }
+
+  const currentInfo = checkOne(b);
+  if (!currentInfo.installed) {
+    console.error(`❌ ${b.label} not installed. Use installBackend() instead.`);
+    return { success: false, oldVer: '', newVer: '' };
+  }
+
+  const upgradeCmd = currentInfo.upgradeCommand;
+  if (!upgradeCmd) {
+    console.error(`❌ Cannot determine upgrade method for ${b.label} (source: ${currentInfo.installSource})`);
+    console.error(`   Please upgrade manually.`);
+    return { success: false, oldVer: currentInfo.version || '', newVer: '' };
+  }
+
+  const oldVer = currentInfo.version || '';
+  console.log(`\n📦 Upgrading ${b.label}...`);
+  console.log(`   Current: ${oldVer}`);
+  console.log(`   Source: ${currentInfo.installSource}`);
+  console.log(`   Command: ${upgradeCmd}\n`);
+
+  try {
+    const child = Bun.spawn(['zsh', '-ic', upgradeCmd], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+      env: { ...process.env },
+    });
+
+    const decoder = new TextDecoder();
+
+    const stdoutReader = child.stdout.getReader();
+    while (true) {
+      const { done, value } = await stdoutReader.read();
+      if (done) break;
+      process.stdout.write(decoder.decode(value, { stream: true }));
+    }
+
+    const stderrReader = child.stderr.getReader();
+    while (true) {
+      const { done, value } = await stderrReader.read();
+      if (done) break;
+      process.stderr.write(decoder.decode(value, { stream: true }));
+    }
+
+    const exitCode = await child.exited;
+    if (exitCode !== 0) {
+      console.error(`\n❌ ${b.label} upgrade failed (exit code: ${exitCode})`);
+      return { success: false, oldVer, newVer: '' };
+    }
+
+    // 验证新版本
+    const newInfo = checkOne(b);
+    const newVer = newInfo.version || '';
+    if (newInfo.installed && newVer !== oldVer) {
+      console.log(`\n✅ ${b.label} upgraded: ${oldVer} → ${newVer}`);
+      return { success: true, oldVer, newVer };
+    } else if (newVer === oldVer) {
+      console.log(`\n✅ ${b.label} is already at latest version (${newVer})`);
+      return { success: true, oldVer, newVer };
+    } else {
+      console.log(`\n✅ ${b.label} upgrade completed (new version: ${newVer})`);
+      return { success: true, oldVer, newVer };
+    }
+  } catch (e: any) {
+    console.error(`\n❌ Error upgrading ${b.label}: ${e.message || e}`);
+    return { success: false, oldVer, newVer: '' };
+  }
 }
 
 // ================================================================

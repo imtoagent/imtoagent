@@ -180,6 +180,34 @@ The interactive wizard will guide you through:
 | `imtoagent status` | Check running status |
 | `imtoagent restore` | Hot reload recovery |
 | `imtoagent daemon` | Foreground daemon mode (crash auto-restart) |
+| `imtoagent update-system` | Upgrade IMtoAgent itself via npm |
+| `imtoagent update-backend [type]` | Upgrade an agent backend (claude/codex/opencode) |
+
+### Upgrading
+
+**Upgrade IMtoAgent itself:**
+
+```bash
+imtoagent update-system
+```
+
+This runs `npm update -g imtoagent` and verifies the new version.
+
+**Upgrade agent backends:**
+
+```bash
+# Auto-detect current Bot's backend and upgrade it
+imtoagent update-backend
+
+# Upgrade a specific backend
+imtoagent update-backend codex
+imtoagent update-backend claude
+imtoagent update-backend opencode
+```
+
+The command detects how each backend was installed (npm, brew, or manual) and uses the correct upgrade command automatically.
+
+### Running Modes
 
 ### Running Modes
 

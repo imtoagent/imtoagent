@@ -46,6 +46,14 @@ switch (command) {
   case 'daemon':
     await cmdDaemon();
     break;
+  case 'update-system':
+    await cmdUpdateSystem();
+    break;
+  case 'update-backend': {
+    const backendType = process.argv[3] as 'claude' | 'codex' | 'opencode' | undefined;
+    await cmdUpdateBackend(backendType);
+    break;
+  }
   case undefined: {
     const dataDir = getDataDir();
     const configPath = path.join(dataDir, 'config.json');
@@ -89,13 +97,16 @@ function printHelp() {
 imtoagent — IM ↔ Agent Unified Gateway
 
 Usage:
-  imtoagent setup     Interactive setup wizard
-  imtoagent start     Start gateway in background (returns immediately)
-  imtoagent run       Start gateway in foreground (Ctrl+C to stop)
-  imtoagent stop      Stop gateway
-  imtoagent status    Check running status
-  imtoagent restore   Hot reload
-  imtoagent daemon    Foreground daemon with auto-restart (for launchd/systemd)
+  imtoagent setup               Interactive setup wizard
+  imtoagent start               Start gateway in background (returns immediately)
+  imtoagent run                 Start gateway in foreground (Ctrl+C to stop)
+  imtoagent stop                Stop gateway
+  imtoagent status              Check running status
+  imtoagent restore             Hot reload
+  imtoagent daemon              Foreground daemon with auto-restart (for launchd/systemd)
+  imtoagent update-system       Upgrade imtoagent itself
+  imtoagent update-backend      Upgrade current Bot's backend
+  imtoagent update-backend TYPE Upgrade specific backend (codex|claude|opencode)
 
 Data directory: ${getDataDir()}
 `);
@@ -484,4 +495,122 @@ async function cmdDaemon(): Promise<void> {
   }
 
   console.log('👋 Daemon stopped');
+}
+
+// ================================================================
+// update-system — upgrade imtoagent itself
+// ================================================================
+async function cmdUpdateSystem(): Promise<void> {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+  const currentVer = pkg.version;
+  console.log('\n📦 Upgrading imtoagent...');
+  console.log(`   Current version: ${currentVer}\n`);
+
+  console.log('   Running: npm update -g imtoagent\n');
+
+  try {
+    const child = Bun.spawn(['zsh', '-ic', 'npm update -g imtoagent'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: 'ignore',
+      env: { ...process.env },
+    });
+
+    const decoder = new TextDecoder();
+
+    const stdoutReader = child.stdout.getReader();
+    while (true) {
+      const { done, value } = await stdoutReader.read();
+      if (done) break;
+      process.stdout.write(decoder.decode(value, { stream: true }));
+    }
+
+    const stderrReader = child.stderr.getReader();
+    while (true) {
+      const { done, value } = await stderrReader.read();
+      if (done) break;
+      process.stderr.write(decoder.decode(value, { stream: true }));
+    }
+
+    const exitCode = await child.exited;
+    if (exitCode !== 0) {
+      console.error(`\n❌ imtoagent upgrade failed (exit code: ${exitCode})`);
+      process.exit(1);
+    }
+
+    // Read new version
+    let newVer = 'unknown';
+    try {
+      const newPkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+      newVer = newPkg.version;
+    } catch {
+      // Can't read new version (possibly process swapped), check via CLI
+      try {
+        newVer = execSync('imtoagent --version', { encoding: 'utf-8', timeout: 5000 }).trim();
+      } catch {}
+    }
+
+    console.log(`\n✅ imtoagent upgraded: ${currentVer} → ${newVer}`);
+    console.log(`   Restart gateway with: imtoagent stop && imtoagent start`);
+  } catch (e: any) {
+    console.error(`\n❌ Error upgrading imtoagent: ${e.message || e}`);
+    process.exit(1);
+  }
+}
+
+// ================================================================
+// update-backend — upgrade a backend agent
+// ================================================================
+async function cmdUpdateBackend(backendType?: 'claude' | 'codex' | 'opencode'): Promise<void> {
+  const dataDir = getDataDir();
+  const configPath = path.join(dataDir, 'config.json');
+
+  // Determine which backend to upgrade
+  let targetType: 'claude' | 'codex' | 'opencode';
+
+  if (backendType) {
+    if (!['claude', 'codex', 'opencode'].includes(backendType)) {
+      console.error(`❌ Unknown backend: ${backendType}`);
+      console.error(`   Valid: claude, codex, opencode`);
+      process.exit(1);
+    }
+    targetType = backendType;
+  } else {
+    // Auto-detect from config (use first bot's backend)
+    if (!fs.existsSync(configPath)) {
+      console.error('❌ No config found. Run "imtoagent setup" first.');
+      process.exit(1);
+    }
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const bots = cfg.bots || [];
+    if (bots.length === 0) {
+      console.error('❌ No bots configured.');
+      process.exit(1);
+    }
+    targetType = bots[0].backend;
+    if (!targetType) {
+      console.error('❌ First bot has no backend configured.');
+      process.exit(1);
+    }
+    console.log(`   Auto-detected backend: ${targetType} (from bot: ${bots[0].name})\n`);
+  }
+
+  // Show current status
+  const { checkBackend } = await import('../modules/utils/backend-check');
+  const info = checkBackend(targetType);
+  console.log(`   ${info.label}: ${info.version || 'not installed'} (${info.installSource})`);
+
+  if (!info.installed) {
+    console.error(`\n❌ ${info.label} not installed.`);
+    console.error(`   Install: imtoagent setup`);
+    process.exit(1);
+  }
+
+  // Run upgrade
+  const { upgradeBackend } = await import('../modules/utils/backend-check');
+  const result = await upgradeBackend(targetType);
+
+  if (!result.success) {
+    process.exit(1);
+  }
 }
