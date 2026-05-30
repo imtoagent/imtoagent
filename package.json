@@ -1,6 +1,6 @@
 {
   "name": "imtoagent",
-  "version": "0.3.25",
+  "version": "0.3.26",
   "description": "IM ↔ Agent 统一网关 — 飞书/Telegram/微信/企业微信对接 Claude Code/Codex/OpenCode",
   "type": "module",
   "bin": {
