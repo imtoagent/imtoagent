@@ -242,6 +242,7 @@ export interface BotConfig {
   /** 唯一标识（UUID，用于目录/文件隔离，改名不影响） */
   id?: string;
   name: string;
+  im: string; // 'feishu' | 'telegram' | 'wecom' | 'wechat'
   backend: string; // 'claude' | 'codex' | 'opencode'
   appId: string;
   appSecret: string;

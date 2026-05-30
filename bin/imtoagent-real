@@ -64,6 +64,9 @@ switch (command) {
   case 'doctor':
     await cmdDoctor();
     break;
+  case 'config':
+    await cmdConfig();
+    break;
   case 'autostart':
     await cmdAutostart();
     break;
@@ -125,6 +128,12 @@ Usage:
   imtoagent uninstall --purge   Uninstall and delete all data
   imtoagent health              Run comprehensive health check
   imtoagent doctor              Diagnose & fix configuration issues
+  imtoagent config              Manage Bot configuration
+  imtoagent config list         List all Bots
+  imtoagent config show NAME    Show Bot details
+  imtoagent config add          Add a new Bot
+  imtoagent config remove NAME  Remove a Bot
+  imtoagent config modify NAME  Modify Bot settings
   imtoagent autostart enable    Enable auto-start on login (launchd)
   imtoagent autostart disable   Disable auto-start
   imtoagent autostart status    Check auto-start status
@@ -941,6 +950,81 @@ async function cmdHealth(): Promise<void> {
     if (warnCount > 0) console.log(`   ⚠️  ${warnCount} warning(s)`);
   }
   console.log();
+}
+
+// ================================================================
+// config — Bot 配置管理
+// ================================================================
+async function cmdConfig(): Promise<void> {
+  const subcommand = process.argv[3];
+
+  switch (subcommand) {
+    case 'list':
+      await cmdConfigList();
+      break;
+    case 'show': {
+      const name = process.argv[4];
+      if (!name) { console.error('Usage: imtoagent config show <name>'); process.exit(1); }
+      await cmdConfigShow(name);
+      break;
+    }
+    case 'add':
+      await cmdConfigAdd();
+      break;
+    case 'remove': {
+      const name = process.argv[4];
+      if (!name) { console.error('Usage: imtoagent config remove <name>'); process.exit(1); }
+      await cmdConfigRemove(name);
+      break;
+    }
+    case 'modify': {
+      const name = process.argv[4];
+      if (!name) { console.error('Usage: imtoagent config modify <name>'); process.exit(1); }
+      await cmdConfigModify(name);
+      break;
+    }
+    case undefined:
+    case 'help':
+    case '--help':
+    case '-h':
+      console.log(`
+imtoagent config — Manage Bot configuration
+
+Usage:
+  imtoagent config list         List all Bots
+  imtoagent config show NAME    Show Bot details
+  imtoagent config add          Add a new Bot (interactive)
+  imtoagent config remove NAME  Remove a Bot
+  imtoagent config modify NAME  Modify Bot settings
+`);
+      break;
+    default:
+      console.error(`❌ Unknown config subcommand: ${subcommand}`);
+      console.log('   Run "imtoagent config help" for usage.');
+      process.exit(1);
+  }
+}
+
+// ---- Config subcommand wrappers ----
+async function cmdConfigList(): Promise<void> {
+  const m = await import('../modules/utils/config-manager');
+  await m.cmdConfigList();
+}
+async function cmdConfigShow(name: string): Promise<void> {
+  const m = await import('../modules/utils/config-manager');
+  await m.cmdConfigShow(name);
+}
+async function cmdConfigAdd(): Promise<void> {
+  const m = await import('../modules/utils/config-manager');
+  await m.cmdConfigAdd();
+}
+async function cmdConfigRemove(name: string): Promise<void> {
+  const m = await import('../modules/utils/config-manager');
+  await m.cmdConfigRemove(name);
+}
+async function cmdConfigModify(name: string): Promise<void> {
+  const m = await import('../modules/utils/config-manager');
+  await m.cmdConfigModify(name);
 }
 
 
