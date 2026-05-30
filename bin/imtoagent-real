@@ -61,6 +61,9 @@ switch (command) {
   case 'health':
     await cmdHealth();
     break;
+  case 'doctor':
+    await cmdDoctor();
+    break;
   case 'autostart':
     await cmdAutostart();
     break;
@@ -121,6 +124,7 @@ Usage:
   imtoagent uninstall           Uninstall imtoagent (keep data by default)
   imtoagent uninstall --purge   Uninstall and delete all data
   imtoagent health              Run comprehensive health check
+  imtoagent doctor              Diagnose & fix configuration issues
   imtoagent autostart enable    Enable auto-start on login (launchd)
   imtoagent autostart disable   Disable auto-start
   imtoagent autostart status    Check auto-start status
@@ -939,6 +943,102 @@ async function cmdHealth(): Promise<void> {
   console.log();
 }
 
+
+// ================================================================
+// doctor — 配置诊断与自动修复
+// ================================================================
+async function cmdDoctor(): Promise<void> {
+  console.log(`\n🔧 imtoagent Doctor — Configuration Diagnosis\n`);
+
+  try {
+    const { runDoctorChecks, formatIssues } = await import('../modules/utils/doctor');
+    const issues = await runDoctorChecks();
+
+    // 分组
+    const fixableIssues = issues.filter(i => i.fixable);
+    const unfixableIssues = issues.filter(i => !i.fixable);
+    const errors = issues.filter(i => i.severity === 'error');
+    const warnings = issues.filter(i => i.severity === 'warning');
+    const infos = issues.filter(i => i.severity === 'info');
+
+    // 打印所有问题
+    if (issues.length === 0) {
+      console.log('   ✅ All checks passed! Nothing to fix.\n');
+      return;
+    }
+
+    // 打印 errors
+    if (errors.length > 0) {
+      console.log('❌ Errors:');
+      for (const e of errors) {
+        console.log(`   ${e.message}`);
+        if (e.fixable && e.fixDescription) {
+          console.log(`   → 🔧 ${e.fixDescription}`);
+        }
+      }
+      console.log();
+    }
+
+    // 打印 warnings
+    if (warnings.length > 0) {
+      console.log('⚠️  Warnings:');
+      for (const w of warnings) {
+        console.log(`   ${w.message}`);
+      }
+      console.log();
+    }
+
+    // 打印 infos
+    if (infos.length > 0) {
+      console.log('✅ OK:');
+      for (const i of infos) {
+        console.log(`   ${i.message}`);
+      }
+      console.log();
+    }
+
+    // 尝试自动修复
+    if (fixableIssues.length > 0) {
+      console.log(`─── Auto-Fix ───`);
+      let fixed = 0;
+      for (const issue of fixableIssues) {
+        if (!issue.fix) continue;
+        try {
+          console.log(`\n🔧 Fixing: ${issue.fixDescription}`);
+          const success = await issue.fix();
+          if (success) {
+            console.log(`   ✅ Fixed`);
+            fixed++;
+          } else {
+            console.log(`   ❌ Fix failed`);
+          }
+        } catch (e: any) {
+          console.log(`   ❌ Fix failed: ${e.message}`);
+        }
+      }
+      console.log(`\n   ${fixed}/${fixableIssues.length} issues fixed`);
+      if (fixed > 0) {
+        console.log(`\n💡 Run "imtoagent doctor" again to re-check after fixes.\n`);
+      }
+    }
+
+    // Summary
+    console.log('── Summary ──');
+    if (errors.length === 0) {
+      console.log('   ✅ No errors found');
+    } else {
+      console.log(`   ❌ ${errors.length} error(s) — some may be fixable`);
+    }
+    if (warnings.length > 0) {
+      console.log(`   ⚠️  ${warnings.length} warning(s) — review recommended`);
+    }
+    console.log();
+
+  } catch (e: any) {
+    console.error(`❌ Doctor check failed: ${e.message}\n`);
+    process.exit(1);
+  }
+}
 // ================================================================
 // autostart — launchd integration (macOS only)
 // ================================================================
