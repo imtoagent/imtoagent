@@ -19,6 +19,8 @@ import {
 import { parseToBlocks } from './modules/capabilities';
 import { resolveCapabilities } from './modules/prompt-builder';
 import { getDataDir } from './modules/utils/paths';
+import { WorkspaceManager, createWorkspaceManager } from './modules/utils/workspace-manager';
+import { migrateWorkspaces } from './modules/utils/migrate-workspaces';
 import { FeishuIMModule } from './modules/im/feishu';
 import { TelegramAdapter } from './modules/im/telegram';
 import { WeComIMModule } from './modules/im/wecom';
@@ -109,15 +111,17 @@ interface ChatSession extends Session {
 // ================================================================
 class CustomSessionManager {
   sessions: Map<string, ChatSession>;
-  botName: string;
+  botKey: string;
+  sessionsDir: string;
 
-  constructor(botName: string, sessions: Map<string, ChatSession>) {
-    this.botName = botName;
+  constructor(botKey: string, workspacePath: string, sessions: Map<string, ChatSession>) {
+    this.botKey = botKey;
     this.sessions = sessions;
+    this.sessionsDir = path.join(workspacePath, 'sessions');
   }
 
   private _sessionPath(chatId: string): string {
-    return path.join(getSessionsDir(), this.botName, `${chatId}.memory.json`);
+    return path.join(this.sessionsDir, `${chatId}.memory.json`);
   }
 
   async getOrCreate(chatId: string, userId: string): Promise<ChatSession> {
@@ -128,6 +132,10 @@ class CustomSessionManager {
     }
 
     // 从文件加载（兼容旧格式）
+    // 确保 sessions 目录存在
+    if (!fs.existsSync(this.sessionsDir)) {
+      fs.mkdirSync(this.sessionsDir, { recursive: true });
+    }
     const fp = this._sessionPath(chatId);
     let session: ChatSession;
 
@@ -300,6 +308,7 @@ class Bot {
   client: Lark.Client;
   im: IMModule;
   config: any;
+  workspaceManager: WorkspaceManager;
 
   // SDK
   runtime: AgentRuntime;
@@ -310,7 +319,7 @@ class Bot {
   /** 正在执行的任务的取消信号（chatId → AbortController） */
   activeControllers: Map<string, AbortController> = new Map();
 
-  constructor(cfg: BotConfig, globalConfig: any) {
+  constructor(cfg: BotConfig, globalConfig: any, workspaceManager: WorkspaceManager) {
     this.id = cfg.id || cfg.name; // 后向兼容：无 id 时用 name
     this.name = cfg.name;
     this.backend = cfg.backend;
@@ -318,6 +327,11 @@ class Bot {
     this.appSecret = cfg.appSecret;
     this.defaultCwd = cfg.cwd || globalConfig.system?.defaultProjectDir || path.join(os.homedir(), 'Projects');
     this.config = globalConfig;
+    this.workspaceManager = workspaceManager;
+
+    // 确保工作空间目录存在
+    const botKey = this.id;
+    this.workspaceManager.ensureWorkspace(botKey);
 
     // Bot 级模型配置
     const botCfg = this._loadBotConfig();
@@ -352,7 +366,8 @@ class Bot {
     this.im = imFactory.create(cfg);
 
     // ===== SDK 集成 =====
-    this.sessionManager = new CustomSessionManager(this.id, this.sessions);
+    const workspacePath = this.workspaceManager.getWorkspacePath(this.id);
+    this.sessionManager = new CustomSessionManager(this.id, workspacePath, this.sessions);
 
     const adapterCtx = {
       imModule: this.im,
@@ -387,7 +402,9 @@ class Bot {
   }
 
   // ===== 灵魂管理 =====
-  _soulDir() { return getSoulDir(this.id); }
+  _soulDir() {
+    return this.workspaceManager.getSoulPath(this.id);
+  }
 
   _initSoul() {
     const dir = this._soulDir();
@@ -614,9 +631,19 @@ class Bot {
 
     cmd('/dir', ({ args, session }) => {
       const dir = args.trim();
-      if (!dir) return `📁 ${session?.cwd || this.defaultCwd}`;
-      if (session) session.cwd = dir;
-      return `📁 Switched: ${dir}`;
+      const currentCwd = session?.cwd || this.defaultCwd;
+      if (!dir) {
+        const mode = this.workspaceManager.getMode();
+        return `📁 ${currentCwd}\n🏷 Workspace mode: ${mode}`;
+      }
+
+      const resolved = this.workspaceManager.resolveAndValidatePath(this.id, dir, currentCwd);
+      if (resolved === null) {
+        return `❌ Path not allowed: ${dir}\n💡 In sandbox mode, you can only access paths within your workspace`;
+      }
+
+      if (session) session.cwd = resolved;
+      return `📁 Switched: ${resolved}`;
     });
 
     cmd('/mode', ({ args, session }) => {
@@ -950,6 +977,16 @@ async function main() {
     return;
   }
 
+  // ===== Workspace Migration =====
+  // 老用户升级：自动迁移旧 sessions/ + soul/ 到新的 workspace 结构
+  const migrationResult = migrateWorkspaces();
+  if (migrationResult.botsMigrated.length > 0) {
+    console.log(`   🔄 Workspace migration: ${migrationResult.botsMigrated.length} bot(s) migrated`);
+  }
+
+  // 创建 WorkspaceManager（所有 Bot 共享）
+  const workspaceManager = createWorkspaceManager(config);
+
   const bots: Bot[] = [];
   for (const c of botCfgs) {
     const appId = c.appId || c.feishu?.appId || '';
@@ -958,7 +995,7 @@ async function main() {
 
     // wechat 不需要 appId/appSecret，首次启动会触发 QR 扫码绑定
     if (imType === 'wechat') {
-      bots.push(new Bot({ ...c, appId: appId || 'wechat-bot', appSecret }, config));
+      bots.push(new Bot({ ...c, appId: appId || 'wechat-bot', appSecret }, config, workspaceManager));
       continue;
     }
 
@@ -968,7 +1005,7 @@ async function main() {
       console.log(`[Config] ⚠️  Bot "${c.name}" has placeholder credentials, skipping`);
       continue;
     }
-    bots.push(new Bot({ ...c, appId, appSecret }, config));
+    bots.push(new Bot({ ...c, appId, appSecret }, config, workspaceManager));
   }
 
   if (bots.length === 0) {
@@ -976,6 +1013,7 @@ async function main() {
     return;
   }
 
+  console.log(`   Workspace: ${workspaceManager.getConfigSummary()}`);
   _allBots = bots;
   console.log(`\n🚀 CC Routing v4 — Multi-Bot Architecture (Full SDK Integration)`);
   console.log(`   Anthropic: http://localhost:${proxyPort}`);

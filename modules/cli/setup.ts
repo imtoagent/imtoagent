@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getDataDir, getPkgDir, getTemplatePath, getSoulDir, getBotKey } from '../utils/paths';
+import { getDataDir, getPkgDir, getTemplatePath, getSoulDir } from '../utils/paths';
 import { randomUUID } from 'crypto';
 import { checkAllBackends, formatBackendStatus } from '../utils/backend-check';
 
@@ -290,7 +290,11 @@ const IM_FIELDS: Record<string, { key: string; label: string; required: boolean 
 // Main flow
 // ================================================================
 
-export async function runSetupWizard(): Promise<void> {
+export interface SetupOptions {
+  quick?: boolean;
+}
+
+export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   // Guard: refuse to run in non-TTY environment
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     console.error('');
@@ -310,6 +314,11 @@ export async function runSetupWizard(): Promise<void> {
   console.log('╚══════════════════════════════════════════════╝');
   console.log(`\nData directory: ${dataDir}`);
   console.log(`Controls: ↑↓/Space navigate  |  Enter confirm  |  ESC go back\n`);
+
+  const isQuick = options?.quick || false;
+  if (isQuick) {
+    console.log('⚡ Quick mode: workspace defaults to sandbox, skip workspace step\n');
+  }
 
   // ===== Step 1: Detect existing configuration =====
   let existingConfig: any = null;
@@ -458,15 +467,20 @@ export async function runSetupWizard(): Promise<void> {
       bot.im = imType;
     }
 
-    // Check for duplicate name
-    const existingIdx = bots.findIndex(b => b.name === botName);
-    if (existingIdx >= 0) {
-      bots[existingIdx] = bot;
-      console.log(`✅ Replaced: ${botName}`);
-    } else {
-      bots.push(bot);
-      console.log(`✅ Added: ${botName}`);
+    // Check for duplicate name — auto-rename with counter
+    let finalName = botName;
+    let counter = 1;
+    while (bots.find(b => b.name === finalName)) {
+      finalName = `${botName} (${counter})`;
+      counter++;
     }
+    bot.name = finalName;
+
+    if (finalName !== botName) {
+      console.log(`⚠️  "${botName}" already exists, renamed to "${finalName}"`);
+    }
+    bots.push(bot);
+    console.log(`✅ Added: ${finalName}`);
 
     // Whether to continue adding
     const r = await confirm('Add another Bot?', true);
@@ -482,8 +496,43 @@ export async function runSetupWizard(): Promise<void> {
     return;
   }
 
-  // ===== Step 4: Configure model providers =====
-  console.log('\n📌 Step 4: Configure model providers\n');
+  // ===== Step 4: Configure workspace =====
+  let workspaceMode: 'sandbox' | 'global' = 'sandbox';
+  let workspaceGlobalPath: string | null = null;
+
+  if (!isQuick) {
+    console.log('\n📌 Step 4: Configure workspace\n');
+    console.log('Each Bot gets its own isolated file workspace:');
+    console.log('  sandbox  — isolated per Bot, no cross-Bot file access (recommended)');
+    console.log('  global   — shared root directory, multiple Bots collaborate on same codebase');
+    console.log('');
+
+    const wsLabels = ['Sandbox mode (isolated per Bot)', 'Global mode (shared root path)'];
+    const wsIdx = await selectMenu('Select workspace mode', wsLabels);
+    if (wsIdx === -1) { console.log('\n👋 Cancelled'); process.exit(0); }
+    workspaceMode = wsIdx === 1 ? 'global' : 'sandbox';
+
+    if (workspaceMode === 'global') {
+      const defaultGlobal = os.homedir() + '/imtoagent-workspace';
+      const gpInput = await promptText('Global workspace root path', defaultGlobal);
+      if ((gpInput as any) === -1) { console.log('\n👋 Cancelled'); process.exit(0); }
+      workspaceGlobalPath = (gpInput || defaultGlobal).trim();
+    }
+
+    const home = process.env.HOME || process.env.USERPROFILE?.replace(/\\/g, '/') || '';
+    console.log('');
+    console.log('Workspace layout:');
+    if (workspaceMode === 'sandbox') {
+      console.log(`  ${home}/.imtoagent/workspaces/<UUID>/  (each Bot gets a unique directory)`);
+    } else {
+      console.log(`  ${workspaceGlobalPath}/  (all Bots share this root)`);
+      console.log(`  soul files in ${workspaceGlobalPath}/.imtoagent/soul/<botId>/`);
+    }
+    console.log('');
+  }
+
+  // ===== Step 5: Configure model providers =====
+  console.log('\n📌 Step 5: Configure model providers\n');
 
   const providers: Record<string, any> = {};
   if (mergeMode && existingConfig?.providers) {
@@ -600,8 +649,8 @@ export async function runSetupWizard(): Promise<void> {
   step4Loop = false; // Has providers or user explicitly skipped
 }
 
-  // ===== Step 5: Select default model =====
-  console.log('\n📌 Step 5: Select default model\n');
+  // ===== Step 6: Select default model =====
+  console.log('\n📌 Step 6: Select default model\n');
 
   const allModels: string[] = [];
   for (const [provName, prov] of Object.entries(providers)) {
@@ -620,11 +669,23 @@ export async function runSetupWizard(): Promise<void> {
     if ((defaultModel as any) === -1) defaultModel = 'deepseek/deepseek-v4-pro';
   }
 
-  // ===== Step 6: Generate soul files =====
-  console.log('\n📌 Step 6: Generate soul files\n');
+  // ===== Step 7: Generate soul files =====
+  console.log('\n📌 Step 7: Generate soul files\n');
+
+  // Compute workspace soul dirs based on configured workspace mode
+  const home = process.env.HOME || process.env.USERPROFILE?.replace(/\\/g, '/') || '';
 
   for (const bot of bots) {
-    const botSoulDir = getSoulDir(getBotKey(bot));
+    let botSoulDir: string;
+
+    if (workspaceMode === 'sandbox') {
+      // Sandbox: soul in workspaces/<UUID>/soul/
+      botSoulDir = path.join(home, '.imtoagent', 'workspaces', bot.id, 'soul');
+    } else {
+      // Global: soul in <globalPath>/.imtoagent/soul/<botId>/
+      botSoulDir = path.join(workspaceGlobalPath || path.join(home, 'imtoagent-workspace'), '.imtoagent', 'soul', bot.id);
+    }
+
     const templateSoulDir = path.join(getPkgDir(), 'templates', 'soul.template');
 
     if (fs.existsSync(botSoulDir)) {
@@ -654,9 +715,7 @@ export async function runSetupWizard(): Promise<void> {
     }
     console.log(`✅ ${bot.name}: soul files → ${botSoulDir}`);
   }
-
-  // ===== Step 7: Write configuration files =====
-  console.log('\n📌 Step 7: Write configuration files\n');
+  console.log('\n📌 Step 8: Write configuration files\n');
 
   fs.mkdirSync(dataDir, { recursive: true });
 
@@ -665,6 +724,11 @@ export async function runSetupWizard(): Promise<void> {
       defaultProjectDir: os.homedir(),
       idleTimeoutMinutes: 30,
       maxReplyLength: 140000,
+    },
+    workspace: {
+      mode: workspaceMode,
+      globalPath: workspaceGlobalPath,
+      botOverrides: {},
     },
     providers,
     defaultModel,
@@ -717,9 +781,10 @@ export async function runSetupWizard(): Promise<void> {
   console.log('\n╔══════════════════════════════════════════════╗');
   console.log('║   ✅ Configuration complete!                 ║');
   console.log('╚══════════════════════════════════════════════╝\n');
-  console.log(`Bot: ${bots.map(b => b.name).join(', ')}`);
+  console.log(`Bots: ${bots.map(b => b.name).join(', ')}`);
   console.log(`Default model: ${defaultModel}`);
   console.log(`Providers: ${Object.keys(providers).join(', ') || 'None'}`);
+  console.log(`Workspace: ${workspaceMode === 'sandbox' ? 'sandbox (isolated)' : `global (${workspaceGlobalPath})`}`);
   console.log(`\nNext steps:`);
   console.log(`  imtoagent start    Start the gateway`);
   console.log(`  imtoagent status   Check status\n`);

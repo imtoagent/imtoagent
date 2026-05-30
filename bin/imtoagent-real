@@ -26,7 +26,7 @@ const command = process.argv[2];
 
 switch (command) {
   case 'setup':
-    await cmdSetup();
+    await cmdSetup(process.argv[3]);
     break;
   case 'start':
     await cmdStart();
@@ -98,6 +98,7 @@ imtoagent — IM ↔ Agent Unified Gateway
 
 Usage:
   imtoagent setup               Interactive setup wizard
+  imtoagent setup --quick       Quick mode (sandbox workspace, skip workspace step)
   imtoagent start               Start gateway in background (returns immediately)
   imtoagent run                 Start gateway in foreground (Ctrl+C to stop)
   imtoagent stop                Stop gateway
@@ -115,9 +116,10 @@ Data directory: ${getDataDir()}
 // ================================================================
 // setup — interactive wizard
 // ================================================================
-async function cmdSetup() {
+async function cmdSetup(mode) {
+  const quick = mode === '--quick' || mode === '-q';
   const { runSetupWizard } = await import('../modules/cli/setup');
-  await runSetupWizard();
+  await runSetupWizard(quick ? { quick: true } : undefined);
 }
 
 // ================================================================

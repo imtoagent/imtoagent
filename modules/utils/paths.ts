@@ -201,7 +201,7 @@ export function getSoulDir(botKey: string): string {
 }
 
 export function getRestoreMarkerPath(): string {
-  return path.join(getSessionsDir(), '.restore');
+  return path.join(getDataDir(), '.restore');
 }
 
 export function getTemplatePath(relativePath: string): string {
