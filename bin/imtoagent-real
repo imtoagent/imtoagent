@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { spawn, execSync } from 'child_process';
-import { getDataDir } from '../modules/utils/paths';
+import { getDataDir, getLogsDir } from '../modules/utils/paths';
 
 const PID_FILE = '/tmp/imtoagent.pid';
 
@@ -69,6 +69,12 @@ switch (command) {
     break;
   case 'autostart':
     await cmdAutostart();
+    break;
+  case 'logs':
+    await cmdLogs();
+    break;
+  case 'validate':
+    await cmdValidate();
     break;
   case undefined: {
     const dataDir = getDataDir();
@@ -137,6 +143,10 @@ Usage:
   imtoagent autostart enable    Enable auto-start on login (launchd)
   imtoagent autostart disable   Disable auto-start
   imtoagent autostart status    Check auto-start status
+  imtoagent logs                Show last 50 lines of log
+  imtoagent logs -n N           Show last N lines
+  imtoagent logs -f             Follow log in real-time (tail -f)
+  imtoagent validate            Validate config.json for errors
 
 Data directory: ${getDataDir()}
 `);
@@ -1266,6 +1276,185 @@ async function cmdAutostartStatus(plistPath: string): Promise<void> {
     }
   }
   console.log();
+}
+
+// ================================================================
+// logs — 查看日志
+// ================================================================
+async function cmdLogs(): Promise<void> {
+  const argv = process.argv.slice(3);
+  let n = 50;
+  let follow = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '-n' && argv[i + 1]) {
+      n = parseInt(argv[++i], 10);
+      if (isNaN(n) || n < 1) {
+        console.error('❌ Invalid line count');
+        process.exit(1);
+      }
+    } else if (argv[i] === '-f') {
+      follow = true;
+    }
+  }
+
+  const logsDir = getLogsDir();
+  const logFile = path.join(logsDir, 'imtoagent.log');
+
+  if (!fs.existsSync(logFile)) {
+    console.log('ℹ️  No log file found.');
+    console.log(`   Expected: ${logFile}`);
+    console.log('   Start the gateway first: imtoagent start');
+    return;
+  }
+
+  if (follow) {
+    // tail -f mode — spawn tail process
+    console.log(`📄 Following log: ${logFile} (Ctrl+C to stop)\n`);
+    const child = spawn('tail', ['-f', '-n', String(n), logFile], {
+      stdio: 'inherit',
+    });
+
+    const cleanup = () => {
+      try { child.kill('SIGTERM'); } catch {}
+    };
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+
+    await new Promise<void>((resolve) => {
+      child.on('exit', () => resolve());
+      child.on('error', () => resolve());
+    });
+  } else {
+    // Print last N lines
+    try {
+      const content = fs.readFileSync(logFile, 'utf-8');
+      const lines = content.split('\n');
+      const tail = lines.slice(-n).filter(l => l.length > 0);
+      if (tail.length === 0) {
+        console.log('ℹ️  Log file is empty.');
+      } else {
+        console.log(`📄 Last ${tail.length} lines of ${logFile}:\n`);
+        for (const line of tail) {
+          console.log(line);
+        }
+      }
+    } catch (e: any) {
+      console.error(`❌ Failed to read log: ${e.message}`);
+      process.exit(1);
+    }
+  }
+}
+
+// ================================================================
+// validate — 验证配置文件
+// ================================================================
+async function cmdValidate(): Promise<void> {
+  const dataDir = getDataDir();
+  const configPath = path.join(dataDir, 'config.json');
+
+  console.log(`\n🔍 imtoagent Config Validation\n`);
+  console.log(`   Config: ${configPath}\n`);
+
+  const issues: string[] = [];
+  const okItems: string[] = [];
+
+  // ---- 1. Check file exists ----
+  if (!fs.existsSync(configPath)) {
+    console.error('❌ config.json not found');
+    console.error(`   Run "imtoagent setup" to create it.\n`);
+    process.exit(1);
+  }
+  okItems.push('config.json exists');
+
+  // ---- 2. Parse JSON ----
+  let raw: string;
+  let config: any;
+  try {
+    raw = fs.readFileSync(configPath, 'utf-8');
+    config = JSON.parse(raw);
+    okItems.push('JSON format is valid');
+  } catch (e: any) {
+    console.error(`❌ Invalid JSON: ${e.message}`);
+    console.error(`   Please fix the syntax error and try again.\n`);
+    process.exit(1);
+  }
+
+  // ---- 3. Validate bots array ----
+  const validIMs = ['feishu', 'telegram', 'wecom', 'wechat'];
+  const validBackends = ['claude', 'codex', 'opencode'];
+
+  if (!config.bots || !Array.isArray(config.bots)) {
+    issues.push('bots is missing or not an array');
+  } else if (config.bots.length === 0) {
+    issues.push('bots array is empty — no bots configured');
+  } else {
+    okItems.push(`bots array has ${config.bots.length} entry/entries`);
+
+    config.bots.forEach((bot: any, idx: number) => {
+      const label = `bots[${idx}]`;
+      const botName = bot.name || `(unnamed, index ${idx})`;
+
+      // Check required fields
+      if (!bot.name) issues.push(`${label}: missing required field "name"`);
+      if (!bot.im) issues.push(`${label}: missing required field "im"`);
+      if (!bot.appId) issues.push(`${label}: missing required field "appId"`);
+      if (!bot.backend) issues.push(`${label}: missing required field "backend"`);
+
+      // Validate IM platform
+      if (bot.im && !validIMs.includes(bot.im)) {
+        issues.push(`${label}: invalid im value "${bot.im}" — must be one of: ${validIMs.join(', ')}`);
+      }
+
+      // Validate backend
+      if (bot.backend && !validBackends.includes(bot.backend)) {
+        issues.push(`${label}: invalid backend value "${bot.backend}" — must be one of: ${validBackends.join(', ')}`);
+      }
+    });
+  }
+
+  // ---- 4. Validate workspace config ----
+  const ws = config.workspace || {};
+  if (ws.mode === 'global') {
+    if (!ws.globalPath) {
+      issues.push('workspace: mode is "global" but globalPath is not set');
+    } else {
+      if (!fs.existsSync(ws.globalPath)) {
+        issues.push(`workspace: globalPath directory does not exist: ${ws.globalPath}`);
+      } else {
+        okItems.push(`workspace: globalPath exists (${ws.globalPath})`);
+      }
+    }
+  } else if (ws.mode && ws.mode !== 'sandbox') {
+    issues.push(`workspace: invalid mode "${ws.mode}" — must be "sandbox" or "global"`);
+  } else {
+    okItems.push(`workspace: mode is "${ws.mode || 'sandbox'}" (default)`);
+  }
+
+  // ---- Print results ----
+  if (okItems.length > 0) {
+    console.log('✅ OK:');
+    for (const item of okItems) {
+      console.log(`   ✓ ${item}`);
+    }
+    console.log();
+  }
+
+  if (issues.length > 0) {
+    console.log('❌ Issues:');
+    for (const issue of issues) {
+      console.log(`   ✗ ${issue}`);
+    }
+    console.log();
+  }
+
+  // Summary
+  if (issues.length === 0) {
+    console.log('✅ Configuration is valid!\n');
+  } else {
+    console.log(`❌ ${issues.length} issue(s) found. Please fix them.\n`);
+    process.exit(1);
+  }
 }
 
 // ================================================================

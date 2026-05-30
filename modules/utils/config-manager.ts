@@ -141,6 +141,7 @@ export async function cmdConfigShow(name: string): Promise<void> {
   console.log();
 }
 
+/** @internal — exported for testing via __TEST_MASK_SECRET */
 function maskSecret(s: string): string {
   if (s.length <= 8) return '***';
   return s.slice(0, 4) + '...' + s.slice(-4);
@@ -357,3 +358,17 @@ export async function cmdConfigModify(name: string): Promise<void> {
   console.log(`   Run "imtoagent restore" to hot-reload the gateway.\n`);
   rl.close();
 }
+
+// ================================================================
+// Test exports (NOT for production use)
+// ================================================================
+
+/**
+ * Export maskSecret for testing only.
+ */
+export const __test_maskSecret = maskSecret;
+
+/**
+ * Export constants for validate command / testing.
+ */
+export { VALID_BACKENDS, VALID_IMS };
