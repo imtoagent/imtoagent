@@ -38,42 +38,32 @@
 
 ---
 
-## 🗺️ 详细开发计划
+### ✅ Phase 1：稳定性与基础运维（P0）— 已完成
 
-### Phase 1：稳定性与基础运维（P0）
+| # | 任务 | Commit |
+|---|------|--------|
+| 1.1 | `imtoagent uninstall` | `6ac20b5` |
+| 1.2 | Setup 向导修复 | `0220edc` |
+| 1.3 | `imtoagent health` | `f003f88` |
 
-#### 1.1 `imtoagent uninstall` 命令
+#### 1.1 `imtoagent uninstall` ✅
 
-```bash
-imtoagent uninstall [--keep-data]
-imtoagent uninstall --purge
-```
+- `--keep-data`（默认）：保留 ~/.imtoagent/
+- `--purge`：删除数据 + npm 包
+- 自动停止 gateway + 清理 launchd plist
+- 二次确认
 
-- `--keep-data`（默认）：保留 ~/.imtoagent/ 数据目录
-- `--purge`：删除数据目录 + npm 包
-- 清理 launchd plist（如果存在）
-- 二次确认，防止误删
+#### 1.2 Setup 向导修复 ✅
 
-#### 1.2 Setup 向导代码审查与修复
+- `promptText` 返回 `null`（替代危险的 `-1 as unknown as string` hack）
+- Bot 名/Provider 名输入 sanitize（去除特殊字符）
+- 工作目录黑名单（/dev/null、/etc、/System 等）
+- 配置写入原子化（tmp + rename），partial failure 回滚
 
-**不精简步骤，重点排查：**
-- readline 键盘交互在终端兼容性（iTerm/Terminal/vscode）
-- ESC 返回逻辑是否可靠
-- 输入验证（空值、特殊字符、格式校验）
-- 中途 Ctrl+C 的清理逻辑
-- 配置写入失败的回滚机制
-- providers.template.json 与实际生成的匹配度
-- soul 模板路径解析是否正确
+#### 1.3 `imtoagent health` ✅
 
-#### 1.3 `imtoagent health` 命令
-
-综合健康检查：
-- 网关进程状态（PID 文件 vs 实际进程）
-- 配置文件有效性（JSON 解析 + 必要字段检查）
-- 后端安装状态
-- 代理端口 :18899 可达性
-- 最近日志错误（tail -20 扫描 ERROR/WARN）
-- 输出格式化报告，一键诊断
+- 网关进程 / 配置 JSON / 后端 / 端口 / 日志 errors
+- 一键诊断报告
 
 ### Phase 2：运维自动化（P1）
 
