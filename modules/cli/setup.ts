@@ -91,10 +91,14 @@ async function selectMenu(title: string, options: string[]): Promise<number> {
 }
 
 // ================================================================
-// Text input (Enter confirm, ESC returns -1)
+// Text input (Enter confirm, ESC returns null)
 // ================================================================
 
-async function promptText(label: string, defaultValue = ''): Promise<string> {
+/**
+ * Prompt the user for text input.
+ * @returns The entered string, or `null` if user pressed ESC.
+ */
+async function promptText(label: string, defaultValue = ''): Promise<string | null> {
   const buf: string[] = [];
   const defaultHint = defaultValue ? ` [${defaultValue}]` : '';
 
@@ -110,7 +114,7 @@ async function promptText(label: string, defaultValue = ''): Promise<string> {
         break;
       } else if (key === KEY.ESC) {
         process.stdout.write('\x1B[0K\n');
-        return -1 as unknown as string; // Special return value for ESC
+        return null;
       } else if (key === KEY.BACKSPACE) {
         if (buf.length > 0) {
           buf.pop();
@@ -377,8 +381,18 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     // 3b: Auto-generate Bot name, customizable
     const defaultName = IM_PLATFORMS[imIdx].label + 'Bot';
     const nameInput = await promptText('Bot name', defaultName);
-    if ((nameInput as any) === -1) { if (bots.length === 0) return; break; } // ESC
-    const botName = nameInput || defaultName; // Use default if empty
+    if (nameInput === null) { if (bots.length === 0) return; break; } // ESC
+    const botName = nameInput || defaultName;
+
+    // Validate Bot name — no whitespace-only, no dangerous characters
+    if (!botName || !/^\S/.test(botName)) {
+      console.log('⚠️  Bot name must not be empty or whitespace-only. Using default.');
+    }
+    // Sanitize: remove characters that would break directory names
+    const sanitized = botName.replace(/[^\w\s.-]/g, '');
+    if (sanitized !== botName) {
+      console.log(`⚠️  Bot name sanitized: "${botName}" → "${sanitized}"`);
+    }
 
     // 3c: Select backend
     const backendLabels = backendStatus.map(b =>
@@ -419,14 +433,24 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
     for (const field of fields) {
       const val = await promptText(field.label + (field.required ? '' : ' (optional)'));
-      if ((val as any) === -1) { credentials._escaped = 'true'; break; } // ESC
+      if (val === null) { credentials._escaped = 'true'; break; } // ESC
       credentials[field.key] = val;
     }
     if (credentials._escaped) continue; // ESC go back and re-select backend
 
-    // 3e: Working directory
-    const cwd = await promptText('Working directory', os.homedir());
-    if ((cwd as any) === -1) continue;
+    // 3e: Working directory (validated)
+    let cwd = await promptText('Working directory', os.homedir());
+    if (cwd === null) continue;
+    cwd = cwd.trim() || os.homedir();
+
+    // Validate path — reject obviously invalid / dangerous paths
+    const badPaths = ['/dev/null', '/dev/zero', '/dev/random', '/etc/passwd', '/etc/shadow', '/System'];
+    if (badPaths.some(bp => cwd === bp || cwd.startsWith(bp + '/'))) {
+      console.log(`⚠️  Invalid path "${cwd}". Using home directory instead.`);
+      cwd = os.homedir();
+    }
+    // Resolve to absolute path
+    cwd = path.resolve(cwd);
 
     // Generate unique ID (UUID, for directory isolation, renaming doesn't affect it)
     const botId = randomUUID();
@@ -509,14 +533,22 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
     const wsLabels = ['Sandbox mode (isolated per Bot)', 'Global mode (shared root path)'];
     const wsIdx = await selectMenu('Select workspace mode', wsLabels);
-    if (wsIdx === -1) { console.log('\n👋 Cancelled'); process.exit(0); }
+      if (wsIdx === -1) { console.log('\n👋 Cancelled'); process.exit(0); }
     workspaceMode = wsIdx === 1 ? 'global' : 'sandbox';
 
     if (workspaceMode === 'global') {
       const defaultGlobal = os.homedir() + '/imtoagent-workspace';
       const gpInput = await promptText('Global workspace root path', defaultGlobal);
-      if ((gpInput as any) === -1) { console.log('\n👋 Cancelled'); process.exit(0); }
-      workspaceGlobalPath = (gpInput || defaultGlobal).trim();
+      if (gpInput === null) { console.log('\n👋 Cancelled'); process.exit(0); }
+      let resolved = (gpInput || defaultGlobal).trim();
+
+      // Validate path
+      const badPaths = ['/dev/null', '/dev/zero', '/dev/random', '/etc', '/System', '/usr'];
+      if (badPaths.some(bp => resolved === bp || resolved.startsWith(bp + '/'))) {
+        console.log(`⚠️  Invalid path "${resolved}". Using default instead.`);
+        resolved = defaultGlobal;
+      }
+      workspaceGlobalPath = path.resolve(resolved);
     }
 
     const home = process.env.HOME || process.env.USERPROFILE?.replace(/\\/g, '/') || '';
@@ -573,19 +605,27 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
       console.log(`   Format: ${preset.format}`);
       console.log(`   Models: ${preset.models.join(', ')}\n`);
 
-      // Confirm/edit short name
+      // Confirm/edit short name (validate — must be safe JSON key)
       const nameEdit = await promptText('Provider name (leave blank to confirm)', provName);
-      if ((nameEdit as any) === -1) continue;
+      if (nameEdit === null) continue;
       provName = nameEdit || provName;
+      // Sanitize provider name: only alphanumeric, hyphens, underscores
+      const sanitizedProv = provName.replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!sanitizedProv) {
+        console.log('⚠️  Invalid provider name. Using original.');
+      } else if (sanitizedProv !== provName) {
+        console.log(`⚠️  Provider name sanitized: "${provName}" → "${sanitizedProv}"`);
+        provName = sanitizedProv;
+      }
 
       // Confirm/edit Base URL
       const urlEdit = await promptText('Base URL', baseUrl);
-      if ((urlEdit as any) === -1) continue;
+      if (urlEdit === null) continue;
       baseUrl = urlEdit || baseUrl;
 
       // Confirm/edit model list
       const modelsEdit = await promptText('Model list (comma-separated)', models.join(', '));
-      if ((modelsEdit as any) === -1) continue;
+      if (modelsEdit === null) continue;
       if (modelsEdit) models = modelsEdit.split(',').map(s => s.trim()).filter(Boolean);
 
       if (providers[provName]) {
@@ -593,17 +633,18 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
       }
     } else {
       // Custom
-      provName = await promptText('Provider name (e.g. deepseek, dashscope)');
-      if ((provName as any) === -1) { addingProviders = false; continue; }
+      let customName = await promptText('Provider name (e.g. deepseek, dashscope)');
+      if (customName === null) { addingProviders = false; continue; }
+      provName = customName.trim().toLowerCase().replace(/[^a-zA-Z0-9_-]/g, '');
       if (!provName) { addingProviders = false; continue; }
       if (providers[provName]) {
         console.log(`⚠️  Provider "${provName}" already exists, will overwrite\n`);
       }
 
       baseUrl = await promptText('Base URL (e.g. https://api.deepseek.com/v1)');
-      if ((baseUrl as any) === -1) continue;
+      if (baseUrl === null) continue;
       const modelsStr = await promptText('Model list (comma-separated)');
-      if ((modelsStr as any) === -1) continue;
+      if (modelsStr === null) continue;
       models = (modelsStr || '').split(',').map(s => s.trim()).filter(Boolean);
 
       const formatIdx = await selectMenu('API format', ['openai', 'anthropic']);
@@ -613,14 +654,14 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
     // API Key (required for all providers)
     const apiKey = await promptText('API Key');
-    if ((apiKey as any) === -1) continue;
+    if (apiKey === null) continue;
     if (!apiKey) {
       console.log('⚠️  API Key is empty, this provider will be temporarily unavailable\n');
     }
 
     // Pricing (optional)
     const priceInput = await promptText('Pricing (in/out per million tokens, e.g. 0.55,2.19, leave blank to skip)');
-    if ((priceInput as any) === -1) continue;
+    if (priceInput === null) continue;
 
     const pricing: any = {};
     if (priceInput) {
@@ -663,10 +704,10 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   if (allModels.length > 0) {
     const existingDefault = existingConfig?.defaultModel || allModels[0];
     const val = await promptText('Default model', existingDefault);
-    defaultModel = (val as any) === -1 ? existingDefault : (val || existingDefault);
+    defaultModel = val === null ? existingDefault : (val || existingDefault);
   } else {
-    defaultModel = await promptText('Default model (provider/model)') || 'deepseek/deepseek-v4-pro';
-    if ((defaultModel as any) === -1) defaultModel = 'deepseek/deepseek-v4-pro';
+    const val = await promptText('Default model (provider/model)');
+    defaultModel = val === null ? 'deepseek/deepseek-v4-pro' : (val || 'deepseek/deepseek-v4-pro');
   }
 
   // ===== Step 7: Generate soul files =====
@@ -719,6 +760,8 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
   fs.mkdirSync(dataDir, { recursive: true });
 
+  // Atomic config write: write to temp file first, then rename.
+  // If the write fails, the original config (if any) is preserved.
   const config: any = {
     system: existingConfig?.system || {
       defaultProjectDir: os.homedir(),
@@ -758,19 +801,42 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     bots,
   };
 
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
-  console.log(`✅ ${configPath}`);
+  // Write to temp file first for atomicity
+  const configTmpPath = configPath + '.tmp';
+  const providersTmpPath = path.join(dataDir, 'providers.json.tmp');
+  let writeOk = true;
 
-  const providersFile: any = { providers, defaultModel, modelAliases: config.modelAliases };
-  const providersPath = path.join(dataDir, 'providers.json');
-  fs.writeFileSync(providersPath, JSON.stringify(providersFile, null, 2) + '\n');
-  console.log(`✅ ${providersPath}`);
+  try {
+    fs.writeFileSync(configTmpPath, JSON.stringify(config, null, 2) + '\n');
+    fs.renameSync(configTmpPath, configPath);
+    console.log(`✅ ${configPath}`);
+  } catch (e: any) {
+    console.error(`❌ Failed to write config.json: ${e.message}`);
+    writeOk = false;
+  }
 
-  const opencodePath = path.join(dataDir, 'opencode.json');
-  const opencodeTemplate = getTemplatePath('opencode.template.json');
-  if (fs.existsSync(opencodeTemplate)) {
-    fs.writeFileSync(opencodePath, fs.readFileSync(opencodeTemplate, 'utf-8'));
-    console.log(`✅ ${opencodePath}`);
+  if (writeOk) {
+    try {
+      const providersFile: any = { providers, defaultModel, modelAliases: config.modelAliases };
+      const providersPath = path.join(dataDir, 'providers.json');
+      fs.writeFileSync(providersTmpPath, JSON.stringify(providersFile, null, 2) + '\n');
+      fs.renameSync(providersTmpPath, providersPath);
+      console.log(`✅ ${providersPath}`);
+    } catch (e: any) {
+      console.error(`❌ Failed to write providers.json: ${e.message}`);
+      console.error('⚠️  config.json was written successfully, but providers.json failed.');
+      console.error('   Please re-run "imtoagent setup" to fix.');
+      writeOk = false;
+    }
+  }
+
+  if (writeOk) {
+    const opencodePath = path.join(dataDir, 'opencode.json');
+    const opencodeTemplate = getTemplatePath('opencode.template.json');
+    if (fs.existsSync(opencodeTemplate)) {
+      fs.writeFileSync(opencodePath, fs.readFileSync(opencodeTemplate, 'utf-8'));
+      console.log(`✅ ${opencodePath}`);
+    }
   }
 
   fs.mkdirSync(path.join(dataDir, 'sessions'), { recursive: true });
