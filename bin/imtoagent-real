@@ -14,6 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 import { spawn, execSync } from 'child_process';
 import { getDataDir } from '../modules/utils/paths';
 
@@ -54,6 +55,9 @@ switch (command) {
     await cmdUpdateBackend(backendType);
     break;
   }
+  case 'uninstall':
+    await cmdUninstall();
+    break;
   case undefined: {
     const dataDir = getDataDir();
     const configPath = path.join(dataDir, 'config.json');
@@ -108,6 +112,8 @@ Usage:
   imtoagent update-system       Upgrade imtoagent itself
   imtoagent update-backend      Upgrade current Bot's backend
   imtoagent update-backend TYPE Upgrade specific backend (codex|claude|opencode)
+  imtoagent uninstall           Uninstall imtoagent (keep data by default)
+  imtoagent uninstall --purge   Uninstall and delete all data
 
 Data directory: ${getDataDir()}
 `);
@@ -615,4 +621,109 @@ async function cmdUpdateBackend(backendType?: 'claude' | 'codex' | 'opencode'): 
   if (!result.success) {
     process.exit(1);
   }
+}
+
+// ================================================================
+// uninstall — remove imtoagent
+// ================================================================
+async function cmdUninstall(): Promise<void> {
+  const dataDir = getDataDir();
+  const purge = process.argv.includes('--purge');
+  const force = process.argv.includes('--force') || process.argv.includes('-f');
+
+  console.log('\n🗑️  imtoagent Uninstall');
+  console.log(`   Data directory: ${dataDir}`);
+
+  if (!purge && !force) {
+    console.log('\n   ⚠️  This will uninstall the imtoagent npm package but KEEP your data.');
+    console.log(`   Your data in ${dataDir} will be preserved.`);
+    console.log('');
+    console.log('   To also delete all data, use: imtoagent uninstall --purge');
+    console.log('');
+    console.log('   Continue? [y/N]');
+  } else if (purge && !force) {
+    console.log('\n   🔴 This will DELETE all imtoagent data and the npm package.');
+    console.log(`   The following will be permanently removed:`);
+    console.log(`   - Data directory: ${dataDir}`);
+    console.log('   - npm global package: imtoagent');
+    console.log('');
+    console.log('   Continue? [y/N]');
+  } else {
+    console.log('   --force: skipping confirmation\n');
+  }
+
+  // Confirmation
+  if (!force) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolve) => {
+      rl.question('   > ', resolve);
+    }).finally(() => rl.close());
+    if (answer.trim().toLowerCase() !== 'y' && answer.trim().toLowerCase() !== 'yes') {
+      console.log('❌ Uninstall cancelled.');
+      return;
+    }
+  }
+
+  // Step 1: Stop gateway if running
+  if (fs.existsSync(PID_FILE)) {
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim());
+    try {
+      process.kill(pid, 0);
+      console.log(`⏹  Stopping gateway (PID=${pid})...`);
+      process.kill(pid, 'SIGTERM');
+      for (let i = 0; i < 10; i++) {
+        try { process.kill(pid, 0); await new Promise(r => setTimeout(r, 500)); } catch { break; }
+      }
+      try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch {}
+      console.log('✅ Gateway stopped');
+    } catch {}
+    try { fs.unlinkSync(PID_FILE); } catch {}
+  } else {
+    console.log('ℹ️  Gateway is not running');
+  }
+
+  // Step 2: Remove launchd plist
+  const plistPath = path.join(process.env.HOME || '', 'Library', 'LaunchAgents', 'com.imtoagent.gateway.plist');
+  if (fs.existsSync(plistPath)) {
+    try {
+      execSync(`launchctl unload "${plistPath}" 2>/dev/null`, { encoding: 'utf-8' });
+      console.log('⏹  Launchd service unloaded');
+    } catch {}
+    try {
+      fs.unlinkSync(plistPath);
+      console.log('🗑️  Launchd plist removed');
+    } catch {}
+  } else {
+    console.log('ℹ️  No launchd service configured');
+  }
+
+  // Step 3: Uninstall npm package
+  console.log('\n📦 Uninstalling npm package...');
+  try {
+    execSync('npm uninstall -g imtoagent', {
+      encoding: 'utf-8',
+      stdio: 'inherit',
+      timeout: 30000,
+    });
+    console.log('✅ npm package uninstalled');
+  } catch (e: any) {
+    console.error(`⚠️  npm uninstall may have failed: ${e.message}`);
+  }
+
+  // Step 4: Purge data if requested
+  if (purge) {
+    console.log(`\n🔥 Deleting data directory: ${dataDir}`);
+    try {
+      execSync(`rm -rf "${dataDir}"`, { encoding: 'utf-8', timeout: 10000 });
+      console.log('✅ Data directory deleted');
+    } catch (e: any) {
+      console.error(`⚠️  Failed to delete data directory: ${e.message}`);
+      console.error(`   Please remove manually: rm -rf "${dataDir}"`);
+    }
+  } else {
+    console.log(`\n💾 Data preserved at: ${dataDir}`);
+    console.log('   To remove it later: rm -rf ~/.imtoagent');
+  }
+
+  console.log('\n✅ imtoagent uninstalled');
 }
