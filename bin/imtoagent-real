@@ -61,6 +61,9 @@ switch (command) {
   case 'health':
     await cmdHealth();
     break;
+  case 'autostart':
+    await cmdAutostart();
+    break;
   case undefined: {
     const dataDir = getDataDir();
     const configPath = path.join(dataDir, 'config.json');
@@ -118,6 +121,9 @@ Usage:
   imtoagent uninstall           Uninstall imtoagent (keep data by default)
   imtoagent uninstall --purge   Uninstall and delete all data
   imtoagent health              Run comprehensive health check
+  imtoagent autostart enable    Enable auto-start on login (launchd)
+  imtoagent autostart disable   Disable auto-start
+  imtoagent autostart status    Check auto-start status
 
 Data directory: ${getDataDir()}
 `);
@@ -926,6 +932,151 @@ async function cmdHealth(): Promise<void> {
   } else {
     if (errorCount > 0) console.log(`   ❌ ${errorCount} error(s)`);
     if (warnCount > 0) console.log(`   ⚠️  ${warnCount} warning(s)`);
+  }
+  console.log();
+}
+
+// ================================================================
+// autostart — launchd integration (macOS only)
+// ================================================================
+async function cmdAutostart(): Promise<void> {
+  const subcommand = process.argv[3];
+  const home = process.env.HOME || '';
+  const plistDir = path.join(home, 'Library', 'LaunchAgents');
+  const plistPath = path.join(plistDir, 'com.imtoagent.gateway.plist');
+
+  if (process.platform !== 'darwin') {
+    console.error('❌ autostart is only supported on macOS (launchd)');
+    process.exit(1);
+  }
+
+  switch (subcommand) {
+    case 'enable':
+      await cmdAutostartEnable(plistPath, plistDir, home);
+      break;
+    case 'disable':
+      await cmdAutostartDisable(plistPath);
+      break;
+    case 'status':
+      await cmdAutostartStatus(plistPath);
+      break;
+    default:
+      console.log('Usage:');
+      console.log('  imtoagent autostart enable    Enable auto-start on login');
+      console.log('  imtoagent autostart disable   Disable auto-start');
+      console.log('  imtoagent autostart status    Check auto-start status');
+  }
+}
+
+async function cmdAutostartEnable(plistPath: string, plistDir: string, home: string): Promise<void> {
+  const dataDir = getDataDir();
+  const binPath = execSync('command -v imtoagent', { encoding: 'utf-8', timeout: 3000 }).trim();
+
+  if (!binPath) {
+    console.error('❌ Cannot find imtoagent binary');
+    process.exit(1);
+  }
+
+  // Find node and bun paths for launchd (which has minimal PATH)
+  const nodePath = execSync('which node', { encoding: 'utf-8', timeout: 3000 }).trim();
+  const bunPath = execSync('which bun', { encoding: 'utf-8', timeout: 3000 }).trim();
+  const launchdPATH = `${path.dirname(nodePath)}:${path.dirname(bunPath)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/opt/homebrew/opt/node@24/bin`;
+
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.imtoagent.gateway</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${binPath}</string>
+        <string>daemon</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${dataDir}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>IMTOAGENT_HOME</key>
+        <string>${dataDir}</string>
+        <key>PATH</key>
+        <string>${launchdPATH}</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>${path.join(dataDir, 'logs', 'launchd.log')}</string>
+    <key>StandardErrorPath</key>
+    <string>${path.join(dataDir, 'logs', 'launchd-error.log')}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+`;
+
+  fs.mkdirSync(plistDir, { recursive: true });
+  fs.writeFileSync(plistPath, plist);
+  console.log(`✅ Plist written: ${plistPath}`);
+
+  // Unload existing (if any) then reload
+  try { execSync(`launchctl unload "${plistPath}" 2>/dev/null`, { encoding: 'utf-8' }); } catch {}
+
+  try {
+    execSync(`launchctl load "${plistPath}"`, { encoding: 'utf-8', timeout: 5000 });
+    console.log('✅ launchd service loaded');
+  } catch (e: any) {
+    console.error(`⚠️  launchctl load failed: ${e.message}`);
+    console.error('   Plist written. Manual: launchctl load ' + plistPath);
+  }
+
+  console.log(`\n📌 Auto-start enabled. Gateway starts on login.`);
+  console.log(`   Logs: ${path.join(dataDir, 'logs', 'launchd.log')}`);
+}
+
+async function cmdAutostartDisable(plistPath: string): Promise<void> {
+  if (!fs.existsSync(plistPath)) {
+    console.log('ℹ️  No autostart configured');
+    return;
+  }
+
+  try {
+    execSync(`launchctl unload "${plistPath}" 2>/dev/null`, { encoding: 'utf-8', timeout: 5000 });
+    console.log('✅ launchd service unloaded');
+  } catch {
+    console.log('ℹ️  Service was not loaded');
+  }
+
+  try {
+    fs.unlinkSync(plistPath);
+    console.log('✅ Plist removed');
+  } catch (e: any) {
+    console.error(`⚠️  Failed to remove plist: ${e.message}`);
+  }
+
+  console.log('\n📌 Auto-start disabled');
+}
+
+async function cmdAutostartStatus(plistPath: string): Promise<void> {
+  const exists = fs.existsSync(plistPath);
+  console.log(`\n📌 Autostart Status`);
+  console.log(`   Plist file: ${plistPath}`);
+  console.log(`   Installed: ${exists ? '✅ Yes' : '❌ No'}`);
+
+  if (exists) {
+    try {
+      const out = execSync(`launchctl list | grep com.imtoagent`, { encoding: 'utf-8', timeout: 3000 }).trim();
+      console.log(`   Running: ${out ? '✅ Yes' : '❌ No (plist exists but not loaded)'}`);
+      if (out) console.log(`   ${out}`);
+    } catch {
+      console.log(`   Running: ❌ No`);
+    }
   }
   console.log();
 }
