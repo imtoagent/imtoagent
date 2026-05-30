@@ -239,6 +239,9 @@ echo $PID`;
     process.exit(1);
   }
 
+  // Non-blocking version check
+  checkForUpdates().then(printUpdateHint).catch(() => {});
+
   // Explicitly exit — Bun may keep event loop alive due to inherited stdio
   process.exit(0);
 }
@@ -1079,4 +1082,87 @@ async function cmdAutostartStatus(plistPath: string): Promise<void> {
     }
   }
   console.log();
+}
+
+// ================================================================
+// version-check — non-blocking npm registry check
+// ================================================================
+
+/**
+ * Check if a newer version is available on npm.
+ * Returns null if check fails or no update available.
+ * Caches result for 24 hours.
+ */
+async function checkForUpdates(): Promise<string | null> {
+  const dataDir = getDataDir();
+  const cacheFile = path.join(dataDir, '.last-version-check');
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+  const currentVer = pkg.version;
+
+  // Check cache (24h TTL)
+  try {
+    if (fs.existsSync(cacheFile)) {
+      const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
+      const ageMs = Date.now() - cached.timestamp;
+      if (ageMs < 24 * 60 * 60 * 1000) {
+        // Cache hit — return stored result
+        if (cached.latest && cached.latest !== currentVer) {
+          return cached.latest;
+        }
+        return null;
+      }
+    }
+  } catch {}
+
+  // Fetch from npm registry (3s timeout, npmmirror for China)
+  try {
+    const http = await import('http');
+    const https = await import('https');
+
+    const fetchJson = (url: string): Promise<any> => {
+      return new Promise((resolve, reject) => {
+        const client = url.startsWith('https') ? https : http;
+        const req = client.get(url, { timeout: 3000 }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try { resolve(JSON.parse(data)); } catch { reject(new Error('parse error')); }
+          });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      });
+    };
+
+    // Try npmmirror first (China-friendly), fallback to npmjs
+    let result: any;
+    try {
+      result = await fetchJson('https://registry.npmmirror.com/imtoagent');
+    } catch {
+      result = await fetchJson('https://registry.npmjs.org/imtoagent');
+    }
+
+    const latest = result['dist-tags']?.latest;
+    if (latest && latest !== currentVer) {
+      // Cache the result
+      fs.writeFileSync(cacheFile, JSON.stringify({ latest, timestamp: Date.now() }));
+      return latest;
+    }
+
+    // Cache "no update" result too
+    fs.writeFileSync(cacheFile, JSON.stringify({ latest: currentVer, timestamp: Date.now() }));
+    return null;
+  } catch {
+    // Silently fail — non-blocking
+    return null;
+  }
+}
+
+/** Print version update hint if available */
+function printUpdateHint(latestVer: string | null): void {
+  if (latestVer) {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+    console.log(`\n⬆️  New version available: ${pkg.version} → ${latestVer}`);
+    console.log(`   Upgrade: imtoagent update-system`);
+  }
 }
