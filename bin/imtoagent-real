@@ -58,6 +58,9 @@ switch (command) {
   case 'uninstall':
     await cmdUninstall();
     break;
+  case 'health':
+    await cmdHealth();
+    break;
   case undefined: {
     const dataDir = getDataDir();
     const configPath = path.join(dataDir, 'config.json');
@@ -114,6 +117,7 @@ Usage:
   imtoagent update-backend TYPE Upgrade specific backend (codex|claude|opencode)
   imtoagent uninstall           Uninstall imtoagent (keep data by default)
   imtoagent uninstall --purge   Uninstall and delete all data
+  imtoagent health              Run comprehensive health check
 
 Data directory: ${getDataDir()}
 `);
@@ -726,4 +730,202 @@ async function cmdUninstall(): Promise<void> {
   }
 
   console.log('\n✅ imtoagent uninstalled');
+}
+
+// ================================================================
+// health — comprehensive health check
+// ================================================================
+async function cmdHealth(): Promise<void> {
+  const dataDir = getDataDir();
+  const configPath = path.join(dataDir, 'config.json');
+  const logFile = path.join(dataDir, 'logs', 'imtoagent.log');
+
+  console.log(`\n🔍 imtoagent Health Check`);
+  console.log(`   Data directory: ${dataDir}`);
+  console.log(`   Time: ${new Date().toISOString()}\n`);
+
+  let errorCount = 0;
+  let warnCount = 0;
+
+  // ---- 1. Gateway Process ----
+  console.log('── Gateway Process ──');
+  if (fs.existsSync(PID_FILE)) {
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim());
+    try {
+      process.kill(pid, 0);
+      console.log(`   ✅ Running (PID=${pid})`);
+    } catch {
+      console.log(`   ❌ PID file exists but process ${pid} is gone (stale)`);
+      errorCount++;
+    }
+  } else {
+    console.log(`   ⏸  Not running`);
+  }
+
+  // ---- 2. Configuration ----
+  console.log('\n── Configuration ──');
+  if (fs.existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      console.log(`   ✅ config.json parse OK`);
+
+      // Check required fields
+      if (!cfg.bots || !Array.isArray(cfg.bots) || cfg.bots.length === 0) {
+        console.log(`   ⚠️  No bots configured`);
+        warnCount++;
+      } else {
+        console.log(`   ✅ ${cfg.bots.length} Bot(s) configured`);
+        for (const bot of cfg.bots) {
+          const issues: string[] = [];
+          if (!bot.name) issues.push('missing name');
+          if (!bot.im) issues.push('missing IM platform');
+          if (!bot.backend) issues.push('missing backend');
+          if (issues.length > 0) {
+            console.log(`   ⚠️  Bot "${bot.name || '?'}": ${issues.join(', ')}`);
+            warnCount++;
+          } else {
+            console.log(`   ✅ ${bot.name} (${bot.im} + ${bot.backend})`);
+          }
+        }
+      }
+
+      // Check providers.json
+      const providersPath = path.join(dataDir, 'providers.json');
+      if (fs.existsSync(providersPath)) {
+        try {
+          const prov = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
+          console.log(`   ✅ providers.json parse OK`);
+          // Check for placeholder API keys
+          const provStr = JSON.stringify(prov);
+          if (provStr.includes('YOUR_') || provStr.includes('sk-xxx') || provStr.includes('placehold')) {
+            console.log(`   ⚠️  providers.json may contain placeholder API keys`);
+            warnCount++;
+          }
+        } catch {
+          console.log(`   ❌ providers.json parse error`);
+          errorCount++;
+        }
+      } else {
+        console.log(`   ⚠️  providers.json not found`);
+        warnCount++;
+      }
+    } catch {
+      console.log(`   ❌ config.json parse error`);
+      errorCount++;
+    }
+  } else {
+    console.log(`   ❌ config.json not found (run "imtoagent setup")`);
+    errorCount++;
+  }
+
+  // ---- 3. Backend Status ----
+  console.log('\n── Backend Status ──');
+  try {
+    const { checkBackend } = await import('../modules/utils/backend-check');
+    if (fs.existsSync(configPath)) {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const checkedTypes = new Set<string>();
+      for (const bot of cfg.bots || []) {
+        if (bot.backend && ['claude', 'codex', 'opencode'].includes(bot.backend) && !checkedTypes.has(bot.backend)) {
+          checkedTypes.add(bot.backend);
+          const info = checkBackend(bot.backend as any);
+          if (info.installed) {
+            console.log(`   ✅ ${info.label} v${info.version} (${info.installSource})`);
+          } else {
+            console.log(`   ❌ ${info.label} not installed → ${info.installHint}`);
+            errorCount++;
+          }
+        }
+      }
+      if (checkedTypes.size === 0) {
+        console.log(`   ℹ️  No backends to check`);
+      }
+    }
+  } catch {
+    console.log(`   ⚠️  Backend check skipped`);
+    warnCount++;
+  }
+
+  // ---- 4. Proxy Port ----
+  console.log('\n── Proxy Port (:18899) ──');
+  try {
+    const net = await import('net');
+    const checkPort = (port: number): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const socket = new net.Socket();
+        socket.setTimeout(2000);
+        socket.on('connect', () => { socket.destroy(); resolve(true); });
+        socket.on('error', () => resolve(false));
+        socket.on('timeout', () => { socket.destroy(); resolve(false); });
+        socket.connect(port, '127.0.0.1');
+      });
+    };
+    const reachable = await checkPort(18899);
+    if (reachable) {
+      console.log(`   ✅ Port 18899 is reachable`);
+    } else {
+      // Check if port is in use by another process
+      try {
+        const lsofOut = execSync(`lsof -i :18899 2>/dev/null`, { encoding: 'utf-8', timeout: 3000 }).trim();
+        if (lsofOut) {
+          console.log(`   ❌ Port 18899 is occupied by another process:`);
+          lsofOut.split('\n').forEach(line => console.log(`      ${line}`));
+        } else {
+          console.log(`   ⏸  Port 18899 is free (gateway not running)`);
+        }
+      } catch {
+        console.log(`   ⏸  Port 18899 is free (gateway not running)`);
+      }
+    }
+  } catch {
+    console.log(`   ⚠️  Port check failed`);
+    warnCount++;
+  }
+
+  // ---- 5. Recent Log Errors ----
+  console.log('\n── Recent Log Errors ──');
+  if (fs.existsSync(logFile)) {
+    const stats = fs.statSync(logFile);
+    const size = stats.size > 1024 * 1024
+      ? (stats.size / (1024 * 1024)).toFixed(1) + ' MB'
+      : (stats.size / 1024).toFixed(1) + ' KB';
+    console.log(`   Log: ${size}`);
+
+    // Read last 50 lines looking for ERROR/WARN
+    try {
+      const content = fs.readFileSync(logFile, 'utf-8');
+      const lines = content.split('\n');
+      const recent = lines.slice(-50);
+      const errors = recent.filter(l => l.includes('ERROR') || l.includes('[error]'));
+      const warns = recent.filter(l => l.includes('WARN') || l.includes('[warn]'));
+
+      if (errors.length > 0) {
+        console.log(`   ❌ ${errors.length} recent ERROR(s):`);
+        for (const line of errors.slice(-3)) {
+          console.log(`      ${line.trim().slice(0, 120)}`);
+        }
+        errorCount++;
+      } else {
+        console.log(`   ✅ No recent errors`);
+      }
+      if (warns.length > 0 && errors.length === 0) {
+        console.log(`   ℹ️  ${warns.length} recent warning(s) (non-critical)`);
+      }
+    } catch {
+      console.log(`   ⚠️  Could not read log file`);
+      warnCount++;
+    }
+  } else {
+    console.log(`   ℹ️  No log file yet`);
+  }
+
+  // ---- Summary ----
+  console.log('\n── Summary ──');
+  if (errorCount === 0 && warnCount === 0) {
+    console.log(`   ✅ All checks passed!`);
+  } else {
+    if (errorCount > 0) console.log(`   ❌ ${errorCount} error(s)`);
+    if (warnCount > 0) console.log(`   ⚠️  ${warnCount} warning(s)`);
+  }
+  console.log();
 }
