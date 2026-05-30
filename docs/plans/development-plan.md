@@ -221,7 +221,7 @@ imtoagent validate
 ```
 P0（立刻做）: 1.1 uninstall → 1.2 setup 审查修复 → 1.3 health
 P1（已完成）: 2.1 autostart → 2.2 版本检查
-P2（进行中）: 3.4 doctor ✅ → 3.1 自然语言配置管理 → 3.2 Bot 权限
+P2（进行中）: 3.4 doctor ✅ → 3.1 config CRUD ✅ → 3.2 Bot 权限
 P2（核心）  : 3.1 自然语言配置管理 + 3.2 Bot 权限（3.4 doctor ✅ 已完成）
 P3（持续）  : 4.1 测试 → 4.2 日志 → 4.3 validate
 ```
