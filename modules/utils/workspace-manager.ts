@@ -145,19 +145,39 @@ export class WorkspaceManager {
   /**
    * 检查路径是否允许该 Bot 访问。
    *
+   * 所有模式：禁止访问 ~/.imtoagent/ 下的配置敏感文件（配置保护）。
    * 沙盒模式：路径必须在 Bot 的工作空间范围内（或子目录）。
-   * 全局模式：不做限制，允许访问任意路径（信任用户配置的全局目录）。
+   * 全局模式：不做其他限制，允许访问任意路径（信任用户配置的全局目录）。
    *
    * 返回 true 表示允许，false 表示拒绝。
    */
   isPathAllowed(botKey: string, targetPath: string): boolean {
-    // 全局模式：不做边界限制
+    const resolved = path.resolve(targetPath);
+
+    // ⛔ 配置保护：禁止访问 ~/.imtoagent/ 下的敏感配置文件
+    // 白名单：允许访问 workspaces/ 和 soul/ 目录
+    const dataDir = path.resolve(getDataDir());
+    if (resolved === dataDir || resolved.startsWith(dataDir + path.sep)) {
+      const wsDir = path.resolve(this.workspacesDir);
+      const soulGlob = path.resolve(dataDir, 'soul');
+      // 允许：workspaces/ 下的内容、全局模式下的 soul/
+      if (resolved === wsDir || resolved.startsWith(wsDir + path.sep)) {
+        // OK — workspace 路径在工作空间范围内（沙盒模式下还需额外检查）
+      } else if (this.config.mode === 'global' &&
+                 (resolved === soulGlob || resolved.startsWith(soulGlob + path.sep))) {
+        // OK — 全局模式下的 soul 目录
+      } else {
+        // 其他 ~/.imtoagent/ 路径一律禁止（config.json、providers.json、bot-ids.json 等）
+        return false;
+      }
+    }
+
+    // 全局模式：配置保护已通过，不做其他边界限制
     if (this.config.mode === 'global') {
       return true;
     }
 
     // 沙盒模式：路径必须在工作空间内
-    const resolved = path.resolve(targetPath);
     const wsPath = this.getWorkspacePath(botKey);
     const resolvedWs = path.resolve(wsPath);
 

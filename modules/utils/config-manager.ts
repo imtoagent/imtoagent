@@ -108,8 +108,9 @@ export async function cmdConfigList(): Promise<void> {
   console.log(`\n📋 Configured Bots (${bots.length}):\n`);
   for (const bot of bots) {
     const botId = bot.id ? ` [${bot.id.slice(0, 8)}]` : '';
+    const adminTag = bot.isAdmin ? ' ⭐' : '';
     const cwd = bot.cwd ? ` (cwd: ${bot.cwd})` : '';
-    console.log(`   • ${bot.name}${botId}`);
+    console.log(`   • ${bot.name}${adminTag}${botId}`);
     console.log(`     IM: ${bot.im || "(not set)"} | Backend: ${bot.backend}${cwd}`);
   }
   console.log();
@@ -135,6 +136,7 @@ export async function cmdConfigShow(name: string): Promise<void> {
   console.log(`   Backend:   ${bot.backend}`);
   console.log(`   App ID:    ${maskSecret(bot.appId)}`);
   console.log(`   App Secret: ${maskSecret(bot.appSecret)}`);
+  console.log(`   Admin:     ${bot.isAdmin ? '✅ Yes' : '❌ No'}`);
   if (bot.cwd) console.log(`   CWD:       ${bot.cwd}`);
   console.log();
 }
@@ -228,6 +230,7 @@ export async function cmdConfigAdd(): Promise<void> {
     appId,
     appSecret: appSecret || '',
     backend,
+    isAdmin: false,  // 通过 CLI 添加的 Bot 默认非 admin
     ...(cwd ? { cwd } : {}),
   };
 
@@ -296,9 +299,10 @@ export async function cmdConfigModify(name: string): Promise<void> {
   console.log('   3. App Secret');
   console.log('   4. Backend');
   console.log('   5. Working directory');
-  console.log('   6. Quit');
+  console.log(`   6. Admin status (${bot.isAdmin ? 'ON' : 'OFF'})`);
+  console.log('   7. Quit');
 
-  const choice = await prompt('\n   Choice (1-6): ');
+  const choice = await prompt('\n   Choice (1-7): ');
 
   switch (choice) {
     case '1': {
@@ -329,7 +333,16 @@ export async function cmdConfigModify(name: string): Promise<void> {
       else if (newCwd === '') delete bot.cwd;
       break;
     }
-    case '6':
+    case '6': {
+      const current = bot.isAdmin ? 'ON' : 'OFF';
+      const newVal = await prompt(`   Toggle admin status (current: ${current}, yes/no): `);
+      if (newVal && (newVal.toLowerCase() === 'yes' || newVal.toLowerCase() === 'y')) {
+        bot.isAdmin = !bot.isAdmin;
+        console.log(`   Admin status → ${bot.isAdmin ? 'ON' : 'OFF'}`);
+      }
+      break;
+    }
+    case '7':
       console.log('   No changes.');
       rl.close();
       return;

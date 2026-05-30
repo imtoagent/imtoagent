@@ -461,6 +461,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
       name: botName,
       backend,
       cwd: cwd || os.homedir(),
+      isAdmin: bots.length === 0,  // 第一个 Bot 为 admin，后续为 false
     };
 
     // Feishu needs appId + appSecret
