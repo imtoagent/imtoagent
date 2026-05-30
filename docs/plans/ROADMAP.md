@@ -1,6 +1,6 @@
 # IMtoAgent Development Roadmap
 
-> Last updated: 2026-05-30 | Phase 6 complete | Current version: 0.3.24
+> Last updated: 2026-05-30 | Phase 7 complete | Current version: 0.3.26
 
 ---
 
@@ -14,18 +14,20 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 
 ---
 
-## 2. Current Status (v0.3.24)
+## 2. Current Status (v0.3.26)
 
 ### ✅ What's Done
 
 | Area | Details |
 |------|---------|
-| **IM Adapters** | Feishu (738L), Telegram (639L), WeChat (1094L), WeCom (495L) |
+| **IM Adapters** | Feishu (731L), Telegram (639L), WeChat (1094L), WeCom (603L) |
 | **Agent Backends** | Claude Code (SDK), Codex (app-server v2 + exec fallback), OpenCode (HTTP API) |
 | **Unified Proxy** | Port `:18899` only — Anthropic Proxy handles all routing |
-| **CLI Commands** | 15 commands + subcommands (see `imtoagent --help`) |
-| **Bot Config** | 4 bots configured (ClaudeBot, CodexBot, OpenCodeBot, TelegramBot) |
-| **Soul Injection** | Per-Bot identity/profile/rules/skills/workspace files |
+| **CLI Commands** | 26 commands + subcommands (see `imtoagent --help`) |
+| **Tests** | 27 tests across 2 test suites (config-manager, workspace-manager), 0 failures |
+| **Code Size** | 14,315 lines across 35 .ts files |
+| **Bot Config** | Configured via `~/.imtoagent/config.json` |
+| **Soul Injection** | Per-Bot identity/profile/rules/skills/workspace files + CLI reference |
 | **i18n** | Full English translation across all modules |
 | **IM Registry** | Factory pattern — add IM with one line, no Bot constructor changes |
 
@@ -38,13 +40,14 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | Phase 3: Multi-IM ✅ | Telegram + WeChat + WeCom adapters, i18n | 0.3.0–0.3.4 |
 | Phase 4: Install Flow ✅ | Setup wizard (raw mode), start/run/daemon, health, uninstall | 0.3.5–0.3.23 |
 | Phase 5: Ops ✅ | autostart (launchd), version check, doctor, config CRUD, WeChat sandbox fix | 0.3.24 |
-| Phase 6: Isolation + NLP Config ✅ | Workspace isolation, isAdmin permission, config protection, NLP config via soul CLI injection | 0.4.0 |
+| Phase 6: Isolation + NLP Config ✅ | Workspace isolation, isAdmin permission, config protection, NLP config via soul CLI injection | 0.3.25 |
+| Phase 7: Quality ✅ | Test framework (bun:test), `logs` command, `validate` CLI | 0.3.26 |
 
 ### 🔴 What's Next
 
 | Phase | Priority | Content | Status |
 |-------|----------|---------|--------|
-| Phase 7: Quality | P3 | Test framework, log commands, validate CLI | ❌ Not started |
+| Phase 8: Observability | TBD | Structured logging, lightweight dashboard, session management CLI | ❌ Not started |
 
 ---
 
@@ -57,10 +60,10 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | `imtoagent start` | Start gateway in background (returns immediately) |
 | `imtoagent run` | Start gateway in foreground (Ctrl+C to stop) |
 | `imtoagent stop` | Stop gateway |
-| `imtoagent status` | Check running status |
+| `imtoagent status` | Check running status (process + config + log size) |
 | `imtoagent restore` | Hot reload (SIGHUP) |
 | `imtoagent daemon` | Foreground daemon with auto-restart (for launchd/systemd) |
-| `imtoagent update-system` | Upgrade imtoagent itself |
+| `imtoagent update-system` | Upgrade imtoagent itself (npm/brew/manual auto-detect) |
 | `imtoagent update-backend` | Upgrade current Bot's backend |
 | `imtoagent update-backend TYPE` | Upgrade specific backend (codex\|claude\|opencode) |
 | `imtoagent uninstall` | Uninstall (keep data by default) |
@@ -70,12 +73,16 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | `imtoagent config` | Manage Bot configuration |
 | `imtoagent config list` | List all Bots |
 | `imtoagent config show NAME` | Show Bot details |
-| `imtoagent config add` | Add a new Bot |
+| `imtoagent config add` | Add a new Bot (interactive) |
 | `imtoagent config remove NAME` | Remove a Bot |
 | `imtoagent config modify NAME` | Modify Bot settings |
 | `imtoagent autostart enable` | Enable auto-start on login (launchd) |
 | `imtoagent autostart disable` | Disable auto-start |
 | `imtoagent autostart status` | Check auto-start status |
+| `imtoagent logs` | View gateway logs (default: last 50 lines) |
+| `imtoagent logs -n N` | View last N lines |
+| `imtoagent logs -f` | Tail -f mode (real-time follow) |
+| `imtoagent validate` | Validate config.json (JSON + fields + workspace checks) |
 
 ---
 
@@ -234,14 +241,14 @@ Sandbox mode:
 | `doctor` | Anytime | Check config health, auto-fix |
 | NLP config | Runtime | Modify config via IM chat |
 
-## 6. Expected Version Schedule
+## 6. Version History
 
 | Version | Content | Status |
 |---------|---------|--------|
 | 0.3.23 | uninstall + setup fixes + health | ✅ Released |
-| 0.3.24 | autostart + version check + doctor + config CRUD | ✅ Current |
-| 0.4.0 | Workspace isolation + isAdmin + config protection + NLP config | ✅ Complete |
-| 0.4.1 | Test framework + log commands + validate CLI | ❌ Not started |
+| 0.3.24 | autostart + version check + doctor + config CRUD | ✅ Released |
+| 0.3.25 | Workspace isolation + isAdmin + config protection + NLP config | ✅ Released |
+| 0.3.26 | Test framework + logs + validate CLI | ✅ Released (Current) |
 
 ## 7. Key Decisions
 
@@ -250,8 +257,9 @@ Sandbox mode:
 | Setup wizard simplified? | ❌ No, focus on bug-free instead | 2026-05-30 |
 | Quick mode needed? | ❌ Not essential (API keys require manual entry) | 2026-05-30 |
 | NLP config approach | ✅ Soul CLI injection — no code needed, just inject command reference into Agent context | 2026-05-30 |
-| Bot permission scope | ✅ 只控制配置修改权限 + workspace 边界，不做事级沙盒 | 2026-05-30 |
-| NLP config approach | ✅ Soul CLI injection — 不用写意图识别代码，注入命令参考即可 | 2026-05-30 |
+| Bot permission scope | ✅ 只控制配置修改权限 + workspace 边界，不做 OS 级沙盒 | 2026-05-30 |
+| Test strategy | ✅ bun:test + tests/ directory (excluded from npm publish) | 2026-05-30 |
+| GitHub push over HTTPS | ⚠️ 本机 HTTPS 认证到 GitHub 有间歇性超时，SSH (ssh.github.com:443) 更可靠 | 2026-05-30 |
 
 ---
 
