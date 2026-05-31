@@ -321,10 +321,12 @@ export class AgentRuntime {
 
         if (action.type === 'fallback') {
           console.log(`[Runtime] Fallback to ${action.adapter}`);
-          // Phase 2 实现 fallback 逻辑
+          // Call _processMessageInternal directly to avoid enqueue deadlock:
+          // the outer processMessage already holds the chatId queue lock,
+          // so re-entering processMessage would deadlock on same chatId.
           const fallbackAdapter = this.adapters.get(action.adapter);
           if (fallbackAdapter) {
-            return this.processMessage(ctx, fallbackAdapter, botName);
+            return this._processMessageInternal(ctx, fallbackAdapter, botName);
           }
         }
 
