@@ -172,7 +172,6 @@ export class AgentRuntime {
       try {
         // 1. 获取 session
         const session = await this.config.sessionManager.getOrCreate(
-          botName,
           ctx.chatId,
           ctx.userId
         );
@@ -284,7 +283,7 @@ export class AgentRuntime {
         }
 
         // 持久化 session
-        this.config.sessionManager.persist(botName, session);
+        this.config.sessionManager.persist(session.chatId, session);
 
         // 检查 Agent 自主重启信号（在 reply 之后检测，确保消息已发送）
         const signal = consumeRestartSignal();
@@ -337,12 +336,11 @@ export class AgentRuntime {
         // 持久化 session（即使失败也要保存统计）
         try {
           const session = await this.config.sessionManager.getOrCreate(
-            botName,
             ctx.chatId,
             ctx.userId
           );
           session.running = false;
-          this.config.sessionManager.persist(botName, session);
+          this.config.sessionManager.persist(session.chatId, session);
         } catch {}
 
         return { restart: false }; // 不再重试
