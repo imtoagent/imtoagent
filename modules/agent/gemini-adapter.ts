@@ -1,57 +1,257 @@
 // ================================================================
 // Gemini CLI Adapter — implements AgentAdapter interface
 // ================================================================
+// 职责：对接 Gemini CLI (google/gemini-cli)，将 AgentInput 转换为 AgentOutput
+// 不负责：session 管理、统计、格式化、错误处理（由 SDK Runtime 接管）
+// ================================================================
 
+import { spawn, ChildProcess } from 'child_process';
 import type { AgentAdapter, AgentInput, AgentOutput } from '../core/types';
-import { GeminiClient } from './gemini-client';
+import { buildAttachmentHint } from '../core/types';
+import { buildSystemPrompt } from '../prompt-builder';
+
+// ================================================================
+// GeminiAdapter 上下文
+// ================================================================
+
+export interface GeminiAdapterContext {
+  /** 用于构建 system prompt（IM 能力 + bot 名 + soul） */
+  imModule?: { getCapabilities(): any } | null;
+  botName: string;
+  /** 模型别名映射（flash-pro/flash-lite → 实际模型名） */
+  modelAliases: Record<string, string>;
+}
+
+// ================================================================
+// 工具函数
+// ================================================================
+
+function resolveAlias(modelSpec: string): string {
+  const i = modelSpec.indexOf('/');
+  return i >= 0 ? modelSpec.slice(i + 1) : modelSpec;
+}
+
+/**
+ * Extract tool calls from Gemini CLI output.
+ * Gemini CLI outputs tool executions as structured text blocks.
+ */
+function extractToolCalls(text: string): Array<{ name: string; summary: string }> {
+  const results: Array<{ name: string; summary: string }> = [];
+  // Match shell code blocks (bash/sh commands)
+  const codeBlockRe = /```(?:bash|sh|shell)?\n([\s\S]*?)```/g;
+  let match;
+  while ((match = codeBlockRe.exec(text)) !== null) {
+    const cmd = match[1].trim().split('\n')[0].slice(0, 60);
+    if (cmd.length > 0 && !cmd.startsWith('#')) {
+      results.push({ name: 'Bash', summary: cmd });
+    }
+  }
+  return results;
+}
+
+// ================================================================
+// GeminiClient — 管理 gemini 子进程
+// ================================================================
+
+interface GeminiRunOptions {
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+}
+
+interface GeminiRunResult {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  error: Error | null;
+}
+
+/**
+ * Run gemini CLI subprocess with proper lifecycle management.
+ */
+function runGeminiProcess(options: GeminiRunOptions, cancelSignal?: AbortSignal): Promise<GeminiRunResult> {
+  return new Promise((resolve) => {
+    let resolved = false;
+    let stdout = '';
+    let stderr = '';
+
+    const child: ChildProcess = spawn('gemini', options.args, {
+      cwd: options.cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: options.env,
+    });
+
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    child.on('close', (code) => {
+      if (resolved) return;
+      resolved = true;
+      resolve({ stdout, stderr, code, error: null });
+    });
+
+    child.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
+      resolve({ stdout, stderr, code: null, error: err });
+    });
+
+    if (cancelSignal) {
+      cancelSignal.addEventListener('abort', () => {
+        if (!resolved) {
+          child.kill('SIGTERM');
+          resolved = true;
+          resolve({ stdout, stderr, code: -1, error: new Error('Cancelled by user') });
+        }
+      });
+    }
+  });
+}
+
+// ================================================================
+// GeminiAdapter — 实现 AgentAdapter
+// ================================================================
 
 export class GeminiAdapter implements AgentAdapter {
   readonly name = 'gemini';
-  private client: GeminiClient;
+  private ctx: GeminiAdapterContext;
+  private activeControllers: AbortController[] = [];
+  /** 单次调用最大超时（毫秒），0 = 不限制 */
+  static MAX_CALL_TIMEOUT_MS = 15 * 60 * 1000; // 15 分钟
 
-  constructor() {
-    this.client = new GeminiClient();
+  constructor(ctx: GeminiAdapterContext) {
+    this.ctx = ctx;
   }
 
+  /**
+   * 清理所有活跃的子进程。
+   * 在 gracefulShutdown 时由 index.ts 调用。
+   */
+  cleanup(): void {
+    const count = this.activeControllers.length;
+    if (count > 0) {
+      console.log(`[GeminiAdapter] cleanup: aborting ${count} active request(s)`);
+      for (const ctrl of this.activeControllers) {
+        try { ctrl.abort(); } catch {}
+      }
+      this.activeControllers = [];
+    }
+  }
+
+  /**
+   * 处理单条用户消息
+   */
   async handleMessage(input: AgentInput): Promise<AgentOutput> {
-    const { text, session, workingDir, systemPrompt, cancelSignal, sendProgress } = input;
+    const { text, session, workingDir, model, systemPrompt: overrideSystemPrompt } = input;
+    const sessionAny = session as any; // 向后兼容
+
+    // 创建 AbortController 并注册（用于超时 + shutdown 清理）
+    const abortCtrl = new AbortController();
+    this.activeControllers.push(abortCtrl);
+
+    // 超时保护
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    if (GeminiAdapter.MAX_CALL_TIMEOUT_MS > 0) {
+      timeoutId = setTimeout(() => {
+        console.log(`[GeminiAdapter] ⏰ Timeout (${GeminiAdapter.MAX_CALL_TIMEOUT_MS / 1000}s), aborting request`);
+        abortCtrl.abort();
+      }, GeminiAdapter.MAX_CALL_TIMEOUT_MS);
+    }
+
+    // 确定模型名
+    const modelName = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
+    const aliases = this.ctx.modelAliases;
+
+    // 附件信息注入：让 Agent 知道用户发送了附件及本地路径
+    let effectiveText = text;
+    if (input.attachments && input.attachments.length > 0) {
+      effectiveText = buildAttachmentHint(input.attachments) + '\n\n---\n\n' + effectiveText;
+    }
+
+    // Gemini CLI 环境变量
+    const customEnv: Record<string, string> = {
+      ...process.env,
+      GOOGLE_GENERATIVE_AI_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '',
+      GEMINI_MODEL: resolveAlias(aliases.gemini || modelName),
+    };
+
+    // 构建 Gemini CLI 参数
+    const args = ['--model', resolveAlias(aliases.gemini || modelName), '--prompt', effectiveText];
+
+    // System Prompt（优先使用传入的，否则自行构建）
+    const systemPrompt = overrideSystemPrompt || buildSystemPrompt({
+      imModule: this.ctx.imModule || null,
+      botName: this.ctx.botName,
+    });
+    if (systemPrompt) {
+      args.unshift('--system-instruction', systemPrompt);
+    }
+
+    // Session 管理（gemini CLI 不支持 session resume，但记录 ID 供外部参考）
+    const shouldClear = session.startFresh;
+    session.startFresh = false;
+    if (shouldClear || !session.metadata?.geminiSessionId) {
+      const newId = `gemini-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+      session.metadata.geminiSessionId = newId;
+      sessionAny.geminiSessionId = newId;
+      console.log(`[GeminiAdapter] new session=${newId}`);
+    } else {
+      console.log(`[GeminiAdapter] resuming session=${session.metadata.geminiSessionId}`);
+    }
+
+    console.log(`[GeminiAdapter] run model=${modelName} cwd=${workingDir}`);
 
     try {
-      // Build full prompt with context
-      let fullPrompt = text;
-
-      // Add recent conversation context
-      if (session.recentMessages && session.recentMessages.length > 0) {
-        const context = session.recentMessages.slice(-4).join('\n\n');
-        fullPrompt = `Previous conversation:\n${context}\n\n---\n\nUser: ${text}`;
+      // 发送进度提示
+      if (input.sendProgress) {
+        await input.sendProgress('💭 Gemini is thinking...').catch(() => {});
       }
 
-      // Send progress
-      if (sendProgress) {
-        await sendProgress('💭 Gemini is thinking...');
-      }
-
-      // Run Gemini CLI
-      const result = await this.client.run(fullPrompt, {
-        workingDir,
-        systemPrompt,
-        cancelSignal,
-      });
+      // 执行 Gemini CLI
+      const result = await runGeminiProcess({
+        args,
+        cwd: workingDir,
+        env: customEnv,
+      }, abortCtrl.signal);
 
       if (result.error) {
-        return { error: result.error };
+        if (abortCtrl.signal.aborted) {
+          return { text: '⚠️ Request timed out or cancelled, please try again.' };
+        }
+        return { error: `gemini failed: ${result.error.message}` };
+      }
+
+      if (result.code !== 0) {
+        const errorMsg = result.stderr.trim() || `gemini exited with code ${result.code}`;
+        return { error: errorMsg };
+      }
+
+      const outputText = result.stdout.trim();
+      const toolCalls = extractToolCalls(outputText);
+
+      if (input.sendProgress && toolCalls.length > 0) {
+        const names = toolCalls.map(t => t.name).join(', ');
+        await input.sendProgress(`🔧 Detected: ${names}`).catch(() => {});
       }
 
       return {
-        text: result.text,
-        usage: result.usage || {
-          inputTokens: 0,
+        text: outputText || '✅ Done',
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        usage: {
+          inputTokens: 0, // Gemini CLI doesn't expose token counts
           outputTokens: 0,
         },
       };
 
     } catch (err: any) {
+      if (abortCtrl.signal.aborted) {
+        return { text: '⚠️ Request timed out or cancelled, please try again.' };
+      }
       return { error: err.message || 'Gemini adapter failed' };
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      const idx = this.activeControllers.indexOf(abortCtrl);
+      if (idx >= 0) this.activeControllers.splice(idx, 1);
     }
   }
 
@@ -68,6 +268,8 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   cancel(): void {
-    this.client.kill();
+    for (const ctrl of this.activeControllers) {
+      try { ctrl.abort(); } catch {}
+    }
   }
 }

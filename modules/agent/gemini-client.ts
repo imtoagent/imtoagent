@@ -1,15 +1,18 @@
 // ================================================================
-// Gemini CLI Client — spawn gemini subprocess, stream events
+// Gemini CLI Client — spawn gemini subprocess, stream output
 // ================================================================
-// Similar to Claude Code SDK approach
+// Note: gemini-adapter.ts now handles subprocess management inline.
+// This file is kept for reference and potential future use (e.g.,
+// streaming mode, API-based access without CLI).
 // ================================================================
 
 import { spawn, ChildProcess } from 'child_process';
-import * as readline from 'readline';
 
 export interface GeminiClientOptions {
-  workingDir: string;
+  model: string;
+  prompt: string;
   systemPrompt?: string;
+  workingDir?: string;
   cancelSignal?: AbortSignal;
 }
 
@@ -25,83 +28,61 @@ export interface GeminiOutput {
 
 export class GeminiClient {
   private process: ChildProcess | null = null;
-  private output = '';
   private resolved = false;
 
-  async run(prompt: string, options: GeminiClientOptions): Promise<GeminiOutput> {
-    return new Promise((resolve, reject) => {
-      this.output = '';
+  async run(options: GeminiClientOptions): Promise<GeminiOutput> {
+    return new Promise((resolve) => {
       this.resolved = false;
 
       try {
-        const args = ['--prompt', prompt];
+        const args = ['--model', options.model, '--prompt', options.prompt];
         if (options.systemPrompt) {
           args.unshift('--system-instruction', options.systemPrompt);
         }
 
         this.process = spawn('gemini', args, {
-          cwd: options.workingDir,
+          cwd: options.workingDir || process.cwd(),
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env },
+          env: {
+            ...process.env,
+            GOOGLE_GENERATIVE_AI_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '',
+          },
         });
 
         let stdout = '';
         let stderr = '';
 
-        this.process.stdout?.on('data', (chunk: Buffer) => {
-          stdout += chunk.toString();
-        });
-
-        this.process.stderr?.on('data', (chunk: Buffer) => {
-          stderr += chunk.toString();
-        });
+        this.process.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+        this.process.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
 
         this.process.on('close', (code) => {
           if (this.resolved) return;
           this.resolved = true;
-
           if (code === 0) {
-            resolve({
-              text: stdout.trim(),
-              error: undefined,
-            });
+            resolve({ text: stdout.trim() });
           } else {
-            resolve({
-              text: '',
-              error: stderr.trim() || `gemini exited with code ${code}`,
-            });
+            resolve({ text: '', error: stderr.trim() || `gemini exited with code ${code}` });
           }
         });
 
         this.process.on('error', (err) => {
           if (this.resolved) return;
           this.resolved = true;
-          resolve({
-            text: '',
-            error: `gemini spawn failed: ${err.message}`,
-          });
+          resolve({ text: '', error: `gemini spawn failed: ${err.message}` });
         });
 
-        // Handle cancel signal
         if (options.cancelSignal) {
           options.cancelSignal.addEventListener('abort', () => {
             if (this.process && !this.resolved) {
               this.process.kill('SIGTERM');
               this.resolved = true;
-              resolve({
-                text: this.output,
-                error: 'Cancelled by user',
-              });
+              resolve({ text: stdout, error: 'Cancelled by user' });
             }
           });
         }
-
       } catch (err: any) {
         this.resolved = true;
-        resolve({
-          text: '',
-          error: `gemini launch failed: ${err.message}`,
-        });
+        resolve({ text: '', error: `gemini launch failed: ${err.message}` });
       }
     });
   }
