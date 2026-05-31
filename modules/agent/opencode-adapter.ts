@@ -8,7 +8,9 @@
 
 import type { AgentAdapter, AgentInput, AgentOutput } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import { buildSystemPrompt } from '../prompt-builder';
+import type { McpManager } from '../utils/mcp-manager';
+import type { SkillsManager } from '../utils/skills-manager';
+import type { PromptsManager } from '../utils/prompts-manager';
 import { getDataDir } from '../utils/paths';
 import { getNpmGlobalBin } from '../utils/backend-check';
 import * as fs from 'fs';
@@ -20,8 +22,11 @@ import * as path from 'path';
 // ================================================================
 
 export interface OpenCodeAdapterContext {
-  imModule?: { getCapabilities(): any } | null;
+  imModule?: { getCapabilities(): IMCapabilities } | null;
   botName: string;
+  mcpManager?: McpManager;
+  skillsManager?: SkillsManager;
+  promptsManager?: PromptsManager;
   /** OpenCode Server URL，默认 http://localhost:4096 */
   serverUrl?: string;
   /** 默认模型 */
@@ -35,7 +40,7 @@ export interface OpenCodeAdapterContext {
 interface OcMessagePart {
   type: string;
   text?: string;
-  tool_call?: { name: string; arguments: Record<string, any> };
+  tool_call?: { name: string; arguments: Record<string, unknown> };
   tool_result?: { content: string };
 }
 
@@ -86,7 +91,7 @@ async function ocSendPrompt(
     turn++;
 
     // 构建请求体：首轮带 system prompt，后续轮只带纯文本推进
-    const body: any = {
+    const body: Record<string, unknown> = {
       model: defaultModel,
       parts: [{ type: 'text', text: promptText }],
     };
@@ -106,7 +111,7 @@ async function ocSendPrompt(
       }).finally(() => clearTimeout(timer));
       if (!res.ok) throw new Error(`oc send prompt (turn ${turn}): ${res.status} ${await res.text()}`);
       data = await res.json();
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err?.name === 'AbortError') {
         // 外部取消（/stop）优先于超时
         if (cancelSignal?.aborted) {
@@ -182,7 +187,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 
     const serverUrl = this.ctx.serverUrl || 'http://localhost:4096';
     const defaultModel = this.ctx.defaultModel || { providerID: 'anthropic', modelID: 'claude-sonnet-4-5' };
-    const sessionAny = session as any;
+    const sessionAny = session as Record<string, unknown>;
 
     let effectiveText = text;
 
@@ -210,12 +215,11 @@ export class OpenCodeAdapter implements AgentAdapter {
       console.log(`[OpenCodeAdapter] Created oc session=${sessionAny.ocSessionId.slice(-8)}`);
     }
 
-    // 构建系统提示词
-    const systemPrompt = overrideSystemPrompt || buildSystemPrompt({
-      imModule: this.ctx.imModule || null,
-      botName: this.ctx.botName,
-    });
-    console.log(`[OpenCodeAdapter] 📝 system prompt built (${systemPrompt.length} chars)`);
+    // 系统提示词（统一由 index.ts 注入）
+    const systemPrompt = overrideSystemPrompt;
+    if (systemPrompt) {
+      console.log(`[OpenCodeAdapter] 📝 system prompt (${systemPrompt.length} chars)`);
+    }
 
     // 发送 prompt（多轮循环：自动推进 tool_call → 纯文本响应）
     // 注意：ocSendPrompt 不直接依赖 ctx，由 handleMessage 传入 onProgress 回调
@@ -308,7 +312,7 @@ export async function startOpenCodeServer(): Promise<void> {
         stderr: 'pipe',
       },
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error(`[OpenCodeAdapter] Failed to start opencode serve: ${err.message}`);
     console.error(`  Binary: ${ocBinPath}`);
     console.error(`  Work dir: ${dataDir} (exists: ${fs.existsSync(dataDir)})`);
@@ -317,12 +321,12 @@ export async function startOpenCodeServer(): Promise<void> {
 
   // 后台收集日志
   (async () => {
-    for await (const line of (child.stdout as any)) {
+    for await (const line of child.stdout as NodeJS.AsyncIterable<Uint8Array>) {
       console.log(`[OpenCodeAdapter] ${new TextDecoder().decode(line).trim()}`);
     }
   })().catch(() => {});
   (async () => {
-    for await (const line of (child.stderr as any)) {
+    for await (const line of child.stderr as NodeJS.AsyncIterable<Uint8Array>) {
       console.log(`[OpenCodeAdapter:err] ${new TextDecoder().decode(line).trim()}`);
     }
   })().catch(() => {});

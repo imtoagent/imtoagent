@@ -151,16 +151,16 @@ export class TelegramAdapter implements IMModule {
     if (this.proxy) {
       try {
         // Bun 原生支持 proxy 选项
-        if ((globalThis as any).Bun) {
-          return fetch(url, { ...init, proxy: this.proxy } as any);
+        if ((globalThis as Record<string, unknown>).Bun) {
+          return fetch(url, { ...init, proxy: this.proxy } as RequestInit);
         }
         // Node.js: 尝试使用 undici 的 ProxyAgent
         const { ProxyAgent } = await import('undici');
         if (ProxyAgent) {
           const dispatcher = new ProxyAgent(this.proxy);
-          return fetch(url, { ...init, dispatcher } as any);
+          return fetch(url, { ...init, dispatcher } as RequestInit);
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         // 降级：设置环境变量（影响全局，但总比没有好）
         if (!process.env.HTTPS_PROXY && !process.env.https_proxy) {
           process.env.HTTPS_PROXY = this.proxy;
@@ -240,7 +240,7 @@ export class TelegramAdapter implements IMModule {
         }
         success = true;
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (!this.warnedPollError) {
         console.error('[Telegram] Long poll error:', e.message);
         this.warnedPollError = true;
@@ -341,7 +341,7 @@ export class TelegramAdapter implements IMModule {
           const voiceAtt = attachments.find(a => a.type === 'audio');
           if (voiceAtt) voiceAtt.durationMs = msg.voice.duration * 1000;
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error('[Telegram] Media resolution error:', e.message);
       }
     }
@@ -448,7 +448,7 @@ export class TelegramAdapter implements IMModule {
           if (block.url) {
             try {
               await this.sendImageByUrl(chatId, block.url, block.alt);
-            } catch (e: any) {
+            } catch (e: unknown) {
               lines.push(`⚠️ Image load failed`);
             }
           }
@@ -458,7 +458,7 @@ export class TelegramAdapter implements IMModule {
           if (block.url) {
             try {
               await this.sendFileByUrl(chatId, block.url, block.filename);
-            } catch (e: any) {
+            } catch (e: unknown) {
               lines.push(`⚠️ File send failed: ${block.filename}`);
             }
           }
@@ -489,7 +489,7 @@ export class TelegramAdapter implements IMModule {
           if (block.url) {
             try {
               await this._sendAudio(chatId, block.url, block.filename);
-            } catch (e: any) {
+            } catch (e: unknown) {
               lines.push(`⚠️ Audio send failed`);
             }
           }
@@ -623,7 +623,7 @@ export class TelegramAdapter implements IMModule {
   // 工具方法
   // ================================================================
 
-  private async _api(method: string, params: Record<string, any>): Promise<any> {
+  private async _api(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const res = await this._fetch(`${this.apiUrl}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

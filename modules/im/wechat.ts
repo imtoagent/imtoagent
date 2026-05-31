@@ -21,6 +21,7 @@ import * as qrcode from 'qrcode';
 import type { IMModule, IMCapabilities, MessageHandler } from '../types';
 import type { UnifiedBlock } from '../capabilities';
 import type { MessageAttachment } from '../core/types';
+import type { ILinkResponse } from './im-types';
 
 // ================================================================
 // 常量
@@ -127,7 +128,7 @@ interface StoredContextTokens {
 /**
  * 通用 HTTPS POST 请求（iLink API）
  */
-async function ilinkPost(endpoint: string, body: any, token?: string): Promise<any> {
+async function ilinkPost(endpoint: string, body: Record<string, unknown>, token?: string): Promise<ILinkResponse> {
   const url = `${API_BASE}/${endpoint}`;
   const bodyStr = JSON.stringify(body);
   const headers: Record<string, string> = {
@@ -168,7 +169,7 @@ async function ilinkPost(endpoint: string, body: any, token?: string): Promise<a
 /**
  * 通用 HTTPS GET 请求
  */
-async function ilinkGet(endpoint: string, token?: string): Promise<any> {
+async function ilinkGet(endpoint: string, token?: string): Promise<ILinkResponse> {
   const url = `${API_BASE}/${endpoint}`;
   const headers: Record<string, string> = {
     'iLink-App-Id': ILINK_APP_ID,
@@ -535,7 +536,7 @@ export class WeChatIMModule implements IMModule {
         base_info: { channel_version: CHANNEL_VERSION, bot_agent: 'IMtoAgent' },
       }, this.botToken);
       console.log('[WeChat] Notified online');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.warn(`[WeChat] Failed to notify online: ${e.message}`);
     }
   }
@@ -600,7 +601,7 @@ export class WeChatIMModule implements IMModule {
       for (const msg of result.msgs) {
         try {
           await this._handleMessage(msg);
-        } catch (e: any) {
+        } catch (e: unknown) {
           console.error(`[WeChat] Message processing error: ${e.message}`);
         }
       }
@@ -723,7 +724,7 @@ export class WeChatIMModule implements IMModule {
         this.streams.set(streamId, state);
         // 发送 thinking 阶段结束信号
         await this._sendStreamSignal(state.streamTicket, 'thinking', true);
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error(`[WeChat] Stream init failed, falling back to normal reply: ${e.message}`);
         await this.reply(chatId, content);
         return;
@@ -784,7 +785,7 @@ export class WeChatIMModule implements IMModule {
           if (b.url) {
             try {
               await this._sendImageFromSource(chatId, b.url, b.title || 'image.png');
-            } catch (e: any) {
+            } catch (e: unknown) {
               console.error(`[WeChat] Image send failed: ${e.message}`);
             }
           }
@@ -793,7 +794,7 @@ export class WeChatIMModule implements IMModule {
           if (b.url) {
             try {
               await this._sendFileFromSource(chatId, b.url, b.title || b.filename || 'file');
-            } catch (e: any) {
+            } catch (e: unknown) {
               console.error(`[WeChat] File send failed: ${e.message}`);
             }
           }
@@ -806,7 +807,7 @@ export class WeChatIMModule implements IMModule {
   async sendImage(chatId: string, imageKey: string, _alt?: string): Promise<void> {
     try {
       await this._sendImageFromSource(chatId, imageKey, this._basename(imageKey));
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeChat] Image send failed: ${e.message}`);
     }
   }
@@ -814,7 +815,7 @@ export class WeChatIMModule implements IMModule {
   async sendFile(chatId: string, fileKey: string, fileName: string): Promise<void> {
     try {
       await this._sendFileFromSource(chatId, fileKey, fileName);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeChat] File send failed: ${e.message}`);
     }
   }
@@ -838,7 +839,7 @@ export class WeChatIMModule implements IMModule {
 
     try {
       await ilinkPost('ilink/bot/sendmessage', body, this.botToken);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeChat] Send failed: ${e.message}`);
     }
   }
@@ -918,7 +919,7 @@ export class WeChatIMModule implements IMModule {
       fs.writeFileSync(filePath, decrypted);
       console.log(`[WeChat] Media downloaded: ${filePath}`);
       return filePath;
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeChat] Media download failed: ${e.message}`);
       return null;
     }
@@ -959,7 +960,7 @@ export class WeChatIMModule implements IMModule {
       // 4. 返回上传结果
       const encryptQuery = uploadResult.encrypt_query_param || uploadResult.encrypt_query;
       return { encryptQuery, aesKey, fileKey };
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeChat] Media upload failed: ${e.message}`);
       return null;
     }

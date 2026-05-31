@@ -1,6 +1,6 @@
 # IMtoAgent Status & Maintenance
 
-> Last updated: 2026-05-31 | All Phases 1-13 complete ✅ | Current version: 0.3.26
+> Last updated: 2026-05-31 | All Phases 1-14 complete ✅ | Current version: 0.4.1
 > This document replaces the development ROADMAP. All planned phases are implemented.
 
 ---
@@ -15,13 +15,14 @@ IM Platform → IM Registry → Bot Instance → AgentRuntime → Agent Adapter 
 
 See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 
-## Current Status (v0.3.26)
+## Current Status (v0.4.1)
 
 | Area | Details |
 |------|---------|
 | **IM Adapters** | Feishu (731L), Telegram (639L), WeChat (1094L), WeCom (603L) |
 | **Agent Backends** | Claude Code, Codex (app-server v2), OpenCode, Gemini CLI |
 | **Unified Proxy** | Port `:18899` only — Anthropic Proxy handles all routing |
+| **Resource Managers** | MCP/Skills/Prompts → injected into system prompt via adapterCtx (Phase 14) |
 | **CLI Commands** | 26 commands + subcommands |
 | **Tests** | 188 tests across 10 files, 0 failures |
 | **Code Size** | ~16,000+ lines across 50+ .ts files |
@@ -44,6 +45,7 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | 11: Provider Presets | 20+ presets, `imtoagent providers` CLI | 0.3.26 |
 | 12: Proxy Hardening | Circuit breaker, auto-failover, health check | 0.3.26 |
 | 13: Gemini CLI | Gemini adapter + client + backend registration | 0.3.26 |
+| 14: Resource Integration | MCP/Skills/Prompts injected into system prompt (adapterCtx → buildSystemPrompt) | 0.4.1 |
 
 Detailed sub-task specs archived at [archive/phase-8-13-implementation.md](archive/phase-8-13-implementation.md).
 
@@ -91,7 +93,8 @@ See [Key Decisions Archive](archive/decisions-archive.md) for the full decision 
 
 | Version | Key Changes | Status |
 |---------|-------------|--------|
-| 0.3.26 | Phase 7-13: tests, observability, MCP/skills/prompts/providers, proxy hardening, Gemini | ✅ Current |
+| 0.4.1 | Phase 14: MCP/Skills/Prompts injected into system prompt via adapterCtx | ✅ Current |
+| 0.3.26 | Phase 7-13: tests, observability, MCP/skills/prompts/providers, proxy hardening, Gemini | ✅ |
 | 0.3.25 | Workspace isolation, isAdmin, config protection, NLP config | ✅ |
 | 0.3.24 | autostart, version check, doctor, config CRUD | ✅ |
 | 0.3.23 | uninstall + setup fixes + health | ✅ |
@@ -122,9 +125,9 @@ IMtoAgent is a **CLI gateway** for IM → AI Agent communication. Not a desktop 
 No planned phases. Future work depends on user feedback and new feature requests.
 
 Potential directions:
-- Phase 14: Testing expansion (IM adapter + Agent backend mock tests)
-- Phase 15: More IM adapters (Discord, Slack, WhatsApp)
-- Phase 16: More Agent backends
+- Phase 15: Testing expansion (IM adapter + Agent backend mock tests)
+- Phase 16: More IM adapters (Discord, Slack, WhatsApp)
+- Phase 17: More Agent backends
 - Documentation site improvements
 
 ---

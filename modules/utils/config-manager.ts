@@ -35,18 +35,18 @@ export interface BotEntry {
 }
 
 interface RawConfig {
-  system?: Record<string, any>;
-  providers?: Record<string, any>;
+  system?: Record<string, unknown>;
+  providers?: Record<string, unknown>;
   defaultModel?: string;
   activeModel?: string;
   modelAliases?: Record<string, string>;
   bots?: BotEntry[];
-  execServer?: any;
-  codex?: any;
-  opencode?: any;
-  rateLimit?: any;
-  shutdown?: any;
-  [key: string]: any;
+  execServer?: Record<string, unknown>;
+  codex?: Record<string, unknown>;
+  opencode?: Record<string, unknown>;
+  rateLimit?: Record<string, unknown>;
+  shutdown?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 // ================================================================

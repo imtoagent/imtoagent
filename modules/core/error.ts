@@ -62,10 +62,11 @@ export class DefaultErrorHandler implements ErrorHandler {
     if (match) return parseInt(match[1]);
 
     // 尝试从 error 对象中获取
-    const anyErr = error as any;
-    if (anyErr?.status) return anyErr.status;
-    if (anyErr?.response?.status) return anyErr.response.status;
-    if (anyErr?.statusCode) return anyErr.statusCode;
+    const err = error as Record<string, unknown>;
+    if (typeof err.status === 'number') return err.status;
+    const resp = err.response as Record<string, unknown> | undefined;
+    if (resp && typeof resp.status === 'number') return resp.status;
+    if (typeof err.statusCode === 'number') return err.statusCode;
 
     return 0;
   }
@@ -84,9 +85,11 @@ export class DefaultErrorHandler implements ErrorHandler {
     const match = msg.match(/retry[-_\s]?after[:\s]*(\d+)/i);
     if (match) return parseInt(match[1]) * 1000;
 
-    const anyErr = error as any;
-    if (anyErr?.response?.headers?.['retry-after']) {
-      return parseInt(anyErr.response.headers['retry-after']) * 1000;
+    const err = error as Record<string, unknown>;
+    const resp = err.response as Record<string, unknown> | undefined;
+    const headers = resp?.headers as Record<string, unknown> | undefined;
+    if (headers?.['retry-after']) {
+      return parseInt(String(headers['retry-after'])) * 1000;
     }
 
     // 默认等待 2 秒

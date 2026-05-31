@@ -40,7 +40,7 @@ export interface Session {
 
   // 各 Agent 特有的元数据（扩展用）
   // 向后兼容：从旧 .memory.json 迁移时，sdkSessionId/codexThreadId/ocSessionId 存在这里
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 
   // 统计
   stats: CallStats;

@@ -125,7 +125,7 @@ export class InboundMediaResolver {
       const attachment = this.buildAttachment(entry, downloaded, request);
 
       return { attachment, entry };
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[${this.adapter.platform}] Media resolution error: ${e.message}`);
       return null;
     }

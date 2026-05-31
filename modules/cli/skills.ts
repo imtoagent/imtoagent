@@ -75,7 +75,7 @@ async function cmdSkillsInstall(args: string[]): Promise<void> {
     const result = mgr.install(source, { name, backends });
     console.log(`✅ Skill "${result.name}" installed to: ${result.path}`);
     console.log(`\nRun "imtoagent skills sync" to push to backend configs.`);
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error(`❌ Failed to install skill: ${err.message}`);
   }
 }

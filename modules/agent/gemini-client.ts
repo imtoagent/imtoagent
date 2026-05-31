@@ -80,7 +80,7 @@ export class GeminiClient {
             }
           });
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         this.resolved = true;
         resolve({ text: '', error: `gemini launch failed: ${err.message}` });
       }

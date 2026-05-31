@@ -6,6 +6,7 @@ import { buildSystemPrompt, resolveCapabilities, DEFAULT_TERMINAL_CAPS } from '.
 import * as path from 'path';
 import * as fs from 'fs';
 import { getDataDir } from '../utils/paths';
+import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
 
 // ================================================================
 // 配置（从 config.json 读取，不再硬编码）
@@ -45,7 +46,7 @@ function getConfig(): CodexProxyConfig {
         apiKey,
       };
       console.log('[Codex Proxy] Loaded config from config.json');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Codex Proxy] Unable to load config: ${e.message}`);
     }
   }
@@ -87,14 +88,15 @@ interface PendingToolCall {
 interface ResponseItem {
   id: string;
   type: string;
-  [key: string]: any;
+  role?: string;
+  [key: string]: unknown;
 }
 
 // ================================================================
 // 1. 请求翻译: Responses → Chat Completions
 // ================================================================
-function responsesToChat(body: any): { model: string; messages: ChatMessage[]; stream: boolean; max_tokens?: number; tools?: any[] } {
-  const chat: { model: string; messages: ChatMessage[]; stream: boolean; max_tokens?: number; tools?: any[]; thinking?: { type: string } } = {
+function responsesToChat(body: OpenAIRequestBody): { model: string; messages: ChatMessage[]; stream: boolean; max_tokens?: number; tools?: OpenAITool[] } {
+  const chat: { model: string; messages: ChatMessage[]; stream: boolean; max_tokens?: number; tools?: OpenAITool[]; thinking?: { type: string } } = {
     model: MODEL(),
     messages: [],
     stream: true,
@@ -104,33 +106,34 @@ function responsesToChat(body: any): { model: string; messages: ChatMessage[]; s
 
   // 工具转换
   if (body.tools?.length) {
-    const allNames = body.tools.map((t: any) => t.name || t.function?.name).filter((n: string) => n && n.length > 0).join(', ');
+    const allNames = body.tools.map((t) => (t as OpenAITool).function?.name || (t as { name?: string }).name || '').filter((n) => n && n.length > 0).join(', ');
     console.log(`[Codex] tools: ${allNames}`);
     chat.tools = body.tools
-      .map((t: any) => {
-        if (t.function) return t;
-        const p = JSON.parse(JSON.stringify(t.parameters || {}, (_: string, v: any) => v === null ? undefined : v));
+      .map((t) => {
+        if ((t as OpenAITool).function) return t as OpenAITool;
+        const params = (t as { parameters?: Record<string, unknown> }).parameters || {};
+        const p = JSON.parse(JSON.stringify(params, (_: string, v) => v === null ? undefined : v));
         if (!p.type) p.type = 'object';
         return { type: 'function', function: { name: t.name || '', description: t.description || '', parameters: p } };
       })
-      .filter((t: any) => t.function?.name && t.function.name.length > 0);
+      .filter((t) => (t as OpenAITool).function?.name && (t as OpenAITool).function!.name.length > 0);
   }
 
   // 消息转换
-  let input: any[] = body.input || [];
+  let input: ResponseItem[] = ((body as OpenAIRequestBody).input as ResponseItem[]) || [];
   if (input.length > 0) {
     // 防护：输入历史过长时截断，防止 tool call loop 导致 OOM
     const MAX_INPUT_ITEMS = 120;
     if (input.length > MAX_INPUT_ITEMS) {
       const truncated = input.length - MAX_INPUT_ITEMS;
       // 保留 system 消息（如果有）+ 最近 MAX_INPUT_ITEMS 条
-      const systemItems = input.filter((m: any) => m.role === 'system' || m.role === 'developer');
-      const nonSystem = input.filter((m: any) => m.role !== 'system' && m.role !== 'developer');
+      const systemItems = input.filter((m) => m.role === 'system' || m.role === 'developer');
+      const nonSystem = input.filter((m) => m.role !== 'system' && m.role !== 'developer');
       const kept = nonSystem.slice(-(MAX_INPUT_ITEMS - systemItems.length));
       input = [...systemItems, ...kept];
       console.log(`[Codex] ⚠️ Truncated input: ${input.length + truncated} → ${input.length} items (discarded oldest ${truncated})`);
     }
-    const types = input.map((m: any) => m.type || ('msg:' + m.role)).join(',');
+    const types = input.map((m) => m.type || ('msg:' + m.role)).join(',');
     console.log(`[Codex] input types: [${types}]`);
     console.log(`[Codex] input items: ${input.length}`);
   }
@@ -142,7 +145,7 @@ function responsesToChat(body: any): { model: string; messages: ChatMessage[]; s
 
     if (msg.type === 'reasoning') {
       const summary = msg.summary || [];
-      pendingReasoning = summary.map((s: any) => s.text || s.summary_text || '').join('').trim();
+      pendingReasoning = summary.map((s) => (s as { text?: string; summary_text?: string }).text || (s as { text?: string; summary_text?: string }).summary_text || '').join('').trim();
       i++;
       continue;
     }
@@ -176,7 +179,7 @@ function responsesToChat(body: any): { model: string; messages: ChatMessage[]; s
     }
 
     // 普通消息
-    let content: string | any[];
+    let content: string | Array<Record<string, unknown>>;
     let embeddedToolCalls: ToolCall[] | undefined;
     if (typeof msg.content === 'string') {
       content = msg.content;
@@ -358,11 +361,11 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
   let rsnIdx = -1;
   let rsnActive = false, msgActive = false;
   let hasStarted = false;
-  let finalUsage: any = {};
+  let finalUsage: AnthropicResponseUsage | Record<string, unknown> = {};
   const pendingToolCalls = new Map<number, PendingToolCall>();
 
   let streamBroken = false;
-  function emit(event: string, data: any): void {
+  function emit(event: string, data: unknown): void {
     if (streamBroken) return;
     try {
       resWriter.write(enc.encode(`event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`));
@@ -401,7 +404,7 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
         const data = line.slice(6);
         if (data === '[DONE]') continue;
 
-        let chunk: any;
+        let chunk: OpenAIStreamChunk;
         try { chunk = JSON.parse(data); } catch { continue; }
 
         const delta = chunk.choices?.[0]?.delta || {};
@@ -594,7 +597,7 @@ export async function handleCodexRequest(
           body: JSON.stringify(chatReq),
           signal: ac.signal,
         });
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error(`[Codex] ❌ fetch failed: ${e.message}`);
         res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
       } finally {
@@ -618,12 +621,12 @@ export async function handleCodexRequest(
         close() {
           res.end();
         },
-        abort(err: any) {
+        abort(_err: unknown) {
           res.end();
         },
       });
       const writer = writable.getWriter();
-      await streamResponse(upstreamRes, writer).catch((e: any) => {
+      await streamResponse(upstreamRes, writer).catch((e: unknown) => {
         console.error(`[Codex] streamResponse error: ${e?.message || e}`);
       }).finally(() => {
         try { writer.close(); } catch {}
@@ -632,7 +635,7 @@ export async function handleCodexRequest(
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not found' })); return;
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Codex] 💥 unhandled: ${e.message}`);
     res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'internal error' })); return;
   }

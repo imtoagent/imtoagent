@@ -67,6 +67,12 @@ export interface PromptBuilderContext {
   botKey: string;
   /** Agent 特有的额外系统提示（如工具使用指南、工作目录约束等） */
   agentInstructions?: string;
+  /** Optional: Available MCP servers summary */
+  mcpInfo?: { servers: Array<{ name: string; enabled: boolean; backends: string[] }> };
+  /** Optional: Installed skills summary */
+  skillsInfo?: { skills: Array<{ name: string }> };
+  /** Optional: Custom prompts summary */
+  promptsInfo?: { prompts: Array<{ name: string }> };
 }
 
 // ================================================================
@@ -103,7 +109,31 @@ You can check logs to understand gateway status, troubleshoot issues, and detect
 
 Note: Your first message after startup may have lost conversation memory (if the gateway restarted). Check logs first to understand the context.`);
 
-  // 4. Soul
+  // 4. Available Resources (MCP / Skills / Prompts)
+  const resourceSections: string[] = [];
+
+  if (ctx.mcpInfo?.servers.length) {
+    const rows = ctx.mcpInfo.servers
+      .map(s => `| ${s.name} | ${s.enabled ? '✅ enabled' : '❌ disabled'} | ${s.backends.join(', ')} |`)
+      .join('\n');
+    resourceSections.push(`## MCP Servers\n\n| Server | Status | Backends |\n|--------|--------|----------|\n${rows}`);
+  }
+
+  if (ctx.skillsInfo?.skills.length) {
+    const rows = ctx.skillsInfo.skills.map(s => `| ${s.name} |`).join('\n');
+    resourceSections.push(`## Installed Skills\n\n| Skill |\n|-------|\n${rows}`);
+  }
+
+  if (ctx.promptsInfo?.prompts.length) {
+    const rows = ctx.promptsInfo.prompts.map(p => `| ${p.name} |`).join('\n');
+    resourceSections.push(`## Custom Prompts\n\n| Prompt |\n|--------|\n${rows}`);
+  }
+
+  if (resourceSections.length > 0) {
+    sections.push('# Available Resources\n\n' + resourceSections.join('\n\n'));
+  }
+
+  // 5. Soul
   const soul = loadSoul(ctx.botName);
   if (soul) {
     sections.push('# User-Defined Instructions (IMtoAgent Soul)\n\n' + soul);

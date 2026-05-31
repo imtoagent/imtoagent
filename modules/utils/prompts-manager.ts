@@ -97,7 +97,7 @@ export class PromptsManager {
         }
 
         result.synced.push(b);
-      } catch (err: any) {
+      } catch (err: unknown) {
         result.errors.push(`${b}: ${err.message}`);
       }
     }

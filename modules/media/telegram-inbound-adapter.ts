@@ -24,7 +24,7 @@ export class TelegramInboundAdapter implements InboundMediaAdapter {
   private apiUrl: string;
   private fileUrl: string;
   private proxy?: string;
-  private dispatcher?: any; // undici Dispatcher
+  private dispatcher?: unknown; // undici Dispatcher
   private fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
 
   constructor(options: TelegramInboundAdapterOptions) {
@@ -37,14 +37,14 @@ export class TelegramInboundAdapter implements InboundMediaAdapter {
     // 仅在没有外部 fetchFn 时，自己初始化代理 dispatcher（undici 风格）
     if (!this.fetchFn && this.proxy) {
       try {
-        const ProxyAgent = (globalThis as any).ProxyAgent;
+        const ProxyAgent = (globalThis as Record<string, unknown>).ProxyAgent;
         if (ProxyAgent) {
           this.dispatcher = new ProxyAgent(this.proxy);
           console.log(`[TelegramInbound] Proxy dispatcher configured: ${this.proxy}`);
         } else {
           console.log(`[TelegramInbound] ⚠️ Proxy configured but ProxyAgent unavailable, will try direct connection`);
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.log(`[TelegramInbound] ⚠️ Proxy dispatcher init failed: ${e.message}`);
       }
     }
@@ -104,7 +104,7 @@ export class TelegramInboundAdapter implements InboundMediaAdapter {
         contentType,
         sourceKey: resourceKey,
       };
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[TelegramInbound] download resource exception: ${e.message}`);
       return null;
     }
@@ -117,7 +117,7 @@ export class TelegramInboundAdapter implements InboundMediaAdapter {
     }
     // 否则使用自己的 dispatcher
     if (this.dispatcher) {
-      return fetch(url, { ...init, dispatcher: this.dispatcher } as any);
+      return fetch(url, { ...init, dispatcher: this.dispatcher } as RequestInit);
     }
     return fetch(url, init);
   }

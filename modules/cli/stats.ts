@@ -75,7 +75,7 @@ export async function cmdStats(...args: string[]): Promise<void> {
 // Output formatters
 // ================================================================
 
-function printAggregate(label: string, records: any[], botFilter?: string) {
+function printAggregate(label: string, records: Array<Record<string, unknown>>, botFilter?: string) {
   const agg = aggregate(records);
 
   const filterLabel = botFilter ? ` (${botFilter})` : '';
@@ -96,7 +96,7 @@ function printAggregate(label: string, records: any[], botFilter?: string) {
   console.log();
 }
 
-function printHistory(records: any[], botFilter?: string) {
+function printHistory(records: Array<Record<string, unknown>>, botFilter?: string) {
   const filterLabel = botFilter ? ` (${botFilter})` : '';
   console.log(`\n📊 Recent Calls — Last ${records.length}${filterLabel}\n`);
 
@@ -124,7 +124,7 @@ function printHistory(records: any[], botFilter?: string) {
   console.log();
 }
 
-function printTable(perBot: Record<string, any>) {
+function printTable(perBot: Record<string, Record<string, unknown>>) {
   console.log(pad('Bot', 20) + pad('Calls', 8) + pad('Tokens', 12) + pad('Cost', 12) + pad('Avg Time', 12));
   console.log('─'.repeat(64));
 
@@ -159,7 +159,7 @@ function printTable(perBot: Record<string, any>) {
 // Helpers
 // ================================================================
 
-function aggregate(records: any[]) {
+function aggregate(records: Array<Record<string, unknown>>) {
   const result = {
     calls: records.length,
     inputTokens: 0,

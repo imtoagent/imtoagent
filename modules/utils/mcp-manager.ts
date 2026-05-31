@@ -122,7 +122,7 @@ export class McpManager {
         const servers = this.list(b);
         const enabledServers = Object.entries(servers)
           .filter(([, cfg]) => cfg.enabled)
-          .reduce<Record<string, any>>((acc, [name, cfg]) => {
+          .reduce<Record<string, Record<string, unknown>>>((acc, [name, cfg]) => {
             acc[name] = this.toBackendFormat(name, cfg, b);
             return acc;
           }, {});
@@ -141,7 +141,7 @@ export class McpManager {
             result.synced.push('opencode');
             break;
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         result.errors.push({ backend: b, error: err.message });
       }
     }
@@ -155,7 +155,7 @@ export class McpManager {
 
   import(source: string): { imported: number; errors: string[] } {
     const result = { imported: 0, errors: [] };
-    let parsed: any;
+    let parsed: Record<string, unknown> | McpData | null;
 
     // Try parse as JSON string
     try {
@@ -185,7 +185,7 @@ export class McpManager {
           this.add(name, serverCfg);
           result.imported++;
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         result.errors.push(`${name}: ${err.message}`);
       }
     }
@@ -193,21 +193,22 @@ export class McpManager {
     return result;
   }
 
-  private normalizeImportConfig(cfg: any): Omit<McpServerConfig, 'source'> | null {
-    if (cfg.command) {
+  private normalizeImportConfig(cfg: unknown): Omit<McpServerConfig, 'source'> | null {
+    const c = cfg as Record<string, unknown>;
+    if (c.command) {
       return {
-        command: cfg.command,
-        args: cfg.args || [],
-        env: cfg.env || {},
-        enabled: cfg.enabled !== false,
-        backends: cfg.backends || ['claude', 'codex', 'opencode'],
+        command: c.command as string,
+        args: (c.args as string[]) || [],
+        env: (c.env as Record<string, string>) || {},
+        enabled: c.enabled !== false,
+        backends: (c.backends as string[]) || ['claude', 'codex', 'opencode'],
       };
     }
     // OpenAI MCP format (url-based)
-    if (cfg.url || cfg.baseUrl) {
+    if (c.url || c.baseUrl) {
       return {
         command: 'npx',
-        args: ['-y', '@modelcontextprotocol/client', cfg.url || cfg.baseUrl],
+        args: ['-y', '@modelcontextprotocol/client', (c.url || c.baseUrl) as string],
         env: {},
         enabled: true,
         backends: ['claude', 'codex', 'opencode'],
@@ -220,7 +221,7 @@ export class McpManager {
   // Backend-specific sync
   // ================================================================
 
-  private toBackendFormat(name: string, cfg: McpServerConfig, backend: string): any {
+  private toBackendFormat(name: string, cfg: McpServerConfig, backend: string): Record<string, unknown> {
     switch (backend) {
       case 'claude':
       case 'codex':
@@ -240,14 +241,14 @@ export class McpManager {
     }
   }
 
-  private syncToClaude(servers: Record<string, any>): void {
+  private syncToClaude(servers: Record<string, Record<string, unknown>>): void {
     const home = process.env.HOME || '';
     const claudeConfigPath = path.join(home, '.claude', 'settings.json');
     const claudeJsonPath = path.join(home, '.claude.json');
 
     // Try ~/.claude/settings.json first (Claude Code standard location)
     let configPath = claudeConfigPath;
-    let config: any = {};
+    let config: Record<string, unknown> = {};
 
     if (fs.existsSync(claudeConfigPath)) {
       try {
@@ -271,11 +272,11 @@ export class McpManager {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   }
 
-  private syncToCodex(servers: Record<string, any>): void {
+  private syncToCodex(servers: Record<string, Record<string, unknown>>): void {
     const home = process.env.HOME || '';
     const codexConfigPath = path.join(home, '.codex', 'config.json');
 
-    let config: any = {};
+    let config: Record<string, unknown> = {};
     if (fs.existsSync(codexConfigPath)) {
       try {
         config = JSON.parse(fs.readFileSync(codexConfigPath, 'utf-8'));
@@ -290,11 +291,11 @@ export class McpManager {
     fs.writeFileSync(codexConfigPath, JSON.stringify(config, null, 2));
   }
 
-  private syncToOpenCode(servers: Record<string, any>): void {
+  private syncToOpenCode(servers: Record<string, Record<string, unknown>>): void {
     const { getOpencodeConfigPath } = require('./paths');
     const opencodeConfigPath = getOpencodeConfigPath();
 
-    let config: any = {};
+    let config: Record<string, unknown> = {};
     if (fs.existsSync(opencodeConfigPath)) {
       try {
         config = JSON.parse(fs.readFileSync(opencodeConfigPath, 'utf-8'));

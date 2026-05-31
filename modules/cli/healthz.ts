@@ -43,7 +43,7 @@ export async function cmdHealthz(..._args: string[]): Promise<void> {
     }
     for (const backend of backends) {
       if (['claude', 'codex', 'opencode'].includes(backend)) {
-        const info = checkBackend(backend as any);
+        const info = checkBackend(backend as string);
         if (!info.installed) {
           // Don't fail healthz for missing backends, just note it
           // issues.push(`backend '${backend}' not installed`);

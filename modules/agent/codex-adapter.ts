@@ -9,7 +9,9 @@
 
 import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import { buildSystemPrompt } from '../prompt-builder';
+import type { McpManager } from '../utils/mcp-manager';
+import type { SkillsManager } from '../utils/skills-manager';
+import type { PromptsManager } from '../utils/prompts-manager';
 import { getAppServerManager, type AgentEvent } from './codex-exec-server';
 
 // ================================================================
@@ -17,8 +19,11 @@ import { getAppServerManager, type AgentEvent } from './codex-exec-server';
 // ================================================================
 
 export interface CodexAdapterContext {
-  imModule?: { getCapabilities(): any } | null;
+  imModule?: { getCapabilities(): IMCapabilities } | null;
   botName: string;
+  mcpManager?: McpManager;
+  skillsManager?: SkillsManager;
+  promptsManager?: PromptsManager;
 }
 
 // ================================================================
@@ -48,7 +53,8 @@ function processCodexStream(stdout: string): { threadId: string; response: strin
           response = (response ? response + '\n' : '') + (evt.item.text || '');
         }
       } else if (evt.type === 'error' || evt.type === 'thread.error') {
-        console.error(`[CodexAdapter] event error: ${(evt as any).message || (evt as any).error || JSON.stringify(evt)}`);
+        const evtRec = evt as Record<string, unknown>;
+        console.error(`[CodexAdapter] event error: ${(evtRec.message as string) || (evtRec.error as string) || JSON.stringify(evt)}`);
       }
     } catch {}
   }
@@ -64,10 +70,10 @@ async function spawnCodexExec(cwd: string, prompt: string): Promise<{ threadId: 
   let stdout = '', stderr = '';
   try {
     [stdout, stderr] = await Promise.all([
-      new Response(child.stdout).text().catch((e: any) => { throw new Error(`stdout read failed: ${e?.message || e}`); }),
-      new Response(child.stderr).text().catch((e: any) => { throw new Error(`stderr read failed: ${e?.message || e}`); }),
+      new Response(child.stdout).text().catch((e: unknown) => { throw new Error(`stdout read failed: ${e?.message || e}`); }),
+      new Response(child.stderr).text().catch((e: unknown) => { throw new Error(`stderr read failed: ${e?.message || e}`); }),
     ]);
-  } catch (ioErr: any) {
+  } catch (ioErr: unknown) {
     try { child.kill('SIGKILL'); } catch {}
     throw new Error(`codex exec I/O error: ${ioErr.message}`);
   }
@@ -87,10 +93,10 @@ async function spawnCodexResume(cwd: string, threadId: string, prompt: string): 
   let stdout = '', stderr = '';
   try {
     [stdout, stderr] = await Promise.all([
-      new Response(child.stdout).text().catch((e: any) => { throw new Error(`stdout read failed: ${e?.message || e}`); }),
-      new Response(child.stderr).text().catch((e: any) => { throw new Error(`stderr read failed: ${e?.message || e}`); }),
+      new Response(child.stdout).text().catch((e: unknown) => { throw new Error(`stdout read failed: ${e?.message || e}`); }),
+      new Response(child.stderr).text().catch((e: unknown) => { throw new Error(`stderr read failed: ${e?.message || e}`); }),
     ]);
-  } catch (ioErr: any) {
+  } catch (ioErr: unknown) {
     try { child.kill('SIGKILL'); } catch {}
     throw new Error(`codex exec resume I/O error: ${ioErr.message}`);
   }
@@ -113,8 +119,8 @@ async function runViaAppServer(
   const client = await manager.getClient(chatId);
 
   const currentGen = manager.generation;
-  const sessionAny = session as any;
-  const threadExpired = sessionAny._appServerGen !== currentGen;
+  const sessionAny = session as Record<string, unknown>;
+  const threadExpired = (sessionAny._appServerGen as number) !== currentGen;
   if (isFresh || !sessionAny.codexThreadId || threadExpired) {
     sessionAny.codexThreadId = await client.startThread(cwd);
     sessionAny._appServerGen = currentGen;
@@ -140,7 +146,10 @@ async function runViaAppServer(
         response += event.textDelta || '';
         break;
       case 'tool_call': {
-        const name = (event as any).toolCall?.name || (event as any).tool?.name || 'Tool';
+        const evtRec = event as Record<string, unknown>;
+        const toolCall = evtRec.toolCall as Record<string, unknown> | undefined;
+        const tool = evtRec.tool as Record<string, unknown> | undefined;
+        const name = (toolCall?.name as string) || (tool?.name as string) || 'Tool';
         onProgress?.(`🔧 Executing: ${name}`);
         break;
       }
@@ -172,7 +181,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async handleMessage(input: AgentInput): Promise<AgentOutput> {
     const { text, session, workingDir, systemPrompt: overrideSystemPrompt } = input;
-    const sessionAny = session as any;
+    const sessionAny = session as Record<string, unknown>;
     const cwd = workingDir;
 
     let effectiveText = text;
@@ -199,7 +208,7 @@ export class CodexAdapter implements AgentAdapter {
       async (t: string) => { try { await input.sendProgress?.(t); } catch {} });
       response = r.response;
       execServerUsage = r.usage;
-    } catch (appErr: any) {
+    } catch (appErr: unknown) {
       const errMsg = appErr.message || '';
       console.error(`[CodexAdapter] app-server failed: ${errMsg}`);
 

@@ -325,7 +325,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   }
 
   // ===== Step 1: Detect existing configuration =====
-  let existingConfig: any = null;
+  let existingConfig: Record<string, unknown> | null = null;
   let mergeMode = false;
 
   if (fs.existsSync(configPath)) {
@@ -366,7 +366,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   // ===== Step 3: Configure Bots =====
   console.log('📌 Step 3: Configure Bots\n');
 
-  const bots: any[] = (mergeMode && existingConfig?.bots) ? [...existingConfig.bots] : [];
+  const bots: Array<Record<string, unknown>> = (mergeMode && existingConfig?.bots) ? [...(existingConfig.bots as Array<Record<string, unknown>>)] : [];
 
   let addingBots = true;
   while (addingBots) {
@@ -456,7 +456,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     const botId = randomUUID();
 
     // Build Bot configuration (different IM types need different fields)
-    const bot: any = {
+    const bot: Record<string, unknown> = {
       id: botId,
       name: botName,
       backend,
@@ -567,7 +567,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   // ===== Step 5: Configure model providers =====
   console.log('\n📌 Step 5: Configure model providers\n');
 
-  const providers: Record<string, any> = {};
+  const providers: Record<string, Record<string, unknown>> = {};
   if (mergeMode && existingConfig?.providers) {
     Object.assign(providers, existingConfig.providers);
     console.log(`✅ Kept ${Object.keys(providers).length} existing provider(s)\n`);
@@ -664,7 +664,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     const priceInput = await promptText('Pricing (in/out per million tokens, e.g. 0.55,2.19, leave blank to skip)');
     if (priceInput === null) continue;
 
-    const pricing: any = {};
+    const pricing: Record<string, unknown> = {};
     if (priceInput) {
       const parts = priceInput.split(',').map(s => parseFloat(s.trim()));
       if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
@@ -696,7 +696,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
   const allModels: string[] = [];
   for (const [provName, prov] of Object.entries(providers)) {
-    for (const m of (prov as any).models || []) {
+    for (const m of (prov as Record<string, unknown>).models as string[] || []) {
       allModels.push(`${provName}/${m}`);
     }
   }
@@ -763,7 +763,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
   // Atomic config write: write to temp file first, then rename.
   // If the write fails, the original config (if any) is preserved.
-  const config: any = {
+  const config: Record<string, unknown> = {
     system: existingConfig?.system || {
       defaultProjectDir: os.homedir(),
       idleTimeoutMinutes: 30,
@@ -811,19 +811,19 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     fs.writeFileSync(configTmpPath, JSON.stringify(config, null, 2) + '\n');
     fs.renameSync(configTmpPath, configPath);
     console.log(`✅ ${configPath}`);
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`❌ Failed to write config.json: ${e.message}`);
     writeOk = false;
   }
 
   if (writeOk) {
     try {
-      const providersFile: any = { providers, defaultModel, modelAliases: config.modelAliases };
+      const providersFile: Record<string, unknown> = { providers, defaultModel, modelAliases: config.modelAliases };
       const providersPath = path.join(dataDir, 'providers.json');
       fs.writeFileSync(providersTmpPath, JSON.stringify(providersFile, null, 2) + '\n');
       fs.renameSync(providersTmpPath, providersPath);
       console.log(`✅ ${providersPath}`);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`❌ Failed to write providers.json: ${e.message}`);
       console.error('⚠️  config.json was written successfully, but providers.json failed.');
       console.error('   Please re-run "imtoagent setup" to fix.');

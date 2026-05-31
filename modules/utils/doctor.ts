@@ -87,7 +87,7 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
 
   // ---- 2. config.json ----
   let configRaw: string | null = null;
-  let config: any = null;
+  let config: Record<string, unknown> | null = null;
 
   if (!fs.existsSync(configPath)) {
     issues.push({
@@ -103,7 +103,7 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
     configRaw = fs.readFileSync(configPath, 'utf-8');
     config = JSON.parse(configRaw);
     issues.push({ severity: 'info', category: 'Config', message: 'config.json parse OK', fixable: false });
-  } catch (e: any) {
+  } catch (e: unknown) {
     // 尝试修复常见 JSON 语法错误
     const fixed = tryFixJSON(configRaw);
     if (fixed !== null) {
@@ -190,7 +190,7 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
   }
 
   // ---- 3. providers.json ----
-  let providers: any = null;
+  let providers: Record<string, unknown> | null = null;
 
   if (!fs.existsSync(providersPath)) {
     issues.push({
@@ -218,7 +218,7 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
 
       // 验证每个 provider 的 API key
       if (providers.providers) {
-        for (const [provName, provCfg] of Object.entries(providers.providers) as [string, any][]) {
+        for (const [provName, provCfg] of Object.entries(providers.providers) as [string, Record<string, unknown>][]) {
           if (provCfg.apiKey) {
             const result = validateApiKey(provCfg.apiKey);
             if (!result.valid) {
@@ -234,7 +234,7 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
           }
         }
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       const fixed = tryFixJSON(fs.readFileSync(providersPath, 'utf-8'));
       if (fixed !== null) {
         issues.push({
@@ -265,7 +265,7 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
     for (const bot of config.bots) {
       if (bot.backend && ['claude', 'codex', 'opencode'].includes(bot.backend) && !checkedTypes.has(bot.backend)) {
         checkedTypes.add(bot.backend);
-        const info = checkBackend(bot.backend as any);
+        const info = checkBackend(bot.backend as string);
         if (info.installed) {
           issues.push({ severity: 'info', category: 'Backend', message: `${info.label} v${info.version} (${info.installSource})`, fixable: false });
         } else {
@@ -368,7 +368,7 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
       const ocRaw = fs.readFileSync(opencodePath, 'utf-8');
       JSON.parse(ocRaw);
       issues.push({ severity: 'info', category: 'Config', message: 'opencode.json parse OK', fixable: false });
-    } catch (e: any) {
+    } catch (e: unknown) {
       const fixed = tryFixJSON(fs.readFileSync(opencodePath, 'utf-8'));
       if (fixed !== null) {
         issues.push({

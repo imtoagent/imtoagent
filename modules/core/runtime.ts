@@ -302,7 +302,7 @@ export class AgentRuntime {
 
         return { restart: false };
 
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error(`[Runtime] Failed to process message (attempt ${attempt}): ${error.message}`);
 
         // 7. 错误处理

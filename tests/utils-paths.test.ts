@@ -105,6 +105,14 @@ describe("getDataDir — dev mode fallback", () => {
   });
 
   it("should fall back to cwd when IMTOAGENT_HOME has no config and no ~/.imtoagent/config.json", () => {
+    // Skip if real ~/.imtoagent/config.json exists (test cannot isolate from real env)
+    const home = process.env.HOME || process.env.USERPROFILE?.replace(/\\/g, '/') || '';
+    const realDotDir = path.join(home, '.imtoagent');
+    if (fs.existsSync(path.join(realDotDir, 'config.json'))) {
+      console.log('[Test] Skipping: real ~/.imtoagent/config.json exists, cannot isolate test');
+      return;
+    }
+
     tmpDir = createTempDir();
     const emptyDir = path.join(tmpDir, "empty");
     fs.mkdirSync(emptyDir, { recursive: true });

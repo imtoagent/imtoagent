@@ -63,18 +63,11 @@ export function getDataDir(): string {
     return _dataDir;
   }
 
-  // ====== 第 2 步：没有配置文件 → 仅在 ~/.imtoagent 不存在时才初始化 ======
-  // Bug fix: 如果目录已存在但无 config.json，绝不自动用模板覆盖。
-  // 这可能是用户误删或手动维护的配置丢失，应该报错而非静默覆盖。
-  if (!fs.existsSync(dotDir)) {
-    _dataDir = initDataDir(dotDir, envHome);
-    return _dataDir;
-  }
-
-  // 目录已存在但无 config.json — 报错退出，防止静默覆盖
-  console.error(`[Paths] ⚠️  Data directory ${dotDir} exists but config.json is missing`);
-  console.error(`[Paths] Please restore config.json or run 'imtoagent setup' to reconfigure`);
-  process.exit(1);
+  // ====== 第 2 步：没有配置文件 → 初始化 ~/.imtoagent ======
+  // 生产环境：从 package template 初始化
+  // 开发环境（npm link）：cwd 有 config.json 则用它初始化
+  _dataDir = initDataDir(dotDir, envHome);
+  return _dataDir;
 }
 
 /**

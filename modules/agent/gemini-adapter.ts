@@ -8,18 +8,21 @@
 import { spawn, ChildProcess } from 'child_process';
 import type { AgentAdapter, AgentInput, AgentOutput } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import { buildSystemPrompt } from '../prompt-builder';
+import type { McpManager } from '../utils/mcp-manager';
+import type { SkillsManager } from '../utils/skills-manager';
+import type { PromptsManager } from '../utils/prompts-manager';
 
 // ================================================================
 // GeminiAdapter 上下文
 // ================================================================
 
 export interface GeminiAdapterContext {
-  /** 用于构建 system prompt（IM 能力 + bot 名 + soul） */
-  imModule?: { getCapabilities(): any } | null;
+  imModule?: { getCapabilities(): IMCapabilities } | null;
   botName: string;
-  /** 模型别名映射（flash-pro/flash-lite → 实际模型名） */
   modelAliases: Record<string, string>;
+  mcpManager?: McpManager;
+  skillsManager?: SkillsManager;
+  promptsManager?: PromptsManager;
 }
 
 // ================================================================
@@ -178,13 +181,9 @@ export class GeminiAdapter implements AgentAdapter {
     // 构建 Gemini CLI 参数
     const args = ['--model', resolveAlias(aliases.gemini || modelName), '--prompt', effectiveText];
 
-    // System Prompt（优先使用传入的，否则自行构建）
-    const systemPrompt = overrideSystemPrompt || buildSystemPrompt({
-      imModule: this.ctx.imModule || null,
-      botName: this.ctx.botName,
-    });
-    if (systemPrompt) {
-      args.unshift('--system-instruction', systemPrompt);
+    // System Prompt（统一由 index.ts 注入）
+    if (overrideSystemPrompt) {
+      args.unshift('--system-instruction', overrideSystemPrompt);
     }
 
     // Session 管理（gemini CLI 不支持 session resume，但记录 ID 供外部参考）
@@ -243,7 +242,7 @@ export class GeminiAdapter implements AgentAdapter {
         },
       };
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (abortCtrl.signal.aborted) {
         return { text: '⚠️ Request timed out or cancelled, please try again.' };
       }

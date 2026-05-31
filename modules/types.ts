@@ -114,7 +114,7 @@ export interface IMModule {
   getCapabilities(): IMCapabilities;
 
   /** 发送富文本块（代码块、卡片、图片等） */
-  sendBlocks(chatId: string, blocks: any[]): Promise<void>;
+  sendBlocks(chatId: string, blocks: Array<Record<string, unknown>>): Promise<void>;
 
   /** 发送图片 */
   sendImage(chatId: string, imageKey: string, alt?: string): Promise<void>;

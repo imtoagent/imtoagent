@@ -97,7 +97,7 @@ export class ProviderHealthChecker {
       }
 
       return healthy;
-    } catch (err: any) {
+    } catch (err: unknown) {
       this._status.healthy = false;
       this._status.latencyMs = Date.now() - startTime;
       this._status.lastChecked = Date.now();
@@ -187,7 +187,7 @@ export function createHealthHandler(
       return;
     }
 
-    const status: any = {
+    const status: Record<string, unknown> = {
       status: 'ok',
       uptime: process.uptime(),
       pid: process.pid,

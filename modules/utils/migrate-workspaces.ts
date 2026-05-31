@@ -63,7 +63,7 @@ export function migrateWorkspaces(): MigrationResult {
       const botUuid = ensureBotUuid(botKey, botIds, dataDir);
       migrateBotData(botKey, botUuid, dataDir, oldSessionsDir, oldSoulDir);
       result.botsMigrated.push(botKey);
-    } catch (e: any) {
+    } catch (e: unknown) {
       const msg = `[${botKey}] ${e.message}`;
       result.errors.push(msg);
       console.error(`[Migration] ERROR: ${msg}`);

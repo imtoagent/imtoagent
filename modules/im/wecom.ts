@@ -17,6 +17,7 @@ import * as qrcode from 'qrcode';
 import type { IMModule, IMCapabilities, MessageHandler } from '../types';
 import type { UnifiedBlock } from '../capabilities';
 import type { MessageAttachment } from '../core/types';
+import type { WeComMessageFrame, WeComSelectedItem } from './im-types';
 
 // ================================================================
 // 常量
@@ -183,7 +184,7 @@ export class WeComIMModule implements IMModule {
   private cfg: WeComConfig;
 
   // 被动回复：保存最近收到的 message frame（按 chatId），reply() 优先走被动回复通道
-  private pendingFrames = new Map<string, any>();
+  private pendingFrames = new Map<string, WeComMessageFrame>();
 
   constructor(cfg: WeComConfig = {}) {
     this.cfg = cfg;
@@ -281,15 +282,16 @@ export class WeComIMModule implements IMModule {
       }
     });
 
-    this.ws.on('error', (err: any) => {
-      console.error(`[WeCom] Error: ${err?.message || err}`);
+    this.ws.on('error', (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[WeCom] Error: ${msg}`);
     });
 
     // 4. 接收消息
-    this.ws.on('message', async (frame: any) => {
+    this.ws.on('message', async (frame: WeComMessageFrame) => {
       try {
         await this._handleMessage(frame);
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error(`[WeCom] Message processing error: ${e.message}`);
       }
     });
@@ -297,7 +299,7 @@ export class WeComIMModule implements IMModule {
 
   // ── Message Parsing ──
 
-  private async _handleMessage(frame: any): Promise<void> {
+  private async _handleMessage(frame: WeComMessageFrame): Promise<void> {
     const body = frame.body || {};
     const msgType = (body.msgtype || '').toLowerCase();
 
@@ -307,7 +309,7 @@ export class WeComIMModule implements IMModule {
       if (evt?.eventtype === 'template_card_event') {
         // 模板卡片按钮点击 → 转为文本
         const items = evt.selected_items?.selected_item ?? [];
-        const lines = items.map((it: any) => {
+        const lines = items.map((it: WeComSelectedItem) => {
           const ids = it.option_ids?.option_id?.filter(Boolean) ?? [];
           return `- ${it.question_key || '?'}: ${ids.join(', ') || '(not selected)'}`;
         });
@@ -403,7 +405,7 @@ export class WeComIMModule implements IMModule {
       try {
         await this.ws.reply(frame, body);
         return;
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.warn(`[WeCom] Passive reply failed, falling back to push: ${e.message}`);
       }
     }
@@ -411,7 +413,7 @@ export class WeComIMModule implements IMModule {
     // fallback: 主动推送
     try {
       await this.ws.sendMessage(chatId, body);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeCom] Send failed: ${e.message}`);
     }
   }
@@ -435,7 +437,7 @@ export class WeComIMModule implements IMModule {
     }
     try {
       await this.ws.replyStream(frame, streamId, content, finish);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeCom] Stream send failed: ${e.message}`);
     }
   }
@@ -457,7 +459,7 @@ export class WeComIMModule implements IMModule {
       if (result === 'skipped' && !finish) {
         // 静默跳过中间帧（非阻塞保护生效）
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeCom] Non-blocking stream send failed: ${e.message}`);
     }
   }
@@ -482,7 +484,7 @@ export class WeComIMModule implements IMModule {
             try {
               const mediaId = await this._uploadMediaFromSource(b.url, 'image', b.title || 'image.png');
               if (mediaId) await this.ws!.sendMediaMessage(chatId, 'image', mediaId);
-            } catch (e: any) { console.error(`[WeCom] Image upload failed: ${e.message}`); }
+            } catch (e: unknown) { console.error(`[WeCom] Image upload failed: ${e.message}`); }
           }
           break;
         case 'file':
@@ -490,7 +492,7 @@ export class WeComIMModule implements IMModule {
             try {
               const mediaId = await this._uploadMediaFromSource(b.url, 'file', b.title || 'file');
               if (mediaId) await this.ws!.sendMediaMessage(chatId, 'file', mediaId);
-            } catch (e: any) { console.error(`[WeCom] File upload failed: ${e.message}`); }
+            } catch (e: unknown) { console.error(`[WeCom] File upload failed: ${e.message}`); }
           }
           break;
       }
@@ -503,7 +505,7 @@ export class WeComIMModule implements IMModule {
     try {
       const mediaId = await this._uploadMediaFromSource(imageKey, 'image', this._basename(imageKey));
       if (mediaId) await this.ws.sendMediaMessage(chatId, 'image', mediaId);
-    } catch (e: any) { console.error(`[WeCom] Image send failed: ${e.message}`); }
+    } catch (e: unknown) { console.error(`[WeCom] Image send failed: ${e.message}`); }
   }
 
   async sendFile(chatId: string, fileKey: string, fileName: string): Promise<void> {
@@ -511,7 +513,7 @@ export class WeComIMModule implements IMModule {
     try {
       const mediaId = await this._uploadMediaFromSource(fileKey, 'file', fileName);
       if (mediaId) await this.ws.sendMediaMessage(chatId, 'file', mediaId);
-    } catch (e: any) { console.error(`[WeCom] File send failed: ${e.message}`); }
+    } catch (e: unknown) { console.error(`[WeCom] File send failed: ${e.message}`); }
   }
 
   // ── 媒体上传 ──
@@ -595,7 +597,7 @@ export class WeComIMModule implements IMModule {
       fs.writeFileSync(filePath, buffer);
       console.log(`[WeCom] Media downloaded: ${mediaId} → ${filePath}`);
       return filePath;
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[WeCom] Media download failed (${mediaId}): ${e.message}`);
       return null;
     }

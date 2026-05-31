@@ -73,7 +73,7 @@ export class FeishuInboundAdapter implements InboundMediaAdapter {
         contentType,
         sourceKey: resourceKey,
       };
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[FeishuInbound] download message resource exception: ${e.message}`);
       return null;
     }

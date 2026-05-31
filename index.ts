@@ -21,6 +21,10 @@ import { resolveCapabilities } from './modules/prompt-builder';
 import { getDataDir } from './modules/utils/paths';
 import { WorkspaceManager, createWorkspaceManager } from './modules/utils/workspace-manager';
 import { migrateWorkspaces } from './modules/utils/migrate-workspaces';
+import { getDataDir } from './modules/utils/paths';
+import { McpManager } from './modules/utils/mcp-manager';
+import { SkillsManager } from './modules/utils/skills-manager';
+import { PromptsManager } from './modules/utils/prompts-manager';
 import { FeishuIMModule } from './modules/im/feishu';
 import { TelegramAdapter } from './modules/im/telegram';
 import { WeComIMModule } from './modules/im/wecom';
@@ -321,6 +325,10 @@ class Bot {
   adapter: AgentAdapter;
   /** 正在执行的任务的取消信号（chatId → AbortController） */
   activeControllers: Map<string, AbortController> = new Map();
+  /** Resource managers (MCP/Skills/Prompts) */
+  mcpManager: McpManager;
+  skillsManager: SkillsManager;
+  promptsManager: PromptsManager;
 
   constructor(cfg: BotConfig, globalConfig: any, workspaceManager: WorkspaceManager) {
     this.id = cfg.id || cfg.name; // 后向兼容：无 id 时用 name
@@ -373,10 +381,19 @@ class Bot {
     const workspacePath = this.workspaceManager.getWorkspacePath(this.id);
     this.sessionManager = new CustomSessionManager(this.id, workspacePath, this.sessions);
 
+    // Resource managers
+    this.mcpManager = new McpManager(workspacePath);
+    this.skillsManager = new SkillsManager(workspacePath);
+    this.promptsManager = new PromptsManager(workspacePath);
+
     const adapterCtx = {
       imModule: this.im,
       botName: this.name,
       modelAliases: this.modelAliases,
+      workspacePath,
+      mcpManager: this.mcpManager,
+      skillsManager: this.skillsManager,
+      promptsManager: this.promptsManager,
     };
 
     if (this.backend === 'claude') {
@@ -773,8 +790,8 @@ class Bot {
       session.recentMessages.push(text);
       if (session.recentMessages.length > 5) session.recentMessages = session.recentMessages.slice(-5);
 
-      // 构建系统提示词
-      const systemPrompt = this.soul ? buildSystemPromptWithSoul(this.soul, this.name, this.im) : undefined;
+      // 构建系统提示词（统一入口：资源 + soul + restart instruction）
+      const systemPrompt = buildSystemPromptWithSoul(this.soul || undefined, this.name, this.im, this.mcpManager, this.skillsManager, this.promptsManager);
 
       // SDK Runtime 处理
       const result = await this.runtime.processMessage({
@@ -825,8 +842,33 @@ class Bot {
 // ===== 系统提示词构建（不依赖 prompt-builder 的旧接口） =====
 import { buildSystemPrompt } from './modules/prompt-builder';
 
-function buildSystemPromptWithSoul(soul: string, botName: string, imModule: IMModule | null): string {
-  const base = buildSystemPrompt({ imModule, botName });
+function buildSystemPromptWithSoul(
+  soul: string,
+  botName: string,
+  imModule: IMModule | null,
+  mcpManager: McpManager | null,
+  skillsManager: SkillsManager | null,
+  promptsManager: PromptsManager | null,
+): string {
+  const base = buildSystemPrompt({
+    imModule,
+    botName,
+    mcpInfo: mcpManager
+      ? {
+          servers: Object.entries(mcpManager.list()).map(([k, v]) => ({
+            name: k,
+            enabled: (v as { enabled?: boolean }).enabled ?? true,
+            backends: [(v as { command?: string; url?: string }).command || (v as { command?: string; url?: string }).url || 'stdio'],
+          })),
+        }
+      : undefined,
+    skillsInfo: skillsManager
+      ? { skills: skillsManager.list().map(s => ({ name: s.name })) }
+      : undefined,
+    promptsInfo: promptsManager
+      ? { prompts: promptsManager.list().map(p => ({ name: p.name })) }
+      : undefined,
+  });
 
   // 注入 Agent 自主重启能力说明（信号文件路径固定）
   const restartInstruction = `\n\n## Gateway Restart Capability\n\nIf you determine that the IMtoAgent gateway needs to be restarted (e.g., config changes, abnormal state detected that requires reset), execute the following command:\n\n\`\`\`bash\necho '{"reason": "<brief reason>", "timestamp": '"$(date +%s)"'}' > ${process.env.HOME}/.imtoagent/.restart_requested\n\`\`\`\n\nRules:\n- This signal file is automatically detected and consumed by the Runtime, the user will not see it\n- Your reply will be sent to the user normally before the gateway restarts\n- Only use when truly needed, do not trigger arbitrarily\n- If you don't need a restart, ignore this instruction`;

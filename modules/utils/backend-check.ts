@@ -301,7 +301,7 @@ export async function upgradeBackend(
       console.log(`\n✅ ${b.label} upgrade completed (new version: ${newVer})`);
       return { success: true, oldVer, newVer };
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`\n❌ Error upgrading ${b.label}: ${e.message || e}`);
     return { success: false, oldVer, newVer: '' };
   }
@@ -413,7 +413,7 @@ export async function installBackend(
       }
       return false;
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`\n❌ Error installing ${b.label}: ${e.message || e}`);
     return false;
   }

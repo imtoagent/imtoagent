@@ -9,18 +9,25 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import { buildSystemPrompt } from '../prompt-builder';
+import type { McpManager } from '../utils/mcp-manager';
+import type { SkillsManager } from '../utils/skills-manager';
+import type { PromptsManager } from '../utils/prompts-manager';
+import type { McpManager } from '../utils/mcp-manager';
+import type { SkillsManager } from '../utils/skills-manager';
+import type { PromptsManager } from '../utils/prompts-manager';
 
 // ================================================================
 // ClaudeAdapter 上下文
 // ================================================================
 
 export interface ClaudeAdapterContext {
-  /** 用于构建 system prompt（IM 能力 + bot 名 + soul） */
-  imModule?: { getCapabilities(): any } | null;
+  imModule?: { getCapabilities(): IMCapabilities } | null;
   botName: string;
-  /** 模型别名映射（sonnet/opus/haiku → 实际供应商/模型） */
   modelAliases: Record<string, string>;
+  workspacePath: string;
+  mcpManager?: McpManager;
+  skillsManager?: SkillsManager;
+  promptsManager?: PromptsManager;
 }
 
 // ================================================================
@@ -34,14 +41,16 @@ function resolveAlias(modelSpec: string): string {
 
 function extractText(msg: SDKMessage): string | null {
   if (msg.type !== 'assistant') return null;
-  const content = (msg as any).message?.content;
+  const msgRec = msg as Record<string, unknown>;
+  const content = (msgRec.message as Record<string, unknown>)?.content;
   if (!Array.isArray(content)) return null;
-  return content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('') || null;
+  return (content as Array<Record<string, unknown>>).filter((b) => b.type === 'text').map((b) => b.text as string).join('') || null;
 }
 
 function extractToolCalls(msg: SDKMessage): Array<{ name: string; summary: string }> {
   if (msg.type !== 'assistant') return [];
-  const content = (msg as any).message?.content;
+  const msgRec = msg as Record<string, unknown>;
+  const content = (msgRec.message as Record<string, unknown>)?.content;
   if (!Array.isArray(content)) return [];
   const results: Array<{ name: string; summary: string }> = [];
   for (const block of content) {
@@ -131,7 +140,7 @@ export class ClaudeAdapter implements AgentAdapter {
     };
 
     // 构建查询选项
-    const queryOptions: any = {
+    const queryOptions: Record<string, unknown> = {
       cwd: workingDir,
       maxTurns: 50,
       model: modelName,
@@ -149,14 +158,9 @@ export class ClaudeAdapter implements AgentAdapter {
       }, ClaudeAdapter.MAX_CALL_TIMEOUT_MS);
     }
 
-    // System Prompt（优先使用传入的，否则自行构建）
+    // System Prompt（统一由 index.ts 注入，adapter 不再 fallback 自建）
     if (overrideSystemPrompt) {
       queryOptions.systemPrompt = overrideSystemPrompt;
-    } else {
-      queryOptions.systemPrompt = buildSystemPrompt({
-        imModule: this.ctx.imModule || null,
-        botName: this.ctx.botName,
-      });
     }
 
     // 恢复/创建 SDK 会话 ID
@@ -192,11 +196,11 @@ export class ClaudeAdapter implements AgentAdapter {
     const toolCalls: Array<{ name: string; summary: string }> = [];
 
     for await (const msg of q) {
-      const msgAny = msg as any;
+      const msgRec = msg as Record<string, unknown>;
 
       // 捕获 SDK session ID（存入 metadata 供 SDK Runtime 持久化）
-      if (msgAny.session_id && !session.metadata?.sdkSessionId) {
-        session.metadata.sdkSessionId = msgAny.session_id;
+      if (msgRec.session_id && !session.metadata?.sdkSessionId) {
+        session.metadata.sdkSessionId = msgRec.session_id as string;
         // 向后兼容：也写回旧字段
         sessionAny.sdkSessionId = msgAny.session_id;
       }
@@ -253,7 +257,7 @@ export class ClaudeAdapter implements AgentAdapter {
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     };
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (timeoutId) clearTimeout(timeoutId);
       // 如果是被 abort（超时或手动清理），提供有意义的消息
       if (abortCtrl.signal.aborted) {

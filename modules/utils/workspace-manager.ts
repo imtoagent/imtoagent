@@ -27,7 +27,7 @@ export interface WorkspaceConfig {
  * 从 config.json 中提取 workspace 配置。
  * 老用户无 workspace 配置时，默认 sandbox 模式。
  */
-export function parseWorkspaceConfig(raw: any): WorkspaceConfig {
+export function parseWorkspaceConfig(raw: unknown): WorkspaceConfig {
   const ws = raw?.workspace || {};
   const mode: WorkspaceMode = ws.mode === 'global' ? 'global' : 'sandbox';
   const globalPath: string | null = ws.globalPath || null;
@@ -123,7 +123,7 @@ export class WorkspaceManager {
       if (!fs.existsSync(soulPath)) {
         fs.mkdirSync(soulPath, { recursive: true });
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Workspace] Failed to ensure workspace for ${botKey}: ${e.message}`);
       throw e;
     }
@@ -223,7 +223,7 @@ export class WorkspaceManager {
 // 便捷函数：从原始配置创建 WorkspaceManager
 // ================================================================
 
-export function createWorkspaceManager(rawConfig: any): WorkspaceManager {
+export function createWorkspaceManager(rawConfig: unknown): WorkspaceManager {
   const config = parseWorkspaceConfig(rawConfig);
   return new WorkspaceManager(config);
 }

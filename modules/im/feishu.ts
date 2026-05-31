@@ -6,6 +6,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import type { IMModule, IMCapabilities, MessageHandler } from '../types';
 import type { UnifiedBlock } from '../capabilities';
 import type { MessageAttachment } from '../core/types';
+import type { FeishuMessageEvent, FeishuCardMessage, FeishuPostParagraph, FeishuPostElement } from './im-types';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDataDir } from '../utils/paths';
@@ -19,12 +20,12 @@ export interface FeishuConfig {
 // 飞书消息卡片元素类型
 interface CardElement {
   tag: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface CardAction {
   tag: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // Token 缓存条目，含过期时间
@@ -35,7 +36,7 @@ interface TokenEntry {
 
 export class FeishuIMModule implements IMModule {
   private client: Lark.Client;
-  private wsClient: any = null;
+  private wsClient: Lark.WSClient | null = null;
   private appId: string;
   private appSecret: string;
   private messageHandler: MessageHandler | null = null;
@@ -90,7 +91,7 @@ export class FeishuIMModule implements IMModule {
         return this._tenantAccessToken.token;
       }
       throw new Error(`Failed to get token: ${res.code} ${res.msg}`);
-    } catch (e: any) {
+    } catch (e: unknown) {
       throw new Error(`Failed to get token: ${e.message}`);
     }
   }
@@ -116,7 +117,7 @@ export class FeishuIMModule implements IMModule {
         return this._appAccessToken.token;
       }
       throw new Error(`Failed to get app token: ${res.code} ${res.msg}`);
-    } catch (e: any) {
+    } catch (e: unknown) {
       throw new Error(`Failed to get app token: ${e.message}`);
     }
   }
@@ -132,7 +133,7 @@ export class FeishuIMModule implements IMModule {
         params: { receive_id_type: 'chat_id' },
         data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: safe }) },
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] Reply failed: ${e.message}`);
     }
   }
@@ -143,7 +144,7 @@ export class FeishuIMModule implements IMModule {
         params: { receive_id_type: 'chat_id' },
         data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) },
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] Progress notification failed: ${e.message}`);
     }
   }
@@ -171,7 +172,7 @@ export class FeishuIMModule implements IMModule {
           await this.sendFile(chatId, fileKey, fb.filename);
           console.log(`[Feishu] File sent: ${fb.filename}`);
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error(`[Feishu] File send failed: ${fb.filename} - ${e.message}`);
       }
     }
@@ -215,7 +216,7 @@ ${this.escapeCodeBlock(block.code)}
               if (imageKey) {
                 cardElements.push({ tag: 'img', img_key: imageKey, alt: { tag: 'plain_text', content: block.alt || '' } });
               }
-            } catch (e: any) {
+            } catch (e: unknown) {
               console.error(`[Feishu] Image upload failed: ${e.message}`);
               cardElements.push({ tag: 'markdown', content: `⚠️ Image load failed` });
             }
@@ -254,7 +255,7 @@ ${this.escapeCardMarkdown(block.content || '')}`,
     }
 
     // 构建卡片 JSON
-    const card: any = {
+    const card: FeishuCardMessage = {
       config: { wide_screen_mode: true },
       elements: cardElements,
     };
@@ -269,7 +270,7 @@ ${this.escapeCardMarkdown(block.content || '')}`,
         },
       });
       console.log(`[Feishu] Card message sent (${cardBlocks.length} blocks)`);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] Card send failed: ${e.message}`);
       // 降级：拼接为纯文本发送
       const fallback = cardBlocks.map(b => {
@@ -304,7 +305,7 @@ ${b.content || ''}`;
           content: JSON.stringify({ image_key: imageKey }),
         },
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] Image send failed: ${e.message}`);
     }
   }
@@ -337,7 +338,7 @@ ${b.content || ''}`;
       if (key) return key;
       console.error(`[Feishu] Image upload failed: image_key missing`);
       return null;
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] Image upload error: ${e.message}`);
       return null;
     }
@@ -355,7 +356,7 @@ ${b.content || ''}`;
       if (key) return key;
       console.error(`[Feishu] Image upload failed: image_key missing`);
       return null;
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] Image upload failed: ${e.message}`);
       return null;
     }
@@ -371,7 +372,7 @@ ${b.content || ''}`;
       const buffer = await this.downloadFile(url);
       if (!buffer) return null;
       return this.uploadFileFromBuffer(buffer, filename || path.basename(new URL(url).pathname) || 'file');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] File upload error: ${e.message}`);
       return null;
     }
@@ -382,7 +383,7 @@ ${b.content || ''}`;
     try {
       const buffer = fs.readFileSync(filePath);
       return this.uploadFileFromBuffer(buffer, path.basename(filePath));
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] File upload failed: ${e.message}`);
       return null;
     }
@@ -408,7 +409,7 @@ ${b.content || ''}`;
       }
       console.error(`[Feishu] File upload failed: ${data.code} ${data.msg}`);
       return null;
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] File upload error: ${e.message}`);
       return null;
     }
@@ -425,7 +426,7 @@ ${b.content || ''}`;
           content: JSON.stringify({ file_key: fileKey }),
         },
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Feishu] File send failed: ${e.message}`);
     }
   }
@@ -468,7 +469,7 @@ ${b.content || ''}`;
     if (!this.running || !this.messageHandler) return;
 
     const dispatcher = new Lark.EventDispatcher({}).register({
-      'im.message.receive_v1': async (data: any) => {
+      'im.message.receive_v1': async (data: FeishuMessageEvent) => {
         try {
           const { message } = data;
           if (!message) return;
@@ -565,7 +566,7 @@ ${b.content || ''}`;
           this.reconnectAttempts = 0;
 
           await this.messageHandler!(chatId, text, userId, attachments.length > 0 ? attachments : undefined);
-        } catch (e: any) {
+        } catch (e: unknown) {
           console.error(`[Feishu] Message processing error: ${e.message}`);
           // Don't throw to prevent SDK dispatcher unhandled rejection from crashing the process
         }
@@ -574,15 +575,15 @@ ${b.content || ''}`;
 
     // 自定义 Logger — 过滤 SDK 内部 WS 重连噪音
     const quietLogger = {
-      info: (...args: any[]) => { /* silent info */ },
-      warn: (...args: any[]) => { /* silent warn */ },
-      error: (...args: any[]) => {
+      info: (..._args: unknown[]) => { /* silent info */ },
+      warn: (..._args: unknown[]) => { /* silent warn */ },
+      error: (...args: unknown[]) => {
         const msg = args.join(' ');
         // 过滤已知的 SDK 内部 WS 重连噪音（不影响功能，SDK 自带自动重连）
         if (msg.includes('[ws]') && (msg.includes('ECONNREFUSED') || msg.includes('connect failed') || msg.includes('system busy') || msg.includes('repeat connection'))) return;
         console.error(`[Feishu-SDK] ${msg}`);
       },
-      debug: (...args: any[]) => { /* silent debug */ },
+      debug: (..._args: unknown[]) => { /* silent debug */ },
     };
 
     this.wsClient = new Lark.WSClient({
@@ -597,7 +598,7 @@ ${b.content || ''}`;
         this.reconnectAttempts = 0;
         console.log(`[Feishu] WS connected`);
       })
-      .catch((e: any) => {
+      .catch((e: unknown) => {
         console.error(`[Feishu] WS connection failed: ${e.message}`);
         this._scheduleReconnect();
       });
@@ -611,8 +612,9 @@ ${b.content || ''}`;
       this.reconnectAttempts = 0;
       console.log('[Feishu] WS reconnected');
     });
-    this.wsClient.on?.('error', (e: any) => {
-      console.error(`[Feishu] WS error: ${e.message || e}`);
+    this.wsClient.on?.('error', (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[Feishu] WS error: ${msg}`);
     });
   }
 
@@ -693,8 +695,8 @@ ${b.content || ''}`;
       const locale = parsed.zh_cn || parsed.en_us || parsed;
       if (!locale?.content) return content.trim();
 
-      const lines = locale.content.map((paragraph: any[]) => {
-        return paragraph.map((elem: any) => {
+      const lines = locale.content.map((paragraph: FeishuPostParagraph) => {
+        return paragraph.map((elem: FeishuPostElement) => {
           switch (elem.tag) {
             case 'text':    return elem.text || '';
             case 'a':       return `[${elem.text}](${elem.href})`;

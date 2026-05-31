@@ -178,7 +178,7 @@ async function cmdSessionInfo(args: string[], sessionsDir: string): Promise<void
   console.log(`Session not found: ${chatId}`);
 }
 
-function printSessionDetail(bot: string, data: any): void {
+function printSessionDetail(bot: string, data: Record<string, unknown>): void {
   console.log(`\n📋 Session Details — ${data.chatId || 'unknown'}\n`);
   console.log(`  Bot:          ${bot}`);
   console.log(`  Chat ID:      ${data.chatId || 'unknown'}`);

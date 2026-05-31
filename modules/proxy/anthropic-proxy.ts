@@ -18,6 +18,24 @@ import { getCurrentBot } from '../bot-context';
 import { handleCodexRequest } from './codex-proxy';
 import { getDataDir, getSessionsDir } from '../utils/paths';
 import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
+import type {
+  AnthropicRequestBody,
+  OpenAIRequestBody,
+  AnthropicMessage,
+  AnthropicContentBlock,
+  AnthropicTextBlock,
+  AnthropicImageBlock,
+  AnthropicToolUseBlock,
+  AnthropicToolResultBlock,
+  AnthropicTool,
+  OpenAIMessage,
+  OpenAIContentBlock,
+  OpenAIToolCall,
+  OpenAITool,
+  AnthropicStreamEvent,
+  AnthropicResponseUsage,
+  AnthropicToolChoice,
+} from './proxy-types';
 
 // ===== 共享状态 =====
 export interface ModelAliases {
@@ -82,16 +100,16 @@ export function loadProviders(): { providers: Map<string, ProviderConfig>; defau
     if (cfg.activeModel) defaultModel = cfg.activeModel;
     else if (cfg.defaultModel) defaultModel = cfg.defaultModel;
     const provs = cfg.providers || {};
-    for (const [name, p] of Object.entries(provs) as [string, any][]) {
+    for (const [name, p] of Object.entries(provs) as [string, Record<string, unknown>][]) {
       providers.set(name, {
-        baseUrl: p.baseUrl || '',
-        apiKey: p.apiKey || '',
-        models: p.models || [],
-        format: p.format || 'anthropic',
+        baseUrl: (p.baseUrl as string) || '',
+        apiKey: (p.apiKey as string) || '',
+        models: (p.models as string[]) || [],
+        format: (p.format as string) || 'anthropic',
       });
     }
     console.log(`[Proxy] Loaded ${providers.size} provider(s): ${[...providers.keys()].join(', ')}`);
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Proxy] Failed to read providers.json: ${e.message}`);
   }
   return { providers, defaultModel };
@@ -105,7 +123,7 @@ export function saveActiveModel(modelSpec: string): void {
     cfg.activeModel = modelSpec;
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n');
     console.log(`[Proxy] activeModel persisted: ${modelSpec}`);
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Proxy] Failed to save activeModel: ${e.message}`);
   }
 }
@@ -117,7 +135,7 @@ const SESSIONS_DIR = () => getSessionsDir();
 const reasoningCache = new Map<string, string>();
 
 /** 根据消息历史生成简单会话指纹（用第一条 user 消息，避免 tool_result 污染） */
-function conversationFingerprint(messages: any[]): string {
+function conversationFingerprint(messages: (AnthropicMessage | OpenAIMessage)[]): string {
   // OpenCode 在工具执行后，消息列表中最后一条 "user" 是 tool_result，
   // 会导致指纹变化、reasoning cache miss。改为用第一条 user 消息。
   for (let i = 0; i < messages.length; i++) {
@@ -152,7 +170,7 @@ export function loadSessionConfig(customPath?: string): { activeModel: string; m
       activeModel: cfg.activeModel || defaultAliases.default,
       modelAliases: cfg.modelAliases || defaultAliases,
     };
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Proxy] Failed to load session config (${customPath || '_default.json'}): ${e.message}`);
     return { activeModel: defaultAliases.default, modelAliases: defaultAliases };
   }
@@ -173,7 +191,7 @@ export function saveSessionConfig(userId: string, activeModel: string, modelAlia
       lastActive: new Date().toISOString(),
     };
     fs.writeFileSync(sessionPath, JSON.stringify(cfg, null, 2) + '\n');
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Proxy] Failed to save session config (${userId}): ${e.message}`);
   }
 }
@@ -217,7 +235,7 @@ export function resolveModelByPrefix(modelName: string): string {
 
   // OpenCode 独立模型标识（通过 opencode.json 的 models.id 覆盖注入）
   if (lower.startsWith('opencode-')) {
-    return (aliases as any).opencode || aliases.sonnet;
+    return (aliases as Record<string, string>).opencode || aliases.sonnet;
   }
 
   // 其他情况：返回当前 activeConfig 的完整规格
@@ -242,7 +260,7 @@ export function getProviderConfig(modelSpec: string): ProxyConfig | null {
     apiKey: p.apiKey,
     model: modelName,
     providerName: provName,
-    format: (p.format as any) || 'anthropic',
+    format: (p.format as string) || 'anthropic',
   };
 }
 
@@ -266,20 +284,20 @@ function cleanCCUserContent(text: string): string {
 }
 
 /** Anthropic content → OpenAI 字符串 */
-function normalizeAnthropicContent(content: any): string {
+function normalizeAnthropicContent(content: string | AnthropicContentBlock[]): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .map((block: any) => {
-        if (block.type === 'text') return block.text;
-        if (block.type === 'tool_use') return `[tool:${block.name}]`;
+      .map((block) => {
+        if (block.type === 'text') return (block as AnthropicTextBlock).text;
+        if (block.type === 'tool_use') return `[tool:${(block as AnthropicToolUseBlock).name}]`;
         if (block.type === 'tool_result') {
-          const c = block.content;
+          const c = (block as AnthropicToolResultBlock).content;
           if (typeof c === 'string') return c;
-          if (Array.isArray(c)) return c.map((b: any) => b.text || '').join('');
+          if (Array.isArray(c)) return c.map((b) => (b as AnthropicTextBlock).text || '').join('');
           return '';
         }
-        return block.text || '';
+        return (block as AnthropicTextBlock).text || '';
       })
       .join('\n');
   }
@@ -287,8 +305,8 @@ function normalizeAnthropicContent(content: any): string {
 }
 
 /** Anthropic 请求体 → OpenAI 请求体 */
-function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelName?: string): any {
-  const messages: any[] = [];
+function anthropicToOpenAI(anthropicBody: AnthropicRequestBody, modelName: string, originalModelName?: string): OpenAIRequestBody {
+  const messages: OpenAIMessage[] = [];
 
   // system 是 Anthropic 顶层字段，转为 OpenAI messages 第一条
   // 必须 normalize，否则 cache_control、billing header 等 Anthropic 特有字段会泄漏
@@ -304,12 +322,12 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
       // 如果是数组 content，拆分为 text / tool_result / image
       if (Array.isArray(msg.content)) {
         const textParts: string[] = [];
-        const imageBlocks: any[] = [];  // OpenAI vision 格式的图片块
+        const imageBlocks: OpenAIImageBlock[] = [];  // OpenAI vision 格式的图片块
         for (const block of msg.content) {
           if (block.type === 'tool_result') {
-            const tc = block.content;
+            const tc = (block as AnthropicToolResultBlock).content;
             const resultText = typeof tc === 'string' ? tc
-              : Array.isArray(tc) ? tc.map((b: any) => b.text || '').join('') : String(tc || '');
+              : Array.isArray(tc) ? tc.map((b) => (b as AnthropicTextBlock).text || '').join('') : String(tc || '');
             messages.push({
               role: 'tool',
               content: resultText,
@@ -330,7 +348,7 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
         }
         // 构建 user 消息（文本 + 可能有的图片）
         if (textParts.length > 0 || imageBlocks.length > 0) {
-          let content: any;
+          let content: string | OpenAIContentBlock[];
           if (imageBlocks.length > 0) {
             // 有图片 → 用数组格式
             content = [];
@@ -362,7 +380,7 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
       if (Array.isArray(msg.content)) {
         // 混合内容：文本 + 工具调用 + 思考
         const textParts: string[] = [];
-        const toolCalls: any[] = [];
+        const toolCalls: OpenAIToolCall[] = [];
         const reasoningParts: string[] = [];
         for (const block of msg.content) {
           if (block.type === 'text') {
@@ -383,7 +401,7 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
           }
           // redacted_thinking 块：忽略
         }
-        const msgObj: any = { role: 'assistant' };
+        const msgObj: OpenAIMessage & { reasoning_content?: string } = { role: 'assistant' };
         // 只有文本时用文本，只有工具调用时 content 为 null（部分 API 要求显式 null）
         if (textParts.length > 0) {
           msgObj.content = textParts.join('\n');
@@ -404,7 +422,7 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
     } else if (msg.role === 'tool') {
       const toolContent = (() => {
         if (typeof msg.content === 'string') return msg.content;
-        if (Array.isArray(msg.content)) return msg.content.map((b: any) => b.text || '').join('');
+        if (Array.isArray(msg.content)) return msg.content.map((b) => (b as AnthropicTextBlock).text || '').join('');
         return String(msg.content || '');
       })();
       messages.push({
@@ -416,7 +434,7 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
   }
 
   // tool_choice 转换
-  let toolChoice: any = undefined;
+  let toolChoice: OpenAIRequestBody['tool_choice'] = undefined;
   if (anthropicBody.tool_choice) {
     const tc = anthropicBody.tool_choice;
     if (tc.type === 'any') toolChoice = 'required';
@@ -432,7 +450,7 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
   // OpenCode 不保留 thinking 块，第二轮请求会因 reasoning_content 缺失被 DeepSeek 拒绝。
   // 仅对 opencode-default 模型禁用 thinking。Claude Code 正常保留 thinking 不受影响。
   const isOpenCodeModel = originalModelName === 'opencode-default';
-  const extraParams: any = {};
+  const extraParams: Record<string, unknown> = {};
   if (isOpenCodeModel) extraParams.thinking = { type: 'disabled' };
 
   return {
@@ -442,9 +460,9 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
     temperature: anthropicBody.temperature,
     stream: anthropicBody.stream !== false,
     ...extraParams,
-    tools: anthropicBody.tools?.map((t: any) => {
+    tools: anthropicBody.tools?.map((t: AnthropicTool) => {
       // 修复 null/undefined input_schema，DeepSeek 等供应商不接受 type:null
-      let params: any = {};
+      let params: Record<string, unknown> = {};
       if (t.input_schema && typeof t.input_schema === 'object') {
         params = JSON.parse(JSON.stringify(t.input_schema, (k, v) => v === null ? undefined : v));
       }
@@ -465,11 +483,11 @@ function anthropicToOpenAI(anthropicBody: any, modelName: string, originalModelN
 }
 
 /** OpenAI 非流式响应 → Anthropic 格式 */
-function openAIToAnthropic(openAIBody: any, modelName: string): any {
+function openAIToAnthropic(openAIBody: OpenAIRequestBody, modelName: string): AnthropicRequestBody {
   const choice = openAIBody.choices?.[0];
   if (!choice) return { id: 'msg_err', type: 'message', role: 'assistant', content: [], model: modelName };
 
-  const content: any[] = [];
+  const content: AnthropicContentBlock[] = [];
   // DeepSeek reasoning_content → Anthropic thinking 块
   if (choice.message?.reasoning_content) {
     content.push({
@@ -483,7 +501,7 @@ function openAIToAnthropic(openAIBody: any, modelName: string): any {
   }
   if (choice.message?.tool_calls?.length > 0) {
     for (const tc of choice.message.tool_calls) {
-      let input: any = {};
+      let input: Record<string, unknown> = {};
       try { input = JSON.parse(tc.function?.arguments || '{}'); } catch { input = {}; }
       content.push({
         type: 'tool_use',
@@ -513,7 +531,7 @@ function openAIToAnthropic(openAIBody: any, modelName: string): any {
 }
 
 /** OpenAI SSE 流 → Anthropic SSE 流 */
-function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.ServerResponse, modelName: string, _reqBody?: any): void {
+function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.ServerResponse, modelName: string, _reqBody?: OpenAIRequestBody): void {
   let buffer = '';
   const messageId = `msg_${Date.now().toString(36)}`;
   let sentMessageStart = false;
@@ -526,7 +544,7 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
   let lastFinishReason = 'end_turn';
   let cachedReasoningContent = '';
 
-  function sendEvent(eventType: string, data: any) {
+  function sendEvent(eventType: string, data: AnthropicStreamEvent) {
     res.write(`event: ${eventType}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   }
@@ -619,7 +637,7 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
         return;
       }
 
-      let json: any;
+      let json: OpenAIStreamChunk;
       try { json = JSON.parse(dataStr); } catch { continue; }
 
       const delta = json.choices?.[0]?.delta;
@@ -774,7 +792,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   if (reqPath === '/health' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const modelSpec = cfg ? `${cfg.providerName}/${cfg.model}` : 'none';
-    const healthResp: any = { status: 'ok', model: modelSpec, providers: [...providers.keys()] };
+    const healthResp: { status: string; model: string | null; providers: string[] } = { status: 'ok', model: modelSpec, providers: [...providers.keys()] };
     
     // Add circuit breaker status
     if (circuitManager) {
@@ -803,7 +821,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   req.on('end', () => {
     let bodyStr = Buffer.concat(chunks).toString('utf-8');
     let originalModel = '';
-    let parsedBody: any = {};
+    let parsedBody: AnthropicRequestBody | OpenAIRequestBody = {} as AnthropicRequestBody;
 
     try {
       parsedBody = JSON.parse(bodyStr);
@@ -829,7 +847,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       }
     }
     if (parsedBody.tools && parsedBody.tools.length > 0) {
-      console.log(`[Proxy] 🔍 tools definition: ${parsedBody.tools.map((t: any) => t.name || t.type).join(', ')}`);
+      console.log(`[Proxy] 🔍 tools definition: ${(parsedBody.tools as AnthropicTool[]).map((t) => t.name || (t as AnthropicTool).type).join(', ')}`);
     }
 
     // 解析供应商和模型名
@@ -902,7 +920,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         if (cached) {
           for (const msg of parsedBody.messages) {
             if (msg.role === 'assistant' && Array.isArray(msg.content)) {
-              const hasThinking = msg.content.some((b: any) => b.type === 'thinking' || b.type === 'redacted_thinking');
+              const hasThinking = (msg.content as AnthropicContentBlock[]).some((b) => b.type === 'thinking' || b.type === 'redacted_thinking');
               if (!hasThinking) {
                 msg.content.unshift({
                   type: 'thinking',
@@ -1008,7 +1026,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
               res.end(respStr);
             }
           } else {
-            let openAIJson: any;
+            let openAIJson: OpenAIRequestBody;
             try { openAIJson = JSON.parse(respStr); } catch {
               console.error(`[Proxy] OpenAI JSON parse failed: ${respStr.slice(0, 200)}`);
               res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -1113,7 +1131,7 @@ export function saveSessionMemory(memoryPath: string, data: SessionMemoryData): 
   try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch {}
   try {
     fs.writeFileSync(memoryPath, JSON.stringify(data, null, 2));
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Memory] Failed to save session: ${e.message}`);
   }
 }
@@ -1122,7 +1140,7 @@ export function loadSessionMemory(memoryPath: string): SessionMemoryData | null 
   try {
     if (!fs.existsSync(memoryPath)) return null;
     return JSON.parse(fs.readFileSync(memoryPath, 'utf-8'));
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Memory] Failed to load session: ${e.message}`);
     return null;
   }
@@ -1132,7 +1150,7 @@ export function deleteSessionMemory(chatId: string): void {
   const filePath = `${SESSIONS_DIR()}/${chatId}.memory.json`;
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Memory] Failed to delete session ${chatId}: ${e.message}`);
   }
 }
@@ -1144,7 +1162,7 @@ export function listPersistedSessions(): string[] {
     return fs.readdirSync(sessionsBase)
       .filter(f => f.endsWith('.memory.json'))
       .map(f => f.replace('.memory.json', ''));
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error(`[Memory] Failed to scan session directory: ${e.message}`);
     return [];
   }

@@ -35,10 +35,10 @@ interface RawConfig {
     cwd?: string;
   }>;
   execServer?: { enabled: boolean; startupTimeoutMs: number; fallbackToExec: boolean };
-  codex?: any;
-  opencode?: any;
-  rateLimit?: any;
-  shutdown?: any;
+  codex?: Record<string, unknown>;
+  opencode?: Record<string, unknown>;
+  rateLimit?: Record<string, unknown>;
+  shutdown?: Record<string, unknown>;
 }
 
 /** Bot 级别配置（持久化在 sessions 目录） */
@@ -67,7 +67,7 @@ export class FileConfigManager implements ConfigManager {
       const configPath = path.join(getDataDir(), 'config.json');
       const raw = fs.readFileSync(configPath, 'utf-8');
       this.rawConfig = JSON.parse(raw);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Config] Failed to load config.json: ${e.message}`);
       this.rawConfig = {} as RawConfig;
     }
@@ -78,7 +78,7 @@ export class FileConfigManager implements ConfigManager {
       const raw = fs.readFileSync(provPath, 'utf-8');
       const provData = JSON.parse(raw);
 
-      for (const [name, p] of Object.entries(provData.providers || {}) as [string, any][]) {
+      for (const [name, p] of Object.entries(provData.providers || {}) as [string, Record<string, unknown>][]) {
         this.providerConfigs.set(name, {
           baseUrl: p.baseUrl || '',
           apiKey: p.apiKey || '',
@@ -86,7 +86,7 @@ export class FileConfigManager implements ConfigManager {
           format: (p.format as 'anthropic' | 'openai') || 'anthropic',
         });
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Config] Failed to load providers.json: ${e.message}`);
     }
 
@@ -129,7 +129,7 @@ export class FileConfigManager implements ConfigManager {
       } else {
         this.botConfigs.set(botKey, {});
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Config] Failed to load bot ${botKey} config: ${e.message}`);
       this.botConfigs.set(botKey, {});
     }
@@ -146,7 +146,7 @@ export class FileConfigManager implements ConfigManager {
       }
       this.botConfigs.set(botKey, config);
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Config] Failed to save bot ${botKey} config: ${e.message}`);
     }
   }
@@ -162,7 +162,7 @@ export class FileConfigManager implements ConfigManager {
     if (!this.rawConfig) return undefined as T;
 
     const keys = configPath.split('.');
-    let current: any = this.rawConfig;
+    let current: Record<string, unknown> | null = this.rawConfig;
 
     for (const key of keys) {
       if (current == null) return undefined as T;
@@ -260,7 +260,7 @@ export class FileConfigManager implements ConfigManager {
       try {
         const configPath = path.join(getDataDir(), 'config.json');
         fs.writeFileSync(configPath, JSON.stringify(this.rawConfig, null, 2) + '\n');
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error(`[Config] Failed to save global activeModel: ${e.message}`);
       }
     }

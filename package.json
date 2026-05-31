@@ -53,5 +53,8 @@
   "bugs": {
     "url": "https://github.com/imtoagent/imtoagent/issues"
   },
-  "homepage": "https://github.com/imtoagent/imtoagent#readme"
+  "homepage": "https://github.com/imtoagent/imtoagent#readme",
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
 }

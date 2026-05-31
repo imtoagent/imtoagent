@@ -257,7 +257,7 @@ function loadProviders(): ProvidersFile {
 
 function saveProvider(name: string, config: { baseUrl: string; apiKey: string; model: string; format: string }): void {
   const data = loadProviders();
-  data.providers[name] = config as any;
+  data.providers[name] = config as Record<string, unknown>;
   if (!data.active) data.active = name;
   fs.writeFileSync(getProvidersPath(), JSON.stringify(data, null, 2));
 }

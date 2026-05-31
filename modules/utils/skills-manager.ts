@@ -235,7 +235,7 @@ export class SkillsManager {
         }
 
         result.synced.push(b);
-      } catch (err: any) {
+      } catch (err: unknown) {
         result.errors.push(`${b}: ${err.message}`);
       }
     }

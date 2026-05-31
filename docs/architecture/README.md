@@ -56,6 +56,31 @@ soul/<BotName>/
 
 Injected into Agent system prompt alongside IM capabilities.
 
+### Resource Managers (Phase 14)
+
+Three resource managers are instantiated per Bot and injected via `adapterCtx`, making MCP servers, installed skills, and custom prompts visible in every agent's system prompt:
+
+```
+Bot constructor
+  ├─ McpManager(workspacePath)
+  ├─ SkillsManager(workspacePath)
+  ├─ PromptsManager(workspacePath)
+  └─ adapterCtx = { mcpManager, skillsManager, promptsManager }
+       ↓
+Agent Adapter → buildSystemPrompt({ mcpInfo, skillsInfo, promptsInfo })
+       ↓
+System Prompt → # Available Resources
+  ├─ MCP Servers (name, status, backends)
+  ├─ Installed Skills (name)
+  └─ Custom Prompts (name)
+```
+
+| Manager | Location | What it provides |
+|---------|----------|-----------------|
+| McpManager | `modules/utils/mcp-manager.ts` | Configured MCP servers per backend |
+| SkillsManager | `modules/utils/skills-manager.ts` | Installed skills per backend |
+| PromptsManager | `modules/utils/prompts-manager.ts` | Custom prompt templates |
+
 ### Graceful Shutdown
 
 SIGINT/SIGTERM → Stop IM → Stop Proxy → Persist sessions → Wait for active requests (10s timeout).

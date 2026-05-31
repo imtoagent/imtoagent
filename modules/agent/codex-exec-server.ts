@@ -30,7 +30,7 @@ export interface AgentEvent {
   type: 'text_delta' | 'tool_call' | 'turn_result' | 'error';
   textDelta?: string;
   toolName?: string;
-  toolInput?: Record<string, any>;
+  toolInput?: Record<string, unknown>;
   threadId?: string;
   usage?: { inputTokens: number; outputTokens: number };
   costUSD?: number;
@@ -96,7 +96,7 @@ export class CodexAppServerClient {
   }
 
   async startThread(cwd: string): Promise<string> {
-    const result: any = await this._sendRequest('thread/start', {
+    const result: Record<string, unknown> = await this._sendRequest('thread/start', {
       cwd,
       model: 'gpt-5.5',
       modelProvider: 'imtoagent',
@@ -111,7 +111,7 @@ export class CodexAppServerClient {
 
   async resumeThread(threadId: string): Promise<void> {
     // app-server v2: thread/resume 用于跨进程恢复
-    const result: any = await this._sendRequest('thread/resume', { threadId });
+    const result: Record<string, unknown> = await this._sendRequest('thread/resume', { threadId });
     console.log(`[app-server] thread resumed=${threadId.slice(-8)} chat=${this.chatId.slice(-8)}`);
   }
 
@@ -369,7 +369,7 @@ class CodexAppServerManager {
           if (line) this._processLine(line);
         }
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (!this._shuttingDown) console.error(`[app-server] read error: ${e.message}`);
     } finally {
       try { reader.releaseLock(); } catch {}
@@ -378,7 +378,7 @@ class CodexAppServerManager {
   }
 
   private _processLine(line: string): void {
-    let msg: any;
+    let msg: Record<string, unknown>;
     try { msg = JSON.parse(line); } catch { return; }
 
     if ('id' in msg && msg.id != null) {
@@ -390,7 +390,7 @@ class CodexAppServerManager {
     }
   }
 
-  private _handleNotification(client: CodexAppServerClient, method: string, params: any): void {
+  private _handleNotification(client: CodexAppServerClient, method: string, params: Record<string, unknown>): void {
     try {
       switch (method) {
         case 'thread/started':

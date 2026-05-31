@@ -50,7 +50,7 @@ interface LegacySessionData {
  * 保持向后兼容，不影响现有会话文件
  */
 function migrateFromLegacy(data: LegacySessionData, chatId: string): Session {
-  const metadata: Record<string, any> = {};
+  const metadata: Record<string, unknown> = {};
 
   // 迁移旧版特有 ID 到 metadata
   if (data.sdkSessionId) metadata.sdkSessionId = data.sdkSessionId;
@@ -138,7 +138,7 @@ export class FileSessionManager implements SessionManager {
           // 未知格式，新建
           session = this.createNewSession(chatId, userId);
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error(`[Session] Failed to load ${chatId}: ${e.message}, creating new session`);
         session = this.createNewSession(chatId, userId);
       }
@@ -174,7 +174,7 @@ export class FileSessionManager implements SessionManager {
     this.ensureDir(botKey);
 
     // 写入时保持旧格式兼容：将 metadata 中的旧 ID 也写入顶层
-    const output: Record<string, any> = {
+    const output: Record<string, unknown> = {
       chatId: session.chatId,
       userId: session.userId,
       cwd: session.cwd,
@@ -206,7 +206,7 @@ export class FileSessionManager implements SessionManager {
     const filePath = this.sessionPath(botKey, session.chatId);
     try {
       fs.writeFileSync(filePath, JSON.stringify(output, null, 2));
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Session] Failed to persist ${session.chatId}: ${e.message}`);
     }
   }
@@ -224,7 +224,7 @@ export class FileSessionManager implements SessionManager {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`[Session] Failed to delete ${chatId}: ${e.message}`);
     }
   }

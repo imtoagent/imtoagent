@@ -68,7 +68,7 @@ function getLogStream(): fs.WriteStream {
   } catch (err) {
     // If we can't write to the log file, fall back to silent no-op
     // (console.error would create infinite loops if called from logging code)
-    _logStream = null as any;
+    _logStream = null as NodeJS.WriteStream | null;
   }
 
   return _logStream;
