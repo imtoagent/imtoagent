@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from "bun:test";
 import { parseWorkspaceConfig, WorkspaceManager } from "../modules/utils/workspace-manager";
+import { getDataDir } from "../modules/utils/paths";
 import * as path from "path";
 
 // ================================================================
@@ -216,15 +217,16 @@ describe("WorkspaceManager.isPathAllowed", () => {
     });
     const manager = new WorkspaceManager(config);
 
-    const home = process.env.HOME!;
-    expect(manager.isPathAllowed("AnyBot", path.join(home, ".imtoagent", "config.json"))).toBe(
+    // Use getDataDir() to get the actual data directory (respects IMTOAGENT_HOME in tests)
+    const dataDir = getDataDir();
+    expect(manager.isPathAllowed("AnyBot", path.join(dataDir, "config.json"))).toBe(
       false,
     );
-    expect(manager.isPathAllowed("AnyBot", path.join(home, ".imtoagent", "providers.json"))).toBe(
+    expect(manager.isPathAllowed("AnyBot", path.join(dataDir, "providers.json"))).toBe(
       false,
     );
 
     // But soul/ under data dir should be allowed in global mode
-    expect(manager.isPathAllowed("AnyBot", path.join(home, ".imtoagent", "soul"))).toBe(true);
+    expect(manager.isPathAllowed("AnyBot", path.join(dataDir, "soul"))).toBe(true);
   });
 });

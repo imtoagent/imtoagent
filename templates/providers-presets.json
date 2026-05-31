@@ -1,0 +1,193 @@
+{
+  "presets": [
+    {
+      "name": "SiliconFlow",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "format": "openai",
+      "models": ["Pro/openai/gpt-4o", "Qwen/Qwen2.5-72B-Instruct"],
+      "notes": "国内中继，支持 Claude/GPT 模型，稳定可用"
+    },
+    {
+      "name": "Compshare Coding Plan",
+      "baseUrl": "https://api.compshare.cn/v1",
+      "format": "openai",
+      "models": ["claude-sonnet-4", "gpt-4o"],
+      "notes": "月卡套餐，国内可用"
+    },
+    {
+      "name": "Virtuoze",
+      "baseUrl": "https://api.virtuoze.cn/v1",
+      "format": "openai",
+      "models": ["claude-sonnet-4", "gpt-4o"],
+      "notes": "国内中继"
+    },
+    {
+      "name": "Cherry Studio",
+      "baseUrl": "https://api.cherry-ai.com/v1",
+      "format": "openai",
+      "models": ["gpt-4o", "claude-sonnet-4"],
+      "notes": "国内中继服务"
+    },
+    {
+      "name": "DMXapi",
+      "baseUrl": "https://api.dmxapi.cn/v1",
+      "format": "openai",
+      "models": ["gpt-4o", "claude-sonnet-4"],
+      "notes": "国内中继"
+    },
+    {
+      "name": "AiHubMix",
+      "baseUrl": "https://api.aihubmix.com/v1",
+      "format": "openai",
+      "models": ["gpt-4o", "claude-sonnet-4", "gemini-2.5-pro"],
+      "notes": "国内中继，模型覆盖广"
+    },
+    {
+      "name": "OneAPI",
+      "baseUrl": "https://api.oneapi.cn/v1",
+      "format": "openai",
+      "models": ["gpt-4o", "claude-sonnet-4"],
+      "notes": "国内中继"
+    },
+    {
+      "name": "AWS Bedrock",
+      "baseUrl": "https://bedrock-runtime.{region}.amazonaws.com",
+      "format": "anthropic",
+      "models": ["anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-opus-4-20250514-v1:0"],
+      "notes": "需要 AWS 凭证和 region 配置"
+    },
+    {
+      "name": "GCP Vertex AI",
+      "baseUrl": "https://{region}-aiplatform.googleapis.com/v1",
+      "format": "openai",
+      "models": ["claude-sonnet-4@20250514", "claude-opus-4@20250514"],
+      "notes": "需要 Google Cloud 凭证"
+    },
+    {
+      "name": "Azure OpenAI",
+      "baseUrl": "https://{resource}.openai.azure.com",
+      "format": "azure",
+      "models": ["gpt-4o"],
+      "notes": "需要 Azure 资源名和 API Key"
+    },
+    {
+      "name": "OpenRouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "format": "openai",
+      "models": ["anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-pro"],
+      "notes": "国际中继，模型最全"
+    },
+    {
+      "name": "Together AI",
+      "baseUrl": "https://api.together.xyz/v1",
+      "format": "openai",
+      "models": ["meta-llama/Llama-4-Maverick-17B-128E-Instruct", "mistralai/Mixtral-8x22B-Instruct-v0.1"],
+      "notes": "开源模型为主"
+    },
+    {
+      "name": "Fireworks AI",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "format": "openai",
+      "models": ["accounts/fireworks/models/llama-v4p1-maverick-instruct-basic"],
+      "notes": "开源模型，延迟低"
+    },
+    {
+      "name": "Groq",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "format": "openai",
+      "models": ["llama-4-maverick-17b-128e-instruct", "mixtral-8x7b-32768"],
+      "notes": "超低延迟，适合实时场景"
+    },
+    {
+      "name": "DeepInfra",
+      "baseUrl": "https://api.deepinfra.com/v1/openai",
+      "format": "openai",
+      "models": ["meta-llama/Llama-4-Maverick-17B-128E-Instruct"],
+      "notes": "开源模型托管"
+    },
+    {
+      "name": "百度千帆",
+      "baseUrl": "https://qianfan.baidubce.com/v2",
+      "format": "openai",
+      "models": ["ERNIE-4.0-8K", "ERNIE-Speed-128K"],
+      "notes": "百度文心一言，国内直连"
+    },
+    {
+      "name": "阿里百炼",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "format": "openai",
+      "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
+      "notes": "通义千问，国内直连"
+    },
+    {
+      "name": "智谱 AI",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "format": "openai",
+      "models": ["glm-4-plus", "glm-4", "glm-4-flash"],
+      "notes": "智谱清言，国内直连"
+    },
+    {
+      "name": "MiniMax",
+      "baseUrl": "https://api.minimax.chat/v1",
+      "format": "openai",
+      "models": ["abab6.5-chat", "abab6.5s-chat"],
+      "notes": "MiniMax 大模型，国内直连"
+    },
+    {
+      "name": "Moonshot",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "format": "openai",
+      "models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
+      "notes": "Kimi 背后模型，长文本强"
+    },
+    {
+      "name": "StepFun",
+      "baseUrl": "https://api.stepfun.com/v1",
+      "format": "openai",
+      "models": ["step-1-32k", "step-1-128k"],
+      "notes": "阶跃星辰，国内直连"
+    },
+    {
+      "name": "360 智脑",
+      "baseUrl": "https://api.360.cn/v1",
+      "format": "openai",
+      "models": ["360GPT_Pro", "360GPT_Turbo"],
+      "notes": "360 智脑，国内直连"
+    },
+    {
+      "name": "百川智能",
+      "baseUrl": "https://api.baichuan-ai.com/v1",
+      "format": "openai",
+      "models": ["Baichuan4", "Baichuan3-Turbo"],
+      "notes": "百川大模型，国内直连"
+    },
+    {
+      "name": "零一万物",
+      "baseUrl": "https://api.lingyiwanwu.com/v1",
+      "format": "openai",
+      "models": ["yi-large", "yi-spark", "yi-medium"],
+      "notes": "零一万物，国内直连"
+    },
+    {
+      "name": "OpenAI 官方",
+      "baseUrl": "https://api.openai.com/v1",
+      "format": "openai",
+      "models": ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
+      "notes": "OpenAI 官方 API，需要代理"
+    },
+    {
+      "name": "Anthropic 官方",
+      "baseUrl": "https://api.anthropic.com",
+      "format": "anthropic",
+      "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-haiku-20241022"],
+      "notes": "Anthropic 官方 API，需要代理"
+    },
+    {
+      "name": "Google AI Studio",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "format": "openai",
+      "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+      "notes": "Google Gemini，OpenAI 兼容格式"
+    }
+  ]
+}

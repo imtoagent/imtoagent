@@ -96,7 +96,7 @@ export class FileConfigManager implements ConfigManager {
     // 加载各 bot 的模型配置
     if (this.rawConfig?.bots) {
       for (const bot of this.rawConfig.bots) {
-        this._loadBotConfig(botKey);
+        this._loadBotConfig(bot.name);
       }
     }
   }

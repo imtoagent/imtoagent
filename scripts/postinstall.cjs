@@ -38,6 +38,11 @@ try {
     console.log("");
     console.log("     imtoagent start");
     console.log("");
+    console.log("   Tip: configure your API provider:");
+    console.log("");
+    console.log("     imtoagent providers presets   # List available provider presets");
+    console.log("     imtoagent providers add --preset <name> --key <api-key>");
+    console.log("");
   }
 } catch (e) {
   // Silently fail, do not affect installation

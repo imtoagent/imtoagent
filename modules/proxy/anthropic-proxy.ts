@@ -17,6 +17,7 @@ import * as path from 'path';
 import { getCurrentBot } from '../bot-context';
 import { handleCodexRequest } from './codex-proxy';
 import { getDataDir, getSessionsDir } from '../utils/paths';
+import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
 
 // ===== 共享状态 =====
 export interface ModelAliases {
@@ -52,6 +53,24 @@ interface ProviderConfig {
 let providers = new Map<string, ProviderConfig>();
 
 const CONFIG_PATH = path.join(getDataDir(), 'providers.json');
+
+// ===== Circuit Breaker Manager =====
+let circuitManager: CircuitBreakerManager | null = null;
+
+function getCircuitManager(): CircuitBreakerManager {
+  if (!circuitManager) {
+    circuitManager = new CircuitBreakerManager();
+    // Create breakers for all loaded providers
+    for (const [name] of providers) {
+      circuitManager.create(name, {
+        failureThreshold: 3,
+        recoveryTimeout: 60_000,
+        halfOpenMaxRequests: 1,
+      });
+    }
+  }
+  return circuitManager;
+}
 
 export function loadProviders(): { providers: Map<string, ProviderConfig>; defaultModel: string } {
   providers = new Map<string, ProviderConfig>();
@@ -755,7 +774,14 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   if (reqPath === '/health' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const modelSpec = cfg ? `${cfg.providerName}/${cfg.model}` : 'none';
-    res.end(JSON.stringify({ status: 'ok', model: modelSpec, providers: [...providers.keys()] }));
+    const healthResp: any = { status: 'ok', model: modelSpec, providers: [...providers.keys()] };
+    
+    // Add circuit breaker status
+    if (circuitManager) {
+      healthResp.circuitBreakers = circuitManager.healthStatus();
+    }
+    
+    res.end(JSON.stringify(healthResp));
     return;
   }
 
@@ -821,12 +847,37 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     }
 
     // 根据目标供应商获取配置
-    const targetProvider = providers.get(targetProviderName);
+    let targetProvider = providers.get(targetProviderName);
     if (!targetProvider) {
       console.error(`[Proxy] Unknown provider: ${targetProviderName}`);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `Unknown provider: ${targetProviderName}` }));
       return;
+    }
+
+    // Circuit breaker check + auto-failover
+    const cm = getCircuitManager();
+    let breaker = cm.get(targetProviderName);
+    if (breaker && !breaker.canRequest()) {
+      console.log(`[Proxy] ⚡ Circuit breaker OPEN for ${targetProviderName}, trying failover...`);
+      const allProviderNames = [...providers.keys()];
+      const fallbackName = cm.findAvailable(allProviderNames.filter((n) => n !== targetProviderName));
+      if (fallbackName) {
+        const fallbackProvider = providers.get(fallbackName)!;
+        console.log(`[Proxy] 🔄 Failing over: ${targetProviderName} → ${fallbackName}`);
+        // Switch all target variables to the fallback provider
+        targetProviderName = fallbackName;
+        targetProvider = fallbackProvider;
+        // Use fallback provider's first model
+        targetModelName = fallbackProvider.models?.[0] || targetModelName;
+        // Update breaker to track the fallback provider
+        const fbBreaker = cm.get(fallbackName);
+        if (fbBreaker) breaker = fbBreaker;
+      } else {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Provider ${targetProviderName} is temporarily unavailable (circuit breaker open, no fallback)` }));
+        return;
+      }
     }
 
     const targetIsAnthropic = targetProvider.format === 'anthropic';
@@ -936,10 +987,14 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
           if (upstreamRes.statusCode !== 200) {
             console.error(`[Proxy] Upstream error ${upstreamRes.statusCode}: ${respStr.slice(0, 500)}`);
+            if (breaker) breaker.recordFailure();
             res.writeHead(upstreamRes.statusCode || 500, { 'Content-Type': 'application/json' });
             res.end(respStr);
             return;
           }
+
+          // Success — record for circuit breaker
+          if (breaker) breaker.recordSuccess();
 
           if (targetIsAnthropic) {
             // 重写 model 名为 CC 原始名（上游返回 mimo-v2.5-pro，CC 不认识）
@@ -971,6 +1026,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     upstreamReq.on('timeout', () => {
       upstreamReq.destroy();
       console.error(`[Proxy] Request timeout (${REQUEST_TIMEOUT}ms)`);
+      if (breaker) breaker.recordFailure();
       if (!res.writableEnded) {
         res.writeHead(504, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Upstream request timeout', type: 'api_error' }));
@@ -979,6 +1035,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     upstreamReq.on('error', (err) => {
       console.error(`[Proxy] Upstream request failed: ${err.message}`);
+      if (breaker) breaker.recordFailure();
       if (!res.writableEnded) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Upstream error: ${err.message}`, type: 'api_error' }));

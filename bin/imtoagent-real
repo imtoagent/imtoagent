@@ -51,7 +51,7 @@ switch (command) {
     await cmdUpdateSystem();
     break;
   case 'update-backend': {
-    const backendType = process.argv[3] as 'claude' | 'codex' | 'opencode' | undefined;
+    const backendType = process.argv[3] as 'claude' | 'codex' | 'opencode' | 'gemini' | undefined;
     await cmdUpdateBackend(backendType);
     break;
   }
@@ -75,6 +75,27 @@ switch (command) {
     break;
   case 'validate':
     await cmdValidate();
+    break;
+  case 'stats':
+    await cmdStats(...process.argv.slice(3));
+    break;
+  case 'session':
+    await cmdSession(...process.argv.slice(3));
+    break;
+  case 'healthz':
+    await cmdHealthz(...process.argv.slice(3));
+    break;
+  case 'providers':
+    await cmdProviders(...process.argv.slice(3));
+    break;
+  case 'mcp':
+    await cmdMcp(...process.argv.slice(3));
+    break;
+  case 'skills':
+    await cmdSkills(...process.argv.slice(3));
+    break;
+  case 'prompts':
+    await cmdPrompts(...process.argv.slice(3));
     break;
   case undefined: {
     const dataDir = getDataDir();
@@ -147,6 +168,27 @@ Usage:
   imtoagent logs -n N           Show last N lines
   imtoagent logs -f             Follow log in real-time (tail -f)
   imtoagent validate            Validate config.json for errors
+  imtoagent stats               Show usage statistics (all time, per-bot)
+  imtoagent stats --today       Today's usage
+  imtoagent stats --week        This week's usage
+  imtoagent stats --bot NAME    Filter by bot
+  imtoagent stats --history -n  Recent call history
+  imtoagent session list        List recent sessions
+  imtoagent session list --all  List all sessions
+  imtoagent session info <id>   Show session details
+  imtoagent session clear <id>  Delete a session
+  imtoagent session clear --all Delete all sessions
+  imtoagent healthz             Quick health check (exit 0=OK, 1=unhealthy)
+  imtoagent providers           List configured providers
+  imtoagent providers presets   List available provider presets
+  imtoagent providers add --preset <name> --key <key>
+  imtoagent mcp list                          List MCP servers
+  imtoagent mcp add <name> --command "cmd"    Add MCP server
+  imtoagent mcp sync                          Sync to backend configs
+  imtoagent skills list                       List installed skills
+  imtoagent skills install <source>           Install from GitHub/ZIP/local
+  imtoagent prompts list                      List saved prompts
+  imtoagent prompts sync                      Sync to backend configs
 
 Data directory: ${getDataDir()}
 `);
@@ -206,7 +248,7 @@ async function cmdStart() {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     const missingBackends: string[] = [];
     for (const bot of config.bots || []) {
-      if (bot.backend && ['claude', 'codex', 'opencode'].includes(bot.backend)) {
+      if (bot.backend && ['claude', 'codex', 'opencode', 'gemini'].includes(bot.backend)) {
         const info = checkBackend(bot.backend as any);
         if (!info.installed && !missingBackends.includes(bot.backend)) {
           missingBackends.push(bot.backend);
@@ -542,13 +584,37 @@ async function cmdDaemon(): Promise<void> {
 }
 
 // ================================================================
-// update-system — upgrade imtoagent itself
+// ================================================================
+// update-system — upgrade imtoagent itself (with backup + validation)
 // ================================================================
 async function cmdUpdateSystem(): Promise<void> {
+  const dataDir = getDataDir();
+  const configPath = path.join(dataDir, 'config.json');
+  const providersPath = path.join(dataDir, 'providers.json');
+
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
   const currentVer = pkg.version;
   console.log('\n📦 Upgrading imtoagent...');
   console.log(`   Current version: ${currentVer}\n`);
+
+  // Step 1: Backup config files before upgrade
+  const backupDir = path.join(dataDir, 'backups', `pre-upgrade-${currentVer}-${Date.now()}`);
+  try {
+    fs.mkdirSync(backupDir, { recursive: true });
+    let backedUp = 0;
+    for (const src of [configPath, providersPath]) {
+      if (fs.existsSync(src)) {
+        const dst = path.join(backupDir, path.basename(src));
+        fs.copyFileSync(src, dst);
+        backedUp++;
+      }
+    }
+    if (backedUp > 0) {
+      console.log(`   ✅ Backed up ${backedUp} config file(s) → ${backupDir}`);
+    }
+  } catch (e: any) {
+    console.log(`   ⚠️  Backup skipped: ${e.message}`);
+  }
 
   console.log('   Running: npm update -g imtoagent\n');
 
@@ -579,10 +645,11 @@ async function cmdUpdateSystem(): Promise<void> {
     const exitCode = await child.exited;
     if (exitCode !== 0) {
       console.error(`\n❌ imtoagent upgrade failed (exit code: ${exitCode})`);
+      console.log(`   💡 Backup preserved at: ${backupDir}`);
       process.exit(1);
     }
 
-    // Read new version
+    // Step 2: Read new version
     let newVer = 'unknown';
     try {
       const newPkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
@@ -594,10 +661,35 @@ async function cmdUpdateSystem(): Promise<void> {
       } catch {}
     }
 
+    // Step 3: Validate config after upgrade
+    console.log('\n   🔍 Validating configuration...');
+    try {
+      await cmdValidateQuiet();
+      console.log('   ✅ Configuration valid');
+    } catch (validationErr: any) {
+      console.error(`   ❌ Configuration validation failed after upgrade`);
+      console.log(`   🔄 Restoring backup from: ${backupDir}`);
+      try {
+        for (const src of [configPath, providersPath]) {
+          const backupFile = path.join(backupDir, path.basename(src));
+          if (fs.existsSync(backupFile)) {
+            fs.copyFileSync(backupFile, src);
+          }
+        }
+        console.log('   ✅ Backup restored successfully');
+        console.log(`   ⚠️  Please review the backup at: ${backupDir}`);
+      } catch (restoreErr: any) {
+        console.error(`   ❌ Restore also failed: ${restoreErr.message}`);
+      }
+      process.exit(1);
+    }
+
     console.log(`\n✅ imtoagent upgraded: ${currentVer} → ${newVer}`);
     console.log(`   Restart gateway with: imtoagent stop && imtoagent start`);
+    console.log(`   Backup preserved at: ${backupDir} (delete manually when no longer needed)`);
   } catch (e: any) {
     console.error(`\n❌ Error upgrading imtoagent: ${e.message || e}`);
+    console.log(`   💡 Backup preserved at: ${backupDir}`);
     process.exit(1);
   }
 }
@@ -605,12 +697,12 @@ async function cmdUpdateSystem(): Promise<void> {
 // ================================================================
 // update-backend — upgrade a backend agent
 // ================================================================
-async function cmdUpdateBackend(backendType?: 'claude' | 'codex' | 'opencode'): Promise<void> {
+async function cmdUpdateBackend(backendType?: 'claude' | 'codex' | 'opencode' | 'gemini'): Promise<void> {
   const dataDir = getDataDir();
   const configPath = path.join(dataDir, 'config.json');
 
   // Determine which backend to upgrade
-  let targetType: 'claude' | 'codex' | 'opencode';
+  let targetType: 'claude' | 'codex' | 'opencode' | 'gemini';
 
   if (backendType) {
     if (!['claude', 'codex', 'opencode'].includes(backendType)) {
@@ -1349,6 +1441,49 @@ async function cmdLogs(): Promise<void> {
 // ================================================================
 // validate — 验证配置文件
 // ================================================================
+/**
+ * Silent validation — returns true if config is valid, throws on failure.
+ * Used by upgrade-system to validate after npm update.
+ */
+async function cmdValidateQuiet(): Promise<boolean> {
+  const dataDir = getDataDir();
+  const configPath = path.join(dataDir, 'config.json');
+
+  if (!fs.existsSync(configPath)) {
+    throw new Error('config.json not found');
+  }
+
+  let config: any;
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    config = JSON.parse(raw);
+  } catch (e: any) {
+    throw new Error(`Invalid JSON: ${e.message}`);
+  }
+
+  const validIMs = ['feishu', 'telegram', 'wecom', 'wechat'];
+  const validBackends = ['claude', 'codex', 'opencode'];
+
+  if (!config.bots || !Array.isArray(config.bots) || config.bots.length === 0) {
+    throw new Error('bots is missing, invalid, or empty');
+  }
+
+  for (const bot of config.bots) {
+    if (!bot.name || !bot.im || !bot.appId || !bot.backend) {
+      throw new Error(`Bot "${bot.name || 'unnamed'}" missing required fields (name, im, appId, backend)`);
+    }
+    if (!validIMs.includes(bot.im)) {
+      throw new Error(`Bot "${bot.name}" has invalid im: ${bot.im}`);
+    }
+    if (!validBackends.includes(bot.backend)) {
+      throw new Error(`Bot "${bot.name}" has invalid backend: ${bot.backend}`);
+    }
+  }
+
+  return true;
+}
+
+// ================================================================
 async function cmdValidate(): Promise<void> {
   const dataDir = getDataDir();
   const configPath = path.join(dataDir, 'config.json');
@@ -1538,4 +1673,60 @@ function printUpdateHint(latestVer: string | null): void {
     console.log(`\n⬆️  New version available: ${pkg.version} → ${latestVer}`);
     console.log(`   Upgrade: imtoagent update-system`);
   }
+}
+
+// ================================================================
+// stats — Usage statistics
+// ================================================================
+async function cmdStats(...args: string[]) {
+  const { cmdStats } = await import('../modules/cli/stats');
+  await cmdStats(...args);
+}
+
+// ================================================================
+// session — Session management
+// ================================================================
+async function cmdSession(...args: string[]) {
+  const { cmdSession } = await import('../modules/cli/session-cli');
+  await cmdSession(...args);
+}
+
+// ================================================================
+// healthz — Quick health check
+// ================================================================
+async function cmdHealthz(...args: string[]) {
+  const { cmdHealthz } = await import('../modules/cli/healthz');
+  await cmdHealthz(...args);
+}
+
+// ================================================================
+// providers — Provider management
+// ================================================================
+async function cmdProviders(...args: string[]) {
+  const { cmdProviders } = await import('../modules/cli/providers');
+  await cmdProviders(...args);
+}
+
+// ================================================================
+// mcp — MCP server management
+// ================================================================
+async function cmdMcp(...args: string[]) {
+  const { cmdMcp } = await import('../modules/cli/mcp');
+  await cmdMcp(...args);
+}
+
+// ================================================================
+// skills — Skills management
+// ================================================================
+async function cmdSkills(...args: string[]) {
+  const { cmdSkills } = await import('../modules/cli/skills');
+  await cmdSkills(...args);
+}
+
+// ================================================================
+// prompts — Prompts management
+// ================================================================
+async function cmdPrompts(...args: string[]) {
+  const { cmdPrompts } = await import('../modules/cli/prompts');
+  await cmdPrompts(...args);
 }

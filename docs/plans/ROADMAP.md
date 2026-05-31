@@ -1,6 +1,6 @@
 # IMtoAgent Development Roadmap
 
-> Last updated: 2026-05-30 | Phase 7 complete | Current version: 0.3.26
+> Last updated: 2026-05-30 | Phase 1-13 complete ✅ | Current version: 0.3.26 | Next: v0.4.0 (TBD)
 
 ---
 
@@ -24,8 +24,8 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | **Agent Backends** | Claude Code (SDK), Codex (app-server v2 + exec fallback), OpenCode (HTTP API) |
 | **Unified Proxy** | Port `:18899` only — Anthropic Proxy handles all routing |
 | **CLI Commands** | 26 commands + subcommands (see `imtoagent --help`) |
-| **Tests** | 27 tests across 2 test suites (config-manager, workspace-manager), 0 failures |
-| **Code Size** | 14,315 lines across 35 .ts files |
+| **Tests** | 188 tests across 10 files, 0 failures |
+| **Code Size** | ~16,000+ lines across 50+ .ts files |
 | **Bot Config** | Configured via `~/.imtoagent/config.json` |
 | **Soul Injection** | Per-Bot identity/profile/rules/skills/workspace files + CLI reference |
 | **i18n** | Full English translation across all modules |
@@ -41,13 +41,17 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | Phase 4: Install Flow ✅ | Setup wizard (raw mode), start/run/daemon, health, uninstall | 0.3.5–0.3.23 |
 | Phase 5: Ops ✅ | autostart (launchd), version check, doctor, config CRUD, WeChat sandbox fix | 0.3.24 |
 | Phase 6: Isolation + NLP Config ✅ | Workspace isolation, isAdmin permission, config protection, NLP config via soul CLI injection | 0.3.25 |
-| Phase 7: Quality ✅ | Test framework (bun:test), `logs` command, `validate` CLI | 0.3.26 |
+| Phase 7: Quality ✅ | Test framework (bun:test, 188 tests 0 fail, 10 files), `logs` command, `validate` CLI | 0.3.26 |
+| Phase 8: Observability ✅ | `session list/info/clear`, `healthz`, `/health` endpoint, provider health checker | 0.3.26 |
+| Phase 9: MCP Management ✅ | MCP config store, backend sync, `imtoagent mcp` CLI | 0.3.26 |
+| Phase 10: Skills & Prompts ✅ | Skills/prompts managers, `imtoagent skills/prompts` CLI | 0.3.26 |
+| Phase 11: Provider Presets ✅ | 20+ presets, `imtoagent providers` CLI | 0.3.26 |
+| Phase 12: Proxy Hardening ✅ | Circuit breaker, auto-failover, health check/endpoint | 0.3.26 |
+| Phase 13: Gemini CLI ✅ | Gemini adapter + client + backend registration | 0.3.26 |
 
-### 🔴 What's Next
+### ✅ All Planned Phases Complete (Phase 1-13)
 
-| Phase | Priority | Content | Status |
-|-------|----------|---------|--------|
-| Phase 8: Observability | TBD | Structured logging, lightweight dashboard, session management CLI | ❌ Not started |
+Phase 8-13 were all implemented in v0.3.26. No further planned phases — next version depends on user feedback and new feature requests.
 
 ---
 
@@ -248,9 +252,284 @@ Sandbox mode:
 | 0.3.23 | uninstall + setup fixes + health | ✅ Released |
 | 0.3.24 | autostart + version check + doctor + config CRUD | ✅ Released |
 | 0.3.25 | Workspace isolation + isAdmin + config protection + NLP config | ✅ Released |
-| 0.3.26 | Test framework + logs + validate CLI | ✅ Released (Current) |
+| 0.3.26 | Phase 7-13: Test framework (188 tests), observability, MCP/skills/prompts/providers CLI, proxy hardening (circuit breaker + auto-failover), Gemini adapter | ✅ Released (Current) |
 
-## 7. Key Decisions
+## 7. Competitive Landscape
+
+### IMtoAgent vs CC Switch
+
+CC Switch (https://ccswitch.io) is a Tauri 2 desktop app for managing AI coding CLIs. IMtoAgent is a CLI gateway for IM → AI Agent communication. They overlap in backend management but diverge fundamentally.
+
+**IMtoAgent unique advantages (CC Switch cannot do these):**
+- 4 IM adapters (Feishu, Telegram, WeChat, WeCom) — IMtoAgent is a gateway, not just a config manager
+- Soul injection system (rules/identity/profile/skills per Bot)
+- NLP command dispatch — talk to the gateway naturally, it runs CLI commands for you
+- Bot-level model config persistence with aliases and presets
+- Daemon mode with crash recovery and hot reload (SIGHUP)
+- No GUI dependency — terminal-native, scriptable, works on headless servers
+
+**CC Switch features IMtoAgent needs to match:**
+- MCP management across backends
+- Skills installation and management
+- Prompts management (CLAUDE.md / AGENTS.md cross-backend sync)
+- Provider presets library (50+ built-in)
+- Usage statistics dashboard
+- Circuit breaker + health monitoring in proxy
+
+**Features we intentionally skip:**
+- GUI desktop interface — CLI is the right abstraction for developers
+- Cloud sync — local config is sufficient for gateway use case
+- System tray — not relevant for CLI tool
+
+**Strategic positioning:**
+- CC Switch = desktop config manager for local AI CLI users
+- IMtoAgent = IM-connected gateway for team/multi-Bot AI agent deployment
+- IMtoAgent covers CC Switch's backend management features AND does IM bridging
+- CC Switch cannot touch IMtoAgent's core (IM adapters, soul injection, NLP dispatch)
+
+---
+
+## 8. Detailed Designs: Phase 8+
+
+### 8.1 MCP Management (`imtoagent mcp`)
+
+**Goal:** Manage MCP servers across all backends from one CLI, similar to CC Switch's unified MCP panel but terminal-native.
+
+**Commands:**
+```
+imtoagent mcp list                    # List all MCP servers across backends
+imtoagent mcp list --backend claude   # Filter by backend
+imtoagent mcp add <name>              # Add MCP server (interactive or flags)
+imtoagent mcp add <name> --command "npx -y @some/mcp" --env KEY=val --backend claude
+imtoagent mcp remove <name>           # Remove MCP server
+imtoagent mcp enable <name>           # Enable (without removing)
+imtoagent mcp disable <name>          # Disable (without removing)
+imtoagent mcp import <deep-link>      # Import via ccswitch:// or JSON
+imtoagent mcp sync                    # Sync MCP config to all backends
+```
+
+**Backend config targets:**
+- Claude Code: `~/.claude.json` (mcpServers)
+- Codex: `~/.codex/config.json` (mcpServers)
+- OpenCode: `~/.imtoagent/opencode.json` (mcpServers)
+
+**Storage:** MCP definitions stored in `~/.imtoagent/mcp.json`, synced to backend-specific configs on `mcp sync` or Bot restart.
+
+### 8.2 Skills Management (`imtoagent skills`)
+
+**Goal:** Install, list, and remove Skills across backends. Support GitHub repos, ZIP files, and local paths.
+
+**Commands:**
+```
+imtoagent skills list                 # List installed skills
+imtoagent skills list --backend claude
+imtoagent skills install <github-url> # Install from GitHub repo
+imtoagent skills install <zip-path>   # Install from ZIP file
+imtoagent skills install <local-path> # Install from local directory
+imtoagent skills remove <name>        # Remove a skill
+imtoagent skills sync                 # Sync skills to all backends
+```
+
+**Storage:** `~/.imtoagent/skills/<name>/` — symlink or copy to backend-specific skill directories on sync.
+
+### 8.3 Prompts Management (`imtoagent prompts`)
+
+**Goal:** Manage shared prompt files (CLAUDE.md, AGENTS.md, GEMINI.md) with cross-backend sync.
+
+**Commands:**
+```
+imtoagent prompts list                # List prompt files
+imtoagent prompts edit <name>         # Edit in $EDITOR
+imtoagent prompts sync                # Sync to all backend config dirs
+```
+
+**Storage:** `~/.imtoagent/prompts/<name>.md` — synced to:
+- Claude Code: `.claude/CLAUDE.md` or project `CLAUDE.md`
+- Codex: project `AGENTS.md`
+- OpenCode: project `.opencode/prompts.md`
+
+### 8.4 Provider Presets Library
+
+**Goal:** Built-in provider templates so users don't need to manually configure API endpoints.
+
+**Approach:** JSON presets file bundled with npm package:
+```json
+{
+  "presets": [
+    {
+      "name": "SiliconFlow",
+      "baseUrl": "https://api.siliconflow.cn/v1",
+      "models": ["claude-sonnet-4", "gpt-4o", "gemini-2.5-pro"],
+      "notes": "国内镜像，支持 Claude Code"
+    },
+    {
+      "name": "Compshare Coding Plan",
+      "baseUrl": "https://api.compshare.cn/v1",
+      "models": ["claude-sonnet-4", "gpt-4o"],
+      "notes": "月卡套餐，国内可用"
+    }
+  ]
+}
+```
+
+**Commands:**
+```
+imtoagent providers list              # List configured providers
+imtoagent providers presets           # List available presets
+imtoagent providers add --preset siliconflow --key sk-xxx
+imtoagent providers set <name>        # Switch active provider
+```
+
+### 8.5 Proxy Hardening (Circuit Breaker + Health)
+
+**Goal:** Make :18899 proxy production-ready with automatic failover.
+
+**Features:**
+- Provider health checks (periodic lightweight requests)
+- Circuit breaker (3 failures → mark unhealthy → skip for 60s)
+- Auto-failover (try next provider in chain)
+- Request retry (idempotent requests only)
+- Health endpoint: `curl http://localhost:18899/health`
+
+**Config in `providers.json`:**
+```json
+{
+  "providers": [
+    {
+      "name": "primary",
+      "baseUrl": "...",
+      "apiKey": "...",
+      "priority": 1,
+      "healthCheck": { "enabled": true, "interval": 300 }
+    },
+    {
+      "name": "fallback",
+      "baseUrl": "...",
+      "apiKey": "...",
+      "priority": 2
+    }
+  ],
+  "circuitBreaker": {
+    "threshold": 3,
+    "recoveryTimeout": 60
+  }
+}
+```
+
+### 8.6 Usage Statistics Enhancement
+
+**Goal:** Better tracking and CLI access to usage data.
+
+**Commands:**
+```
+imtoagent stats                       # Show current session stats
+imtoagent stats --history             # Show historical stats
+imtoagent stats --today               # Today's usage
+imtoagent stats --bot ClaudeBot       # Per-Bot stats
+```
+
+**Storage:** Append-only JSONL in `~/.imtoagent/stats/usage.jsonl`
+
+---
+
+## 9. Implementation Plan (Detailed Sub-tasks)
+
+### Phase 8: Observability — 5 sub-tasks
+
+**Dependencies:** None (foundation for all other phases)
+**Estimated new files:** ~600 lines across 4 files
+
+| # | Sub-task | Files | Est. lines | Details |
+|---|----------|-------|------------|---------|
+| 8.1 | **Structured Logger** | `modules/utils/logger.ts` (new) | ~150 | JSON-lines logger with levels (info/warn/error), component tags, timestamp. Gateway startup logs go here instead of bare `console.log`. |
+| 8.2 | **Usage Stats Persistence** | `modules/core/stats-persist.ts` (new) | ~180 | Append JSONL to `~/.imtoagent/stats/usage.jsonl`. Each call writes: `{ botKey, chatId, timestamp, inputTokens, outputTokens, costUSD, durationMs, model, turns, success }`. Read by `imtoagent stats` CLI. |
+| 8.3 | **`imtoagent stats` CLI** | `bin/imtoagent-real` (edit) | ~200 | Subcommand dispatch. `stats` (today summary), `stats --history` (last 7 days table), `stats --today`, `stats --bot <name>`, `stats --raw` (last 20 JSONL lines). Reuses `DefaultStatsTracker` + new persistence layer. |
+| 8.4 | **Session Management CLI** | `bin/imtoagent-real` (edit) | ~150 | `imtoagent sessions list [--bot NAME]` — list active sessions with idle time. `imtoagent sessions clear [--bot NAME]` — clear idle sessions. Reads from `sessions/` directory + `.memory.json` files. |
+| 8.5 | **Integrate stats persistence into runtime** | `modules/core/runtime.ts` (edit) | ~30 | After `statsTracker.accumulate()`, also call `statsPersist.record()`. One-line hook in the success path. |
+
+---
+
+### Phase 9: MCP Management — 4 sub-tasks
+
+**Dependencies:** None (can be done in parallel with Phase 8)
+**Estimated new files:** ~500 lines across 3 files
+
+| # | Sub-task | Files | Est. lines | Details |
+|---|----------|-------|------------|---------|
+| 9.1 | **MCP Config Store** | `modules/utils/mcp-manager.ts` (new) | ~200 | CRUD for `~/.imtoagent/mcp.json`. Each entry: `{ name, command, args, env, backends: string[], enabled }`. Supports add/remove/enable/disable/list. Atomic writes. |
+| 9.2 | **Backend Sync** | `modules/utils/mcp-manager.ts` (continued) | ~150 | `syncToBackends()` reads mcp.json and writes to: Claude Code `~/.claude/settings.json` (mcpServers), Codex `~/.codex/settings.json` (mcpServers), OpenCode `~/.imtoagent/opencode.json` (mcpServers). Bidirectional: can also read from backends on first import. |
+| 9.3 | **`imtoagent mcp` CLI** | `bin/imtoagent-real` (edit) | ~200 | `mcp list [--backend NAME]`, `mcp add <name> [--command CMD --arg A --env K=V --backend claude]`, `mcp remove <name>`, `mcp enable <name>`, `mcp disable <name>`, `mcp sync`. |
+| 9.4 | **Auto-sync on restore** | `modules/core/runtime.ts` (edit) | ~20 | On SIGHUP (restore), call `mcpManager.syncToBackends()` if MCP config changed. |
+
+---
+
+### Phase 10: Skills & Prompts — 4 sub-tasks
+
+**Dependencies:** None
+**Estimated new files:** ~450 lines across 3 files
+
+| # | Sub-task | Files | Est. lines | Details |
+|---|----------|-------|------------|---------|
+| 10.1 | **Skills Manager** | `modules/utils/skills-manager.ts` (new) | ~200 | `~/.imtoagent/skills/` storage. `install(url|path)` — clones git repo or copies directory, validates SKILL.md exists. `list()`, `remove(name)`. Symlink or copy to backend skill dirs on sync. |
+| 10.2 | **Prompts Manager** | `modules/utils/prompts-manager.ts` (new) | ~150 | `~/.imtoagent/prompts/` storage. `list()`, `edit(name)` (opens $EDITOR), `sync()` — writes to backend-specific prompt locations. Backfill protection: don't overwrite existing non-empty files. |
+| 10.3 | **`imtoagent skills` CLI** | `bin/imtoagent-real` (edit) | ~100 | `skills list`, `skills install <url>`, `skills remove <name>`, `skills sync`. |
+| 10.4 | **`imtoagent prompts` CLI** | `bin/imtoagent-real` (edit) | ~50 | `prompts list`, `prompts edit <name>`, `prompts sync`. |
+
+---
+
+### Phase 11: Provider Presets — 3 sub-tasks
+
+**Dependencies:** None (small, quick win)
+**Estimated new files:** ~350 lines across 2 files
+
+| # | Sub-task | Files | Est. lines | Details |
+|---|----------|-------|------------|---------|
+| 11.1 | **Presets Data File** | `templates/presets.json` (new) | ~250 | JSON array of provider presets. Each: `{ name, baseUrl, format, models[], notes, region?, pricing? }`. Start with ~20 presets covering major domestic relays (SiliconFlow, Compshare, DMXAPI, etc.) + cloud providers (AWS Bedrock, GCP Vertex). |
+| 11.2 | **`imtoagent providers` CLI** | `bin/imtoagent-real` (edit) | ~100 | `providers list` (configured), `providers presets` (available presets), `providers add --preset NAME --key KEY`, `providers set <name>` (switch active + restart proxy). |
+| 11.3 | **Proxy reload on provider change** | `modules/proxy/anthropic-proxy.ts` (edit) | ~20 | Export `reloadProviders()` function. CLI calls it after adding/switching provider. Or use existing SIGHUP mechanism. |
+
+---
+
+### Phase 12: Proxy Hardening — 4 sub-tasks
+
+**Dependencies:** Phase 8 (needs structured logging for health check logs)
+**Estimated new files:** ~300 lines + edits to existing proxy
+
+| # | Sub-task | Files | Est. lines | Details |
+|---|----------|-------|------------|---------|
+| 12.1 | **Health Checker** | `modules/proxy/health-check.ts` (new) | ~100 | Periodic lightweight requests to each provider (every N seconds). Tracks latency, success rate, last-checked time. Updates provider status in sharedState. |
+| 12.2 | **Circuit Breaker** | `modules/proxy/circuit-breaker.ts` (new) | ~120 | Per-provider circuit breaker: failure count → open state → skip provider for recoveryTimeout. States: closed (healthy) → open (unhealthy) → half-open (testing). Configurable threshold + recovery timeout. |
+| 12.3 | **Auto-Failover in Proxy** | `modules/proxy/anthropic-proxy.ts` (edit) | ~100 | On request failure, try next healthy provider in priority order. Only retry idempotent requests (POST /v1/messages with same body). Log failover event. |
+| 12.4 | **Health Endpoint** | `modules/proxy/anthropic-proxy.ts` (edit) | ~30 | `GET /health` → returns `{ providers: [{ name, status, latency, lastChecked }], uptime }`. Machine-readable JSON. |
+
+---
+
+### Phase 13: Gemini CLI Adapter — 3 sub-tasks
+
+**Dependencies:** None (can be done in parallel)
+**Estimated new files:** ~350 lines across 2 files
+
+| # | Sub-task | Files | Est. lines | Details |
+|---|----------|-------|------------|---------|
+| 13.1 | **Gemini CLI HTTP Client** | `modules/agent/gemini-client.ts` (new) | ~120 | Gemini CLI runs `gemini serve` on a local port (similar to OpenCode). HTTP client for `/session` create, `/message` send (streaming SSE), multi-turn loop until text-only response. Follows `opencode-adapter.ts` pattern. |
+| 13.2 | **GeminiAdapter** | `modules/agent/gemini-adapter.ts` (new) | ~200 | Implements `AgentAdapter`. `handleMessage()` builds system prompt, calls Gemini client, extracts response + usage stats. `cancel()` aborts active requests. System prompt injection via `buildSystemPrompt()`. |
+| 13.3 | **Backend Registration** | `bin/imtoagent-real` (edit), `modules/utils/backend-check.ts` (edit) | ~50 | Add `gemini` to backend check (`which gemini`), add to setup wizard backend selector, add to `update-backend` command. Register in Bot constructor (IM Registry already supports this — just needs the adapter import). |
+
+---
+
+### ~~Recommended Execution Order~~ — All Phases 8-13 Complete ✅
+
+All planned phases through Phase 13 have been implemented in v0.3.26. The gateway now supports:
+- Session management, health checks, structured logging
+- MCP server management across backends
+- Skills and prompts installation/management
+- 20+ provider presets for quick setup
+- Proxy hardening with circuit breaker and automatic failover
+- Gemini CLI backend adapter
+
+---
+
+## 9. Key Decisions
 
 | Decision | Conclusion | Date |
 |----------|------------|------|

@@ -85,6 +85,7 @@ import { AgentRuntime, FileSessionManager, DefaultErrorHandler, DefaultStatsTrac
 import { ClaudeAdapter } from './modules/agent/claude-adapter';
 import { CodexAdapter } from './modules/agent/codex-adapter';
 import { OpenCodeAdapter } from './modules/agent/opencode-adapter';
+import { GeminiAdapter } from './modules/agent/gemini-adapter';
 import type { CallStats, Session, AgentAdapter, MessageAttachment } from './modules/core/types';
 import { startOpenCodeServer, stopOpenCodeServer } from './modules/agent/opencode-adapter';
 
@@ -287,7 +288,7 @@ interface BotConfig {
   name: string;
   appId: string;
   appSecret: string;
-  backend: 'claude' | 'codex' | 'opencode';
+  backend: 'claude' | 'codex' | 'opencode' | 'gemini';
   cwd?: string;
   isAdmin?: boolean;  // true = 可以修改网关配置，默认第一个 Bot 为 true
 }
@@ -298,7 +299,7 @@ interface BotConfig {
 class Bot {
   id: string;
   name: string;
-  backend: 'claude' | 'codex' | 'opencode';
+  backend: 'claude' | 'codex' | 'opencode' | 'gemini';
   appId: string;
   appSecret: string;
   defaultCwd: string;
@@ -382,13 +383,17 @@ class Bot {
       this.adapter = new ClaudeAdapter(adapterCtx);
     } else if (this.backend === 'codex') {
       this.adapter = new CodexAdapter(adapterCtx);
-    } else {
+    } else if (this.backend === 'opencode') {
       const ocCfg = globalConfig.opencode || {};
       this.adapter = new OpenCodeAdapter({
         ...adapterCtx,
         serverUrl: ocCfg.serverUrl,
         defaultModel: ocCfg.defaultModel,
       });
+    } else if (this.backend === 'gemini') {
+      this.adapter = new GeminiAdapter(adapterCtx);
+    } else {
+      throw new Error(`Unknown backend: ${this.backend}`);
     }
 
     this.runtime = new AgentRuntime({
@@ -931,7 +936,8 @@ async function main() {
 
   const DEFAULT_PROJECT_DIR = config.system?.defaultProjectDir || path.join(os.homedir(), 'Projects');
 
-  if (config.modelAliases) sharedState.modelAliases = config.modelAliases;
+  // Bot-level modelAliases: each Bot gets its own aliases, not shared globally
+  const globalAliases = config.modelAliases || {};
   const { providers: _providers, defaultModel: DEFAULT_MODEL_SPEC } = loadProviders();
   const defaultCfg = getProviderConfig(DEFAULT_MODEL_SPEC);
   if (defaultCfg) sharedState.activeConfig = defaultCfg;

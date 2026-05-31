@@ -10,7 +10,7 @@ import * as path from 'path';
 export type InstallSource = 'npm' | 'brew' | 'manual' | 'unknown';
 
 export interface BackendInfo {
-  type: 'claude' | 'codex' | 'opencode';
+  type: 'claude' | 'codex' | 'opencode' | 'gemini';
   label: string;
   installed: boolean;
   version: string | null;
@@ -24,6 +24,7 @@ const BACKEND_DEFS: Omit<BackendInfo, 'installed' | 'version' | 'installSource' 
   { type: 'claude', label: 'Claude Code', installHint: 'npm install -g @anthropic-ai/claude-agent-sdk' },
   { type: 'codex',  label: 'Codex',       installHint: 'npm install -g @openai/codex' },
   { type: 'opencode', label: 'OpenCode',   installHint: 'curl -fsSL https://opencode.ai/install | bash' },
+  { type: 'gemini', label: 'Gemini CLI', installHint: 'npm install -g @anthropic-ai/gemini-cli' },
 ];
 
 // ================================================================

@@ -28,6 +28,8 @@ import type {
 } from './types';
 import { parseToBlocks } from '../capabilities';
 import { DEFAULT_TERMINAL_CAPS } from '../prompt-builder';
+import { logEvent } from '../utils/logger';
+import { StatsPersist } from './stats-persist';
 
 // ================================================================
 // Agent 自主重启 — 文件信号（固定路径，不依赖 dataDir 参数）
@@ -80,9 +82,27 @@ function consumeRestartSignal(): { triggered: boolean; reason: string } {
 export class AgentRuntime {
   private adapters = new Map<string, AgentAdapter>();
   private config: RuntimeConfig;
+  private statsPersist: StatsPersist | null = null;
+
+  // Per-chatId concurrency queue — prevents race conditions on session state
+  private queues = new Map<string, Promise<void>>();
 
   constructor(config: RuntimeConfig) {
     this.config = config;
+    // Initialize stats persistence (lazy, on first use)
+    try {
+      const { StatsPersist } = require('./stats-persist');
+      this.statsPersist = new StatsPersist();
+    } catch {
+      // Stats persistence is optional; don't fail if it can't initialize
+    }
+  }
+
+  /**
+   * Get the StatsPersist instance (for CLI access).
+   */
+  getStatsPersist(): StatsPersist | null {
+    return this.statsPersist;
   }
 
   /**
@@ -103,6 +123,25 @@ export class AgentRuntime {
   }
 
   /**
+   * Enqueue a message handler for a given chatId.
+   * Ensures messages from the same chat are processed sequentially,
+   * preventing race conditions on session state.
+   */
+  private enqueue(chatId: string, fn: () => Promise<{ restart: boolean; reason?: string }>): Promise<{ restart: boolean; reason?: string }> {
+    const prev = this.queues.get(chatId) || Promise.resolve();
+    let result: { restart: boolean; reason?: string } = { restart: false };
+    const next = prev.then(
+      () => fn().then((r) => { result = r; }),
+      () => fn().then((r) => { result = r; }), // even if prev failed, run current
+    );
+    this.queues.set(chatId, next);
+    next.finally(() => {
+      if (this.queues.get(chatId) === next) this.queues.delete(chatId);
+    });
+    return next.then(() => result);
+  }
+
+  /**
    * 处理用户消息
    * 
    * @param ctx 消息处理上下文
@@ -111,6 +150,14 @@ export class AgentRuntime {
    * @returns 如果 Agent 请求重启，返回 { restart: true, reason }；否则返回 { restart: false }
    */
   async processMessage(
+    ctx: MessageContext,
+    adapter: AgentAdapter,
+    botName: string
+  ): Promise<{ restart: boolean; reason?: string }> {
+    return this.enqueue(ctx.chatId, () => this._processMessageInternal(ctx, adapter, botName));
+  }
+
+  private async _processMessageInternal(
     ctx: MessageContext,
     adapter: AgentAdapter,
     botName: string
@@ -141,6 +188,15 @@ export class AgentRuntime {
 
         // 3. 重置统计
         this.config.statsTracker.resetForCall(session);
+
+        // Log message received
+        logEvent({
+          event: 'message_received',
+          bot: botName,
+          chatId: ctx.chatId,
+          backend: adapter.name,
+          textLength: ctx.text?.length || 0,
+        });
 
         // 4. 发送进度提示
         await ctx.sendProgress('💭 Thinking...');
@@ -178,6 +234,37 @@ export class AgentRuntime {
             costUSD: output.usage.costUSD,
             durationMs: output.usage.durationMs || duration,
             numTurns: output.usage.numTurns,
+          });
+
+          // Persist usage to JSONL
+          if (this.statsPersist) {
+            this.statsPersist.record({
+              ts: new Date().toISOString(),
+              bot: botName,
+              chatId: ctx.chatId,
+              backend: adapter.name,
+              model: ctx.model,
+              inputTokens: output.usage.inputTokens,
+              outputTokens: output.usage.outputTokens,
+              costUsd: output.usage.costUSD || 0,
+              durationMs: output.usage.durationMs || duration,
+              turns: output.usage.numTurns,
+              status: 'ok',
+            });
+          }
+
+          // Log message sent
+          logEvent({
+            event: 'message_sent',
+            bot: botName,
+            chatId: ctx.chatId,
+            backend: adapter.name,
+            model: ctx.model,
+            inputTokens: output.usage.inputTokens,
+            outputTokens: output.usage.outputTokens,
+            costUsd: output.usage.costUSD || 0,
+            durationMs: output.usage.durationMs || duration,
+            turns: output.usage.numTurns,
           });
         }
 

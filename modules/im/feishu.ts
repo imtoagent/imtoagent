@@ -561,6 +561,9 @@ ${b.content || ''}`;
 
           if (!text && attachments.length === 0) return;
 
+          // Successful message delivery confirms connection is healthy — reset backoff
+          this.reconnectAttempts = 0;
+
           await this.messageHandler!(chatId, text, userId, attachments.length > 0 ? attachments : undefined);
         } catch (e: any) {
           console.error(`[Feishu] Message processing error: ${e.message}`);
@@ -602,6 +605,11 @@ ${b.content || ''}`;
     this.wsClient.on?.('close', () => {
       console.log('[Feishu] WS disconnected');
       this._scheduleReconnect();
+    });
+    this.wsClient.on?.('reconnect', () => {
+      // SDK internally reconnected — reset backoff counter
+      this.reconnectAttempts = 0;
+      console.log('[Feishu] WS reconnected');
     });
     this.wsClient.on?.('error', (e: any) => {
       console.error(`[Feishu] WS error: ${e.message || e}`);
