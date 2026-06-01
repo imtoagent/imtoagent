@@ -9,6 +9,9 @@
   <!-- docsify-themeable -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple.css">
   <style>
+    /* ================================
+       Root / Theme Variables
+       ================================ */
     :root {
       --theme-color: #4a90d9;
       --theme-color-dark: #357abd;
@@ -16,7 +19,6 @@
       --base-line-height: 1.8;
       --heading-font-weight: 700;
       --blockquote-color: var(--theme-color);
-      /* sidebar removed — top navbar instead */
       --cover-max-width: 52em;
       --cover-blockquote-color: var(--theme-color);
       --notice-color: #e8f4fd;
@@ -31,7 +33,9 @@
       --code-block-tab-color: #666;
     }
 
-    /* ========== Cover / Hero ========== */
+    /* ================================
+       Cover / Hero
+       ================================ */
     .cover {
       background: #1a1a2e !important;
       background-image: linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%) !important;
@@ -41,8 +45,9 @@
       content: '';
       position: absolute;
       inset: 0;
-      background: radial-gradient(ellipse at top right, rgba(102, 126, 234, 0.15) 0%, transparent 60%),
-                  radial-gradient(ellipse at bottom left, rgba(118, 75, 162, 0.1) 0%, transparent 60%);
+      background:
+        radial-gradient(ellipse at top right, rgba(102, 126, 234, 0.15) 0%, transparent 60%),
+        radial-gradient(ellipse at bottom left, rgba(118, 75, 162, 0.1) 0%, transparent 60%);
       pointer-events: none;
     }
     .cover .cover-main {
@@ -57,10 +62,10 @@
       font-weight: 800;
       letter-spacing: -0.02em;
       margin-bottom: 0.2em;
-      color: #ffffff;
+      color: #fff;
     }
     .cover .cover-main h1 a {
-      color: #ffffff;
+      color: #fff;
       text-decoration: none;
     }
     .cover .cover-main p {
@@ -70,15 +75,12 @@
       margin: 0 auto 0.5em;
       line-height: 1.6;
     }
-    /* Badges on cover */
     .cover .cover-main p img {
       margin: 0 0.3em;
       vertical-align: middle;
       filter: brightness(1.05);
     }
-    .cover .cover-main .action {
-      margin-top: 2em;
-    }
+    .cover .cover-main .action { margin-top: 2em; }
     .cover .cover-main .action .button {
       display: inline-block;
       border-radius: 10px;
@@ -104,15 +106,10 @@
       color: #0f3460;
       border-color: #fff;
     }
-    .cover .cover-main .action .button:last-child:hover {
-      background: #f0f4ff;
-    }
+    .cover .cover-main .action .button:last-child:hover { background: #f0f4ff; }
 
-    /* Install command box on cover */
-    .cover .install-cmd {
-      margin: 2em auto 1.5em;
-      max-width: 38em;
-    }
+    /* --- Install command box --- */
+    .cover .install-cmd { margin: 2em auto 1.5em; max-width: 38em; }
     .cover .install-cmd .cmd-label {
       display: block;
       color: rgba(255, 255, 255, 0.6);
@@ -134,13 +131,11 @@
       gap: 0.5em;
       transition: border-color 0.2s ease;
     }
-    .cover .install-cmd .cmd-box:hover {
-      border-color: rgba(255, 255, 255, 0.3);
-    }
+    .cover .install-cmd .cmd-box:hover { border-color: rgba(255, 255, 255, 0.3); }
     .cover .install-cmd .cmd-box code {
       flex: 1;
       color: #e2e8f0;
-      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+      font-family: var(--code-font-family);
       font-size: 0.95rem;
       white-space: nowrap;
       overflow-x: auto;
@@ -153,9 +148,7 @@
       scrollbar-width: thin;
       scrollbar-color: rgba(255,255,255,0.2) transparent;
     }
-    .cover .install-cmd .cmd-box code::-webkit-scrollbar {
-      height: 3px;
-    }
+    .cover .install-cmd .cmd-box code::-webkit-scrollbar { height: 3px; }
     .cover .install-cmd .cmd-box code::-webkit-scrollbar-thumb {
       background: rgba(255,255,255,0.2);
       border-radius: 2px;
@@ -185,14 +178,16 @@
       color: #4ade80 !important;
     }
 
-    /* ========== Top Navbar ========== */
-    /* Hide sidebar everywhere */
+    /* ================================
+       Layout (sidebar hidden, full-width)
+       ================================ */
     .sidebar, .sidebar-toggle { display: none !important; }
-    section.cover .sidebar, section.cover .sidebar-toggle { display: none !important; }
     .content { left: 0 !important; }
     main { margin-top: 56px; }
 
-    /* --- Navbar container --- */
+    /* ================================
+       Top Navbar — Desktop
+       ================================ */
     .app-nav {
       position: fixed !important;
       top: 0 !important;
@@ -208,8 +203,6 @@
       padding: 0 1.2em;
       box-shadow: 0 2px 12px rgba(0,0,0,0.3);
     }
-
-    /* --- Desktop menu (horizontal) --- */
     .app-nav > ul {
       list-style: none;
       margin: 0;
@@ -218,9 +211,7 @@
       align-items: center;
       gap: 0.15em;
     }
-    .app-nav > ul > li {
-      position: relative;
-    }
+    .app-nav > ul > li { position: relative; }
     .app-nav > ul > li > a,
     .app-nav > ul > li > span {
       display: flex;
@@ -261,9 +252,7 @@
       list-style: none;
       z-index: 1100;
     }
-    .app-nav > ul > li:hover > ul {
-      display: block;
-    }
+    .app-nav > ul > li:hover > ul { display: block; }
     .app-nav > ul > li > ul li a {
       display: block;
       padding: 0.5em 1.2em;
@@ -277,7 +266,7 @@
       color: var(--theme-color);
     }
 
-    /* --- Hamburger toggle (hidden on desktop) --- */
+    /* --- Hamburger (hidden on desktop) --- */
     .nav-toggle {
       display: none;
       flex-direction: column;
@@ -299,71 +288,10 @@
     .nav-toggle.open span:nth-child(2) { opacity: 0; }
     .nav-toggle.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
 
-    /* --- Mobile styles --- */
-    @media (max-width: 768px) {
-      .cover .cover-main { padding: 3em 1em 2em; }
-      .cover .cover-main h1 { font-size: 2.2rem; }
-      .cover .cover-main p { font-size: 1rem; }
-      .cover .cover-main .action .button { padding: 0.6em 1.4em; font-size: 0.9rem; }
-      .cover .install-cmd { margin: 1.5em auto 1em; max-width: 100%; }
-      .cover .install-cmd .cmd-box { flex-direction: column; gap: 0.6em; padding: 0.8em; }
-      .cover .install-cmd .cmd-box code { font-size: 0.66rem; white-space: nowrap; overflow-x: auto; width: 100%; }
-      .cover .install-cmd .cmd-box .copy-btn { align-self: flex-end; width: 100%; padding: 0.5em; font-size: 0.9rem; justify-content: center; }
-      .markdown-section h1 { font-size: 1.8rem; }
-    }
-      .nav-toggle {
-        display: flex;
-      }
-      /* Hide desktop menu by default on mobile */
-      .app-nav > ul {
-        display: none;
-        position: absolute;
-        top: 48px;
-        left: 0;
-        right: 0;
-        flex-direction: column;
-        background: #1a1a2e;
-        border-bottom: 1px solid rgba(255,255,255,0.08);
-        padding: 0.5em 0;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-      }
-      .app-nav > ul.open {
-        display: flex;
-      }
-      .app-nav > ul > li {
-        width: 100%;
-      }
-      .app-nav > ul > li > a,
-      .app-nav > ul > li > span {
-        padding: 0.7em 1.2em;
-        font-size: 0.95rem;
-        border-radius: 0;
-        width: 100%;
-        justify-content: space-between;
-      }
-      /* Dropdown on mobile: static, always visible when parent is in open menu */
-      .app-nav > ul > li > ul {
-        position: static;
-        display: none;
-        box-shadow: none;
-        border: none;
-        border-top: 1px solid rgba(255,255,255,0.06);
-        border-radius: 0;
-        background: rgba(0,0,0,0.2);
-        padding: 0;
-      }
-      .app-nav > ul > li.open > ul {
-        display: block;
-      }
-      .app-nav > ul > li > ul li a {
-        padding: 0.55em 2em;
-        font-size: 0.88rem;
-      }
-      main { margin-top: 48px; }
-      .markdown-section { padding: 2em 1em 3em; }
-    }
-
-.markdown-section h1 {
+    /* ================================
+       Markdown Section Styling
+       ================================ */
+    .markdown-section h1 {
       font-size: 2.2rem;
       font-weight: 700;
       border-bottom: 3px solid var(--theme-color);
@@ -394,7 +322,7 @@
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
     }
 
-    /* Tables */
+    /* --- Tables --- */
     .markdown-section table {
       border-radius: 10px;
       overflow: hidden;
@@ -412,14 +340,10 @@
       padding: 0.7em 1em;
       border-bottom: 1px solid #f0f2f4;
     }
-    .markdown-section table tbody tr:last-child td {
-      border-bottom: none;
-    }
-    .markdown-section table tbody tr:hover {
-      background: #f8faff;
-    }
+    .markdown-section table tbody tr:last-child td { border-bottom: none; }
+    .markdown-section table tbody tr:hover { background: #f8faff; }
 
-    /* Code */
+    /* --- Code block labels --- */
     pre[data-lang]::before {
       content: attr(data-lang);
       position: absolute;
@@ -431,7 +355,7 @@
       opacity: 0.7;
     }
 
-    /* Horizontal rule */
+    /* --- Horizontal rule --- */
     .markdown-section hr {
       border: none;
       height: 2px;
@@ -439,21 +363,24 @@
       margin: 2em 0;
     }
 
-    /* Scrollbar */
+    /* --- Scrollbar --- */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #aaa; }
 
-    /* Copy button */
+    /* --- Docsify copy button --- */
     .docsify-copy-code-button {
       border-radius: 6px;
       font-size: 12px;
       padding: 4px 8px;
     }
 
-    /* Responsive */
+    /* ================================
+       Mobile (≤ 768px)
+       ================================ */
     @media (max-width: 768px) {
+      /* Cover */
       .cover .cover-main { padding: 3em 1em 2em; }
       .cover .cover-main h1 { font-size: 2.2rem; }
       .cover .cover-main p { font-size: 1rem; }
@@ -462,87 +389,95 @@
       .cover .install-cmd .cmd-box { flex-direction: column; gap: 0.6em; padding: 0.8em; }
       .cover .install-cmd .cmd-box code { font-size: 0.66rem; white-space: nowrap; overflow-x: auto; width: 100%; }
       .cover .install-cmd .cmd-box .copy-btn { align-self: flex-end; width: 100%; padding: 0.5em; font-size: 0.9rem; justify-content: center; }
+
+      /* Markdown */
       .markdown-section h1 { font-size: 1.8rem; }
-    }
-      .cover .install-cmd {
-        margin: 1.5em auto 1em;
-        max-width: 100%;
-      }
-      .cover .install-cmd .cmd-box {
+      .markdown-section { padding: 3.5em 1em 3em; }
+
+      /* Navbar */
+      main { margin-top: 48px; }
+      .app-nav { padding: 0 0.8em; height: 48px; }
+      .nav-toggle { display: flex; }
+
+      /* Mobile menu (hamburger) */
+      .app-nav > ul {
+        display: none;
+        position: absolute;
+        top: 48px;
+        left: 0;
+        right: 0;
         flex-direction: column;
-        gap: 0.6em;
-        padding: 0.8em;
+        background: #1a1a2e;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        padding: 0.5em 0;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
       }
-      .cover .install-cmd .cmd-box code {
-        font-size: 0.66rem;
-        white-space: nowrap;
-        overflow-x: auto;
-        width: 100%;
-      }
-      .cover .install-cmd .cmd-box .copy-btn {
-        align-self: flex-end;
-        width: 100%;
-        padding: 0.5em;
-        font-size: 0.9rem;
-        justify-content: center;
-      }
-      .markdown-section h1 { font-size: 1.8rem; }
-      .app-nav {
-        padding: 0 0.8em;
-        height: 48px;
-      }
+      .app-nav > ul.open { display: flex; }
+      .app-nav > ul > li { width: 100%; }
       .app-nav > ul > li > a,
-    .app-nav > ul > li > span {
-        padding: 0.3em 0.5em;
-        font-size: 0.85rem;
+      .app-nav > ul > li > span {
+        padding: 0.7em 1.2em;
+        font-size: 0.95rem;
+        border-radius: 0;
+        width: 100%;
+        justify-content: space-between;
       }
+      /* Mobile dropdown: static, visible on parent .open */
       .app-nav > ul > li > ul {
-      right: 0;
-        min-width: 136px;
+        position: static;
+        display: none;
+        box-shadow: none;
+        border: none;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        border-radius: 0;
+        background: rgba(0,0,0,0.2);
+        padding: 0;
       }
-      .markdown-section {
-        padding: 3.5em 1em 3em;
-      }
+      .app-nav > ul > li.open > ul { display: block; }
+      .app-nav > ul > li > ul li a { padding: 0.55em 2em; font-size: 0.88rem; }
+      .app-nav > ul > li > ul { min-width: 136px; }
     }
   </style>
 </head>
 <body>
-        <nav class="app-nav">
-      <button class="nav-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')" aria-label="Menu">
-        <span></span><span></span><span></span>
-      </button>
-      <ul>
-        <li><a href="/">⚡ Home</a></li>
-        <li>
-          <span onclick="this.parentElement.classList.toggle('open')">Guide ▾</span>
-          <ul>
-            <li><a href="#/guide/quick-start">Quick Start</a></li>
-            <li><a href="#/guide/installation">Install</a></li>
-            <li><a href="#/guide/configuration">Config</a></li>
-          </ul>
-        </li>
-        <li>
-          <span onclick="this.parentElement.classList.toggle('open')">Adapters ▾</span>
-          <ul>
-            <li><a href="#/adapters/README">Overview</a></li>
-            <li><a href="#/adapters/feishu">Feishu</a></li>
-            <li><a href="#/adapters/telegram">Telegram</a></li>
-            <li><a href="#/adapters/wechat">WeChat</a></li>
-            <li><a href="#/adapters/wecom">WeCom</a></li>
-          </ul>
-        </li>
-        <li>
-          <span onclick="this.parentElement.classList.toggle('open')">Agents ▾</span>
-          <ul>
-            <li><a href="#/agents/README">Overview</a></li>
-            <li><a href="#/agents/claude">Claude</a></li>
-            <li><a href="#/agents/codex">Codex</a></li>
-            <li><a href="#/agents/opencode">OpenCode</a></li>
-          </ul>
-        </li>
-      </ul>
-    </nav>
+  <nav class="app-nav">
+    <button class="nav-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
+    <ul>
+      <li><a href="/">⚡ Home</a></li>
+      <li>
+        <span onclick="this.parentElement.classList.toggle('open')">Guide ▾</span>
+        <ul>
+          <li><a href="#/guide/quick-start">Quick Start</a></li>
+          <li><a href="#/guide/installation">Install</a></li>
+          <li><a href="#/guide/configuration">Config</a></li>
+        </ul>
+      </li>
+      <li>
+        <span onclick="this.parentElement.classList.toggle('open')">Adapters ▾</span>
+        <ul>
+          <li><a href="#/adapters/README">Overview</a></li>
+          <li><a href="#/adapters/feishu">Feishu</a></li>
+          <li><a href="#/adapters/telegram">Telegram</a></li>
+          <li><a href="#/adapters/wechat">WeChat</a></li>
+          <li><a href="#/adapters/wecom">WeCom</a></li>
+        </ul>
+      </li>
+      <li>
+        <span onclick="this.parentElement.classList.toggle('open')">Agents ▾</span>
+        <ul>
+          <li><a href="#/agents/README">Overview</a></li>
+          <li><a href="#/agents/claude">Claude</a></li>
+          <li><a href="#/agents/codex">Codex</a></li>
+          <li><a href="#/agents/opencode">OpenCode</a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+
   <div id="app">Loading...</div>
+
   <script>
     window.$docsify = {
       name: '⚡ IMtoAgent',
@@ -555,10 +490,7 @@
       mergeNavbar: false,
       topMargin: 60,
       themeColor: '#4a90d9',
-      themeable: {
-        readyTransition: true,
-        responsiveTables: true
-      },
+      themeable: { readyTransition: true, responsiveTables: true },
       search: {
         maxAge: 86400000,
         paths: 'auto',
@@ -570,7 +502,6 @@
         errorText: '❌ Failed',
         successText: '✅ Copied!'
       },
-      // Bind install-cmd copy button via docsify hook
       plugins: [
         function (hook) {
           hook.doneEach(function () {
@@ -633,6 +564,7 @@
       ]
     }
   </script>
+
   <!-- docsify core -->
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
   <!-- plugins -->
@@ -644,8 +576,5 @@
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-typescript.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-yaml.min.js"></script>
-  <!-- Install copy button bound via docsify hook (doneEach) -->
-<!-- (handled in $docsify.plugins below) -->
-
 </body>
 </html>
