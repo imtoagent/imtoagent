@@ -6,12 +6,8 @@
   <title>IMtoAgent — IM ↔ Agent Unified Gateway</title>
   <meta name="description" content="Connect Feishu, Telegram, WeChat, WeCom to Claude Code, Codex, OpenCode — one gateway, infinite bots.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
-  <!-- docsify-themeable -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple.css">
   <style>
-    /* ================================
-       Root / Theme Variables
-       ================================ */
     :root {
       --theme-color: #4a90d9;
       --theme-color-dark: #357abd;
@@ -33,14 +29,39 @@
       --code-block-tab-color: #666;
     }
 
-    /* ================================
-       Cover / Hero
-       ================================ */
+    /* 全局：给导航预留高度，彻底不重叠 */
+    body {
+      margin: 0;
+      padding-top: 56px;
+    }
+    @media (max-width: 768px) {
+      body {
+        padding-top: 48px;
+      }
+    }
+
+    /* 锚点跳转不被遮挡 */
+    html {
+      scroll-padding-top: 56px;
+    }
+    @media (max-width: 768px) {
+      html {
+        scroll-padding-top: 48px;
+      }
+    }
+
     .cover {
       background: #1a1a2e !important;
       background-image: linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%) !important;
-      min-height: 100vh;
+      min-height: calc(100vh - 56px);
+      position: relative;
     }
+    @media (max-width: 768px) {
+      .cover {
+        min-height: calc(100vh - 48px);
+      }
+    }
+
     .cover::before {
       content: '';
       position: absolute;
@@ -107,8 +128,6 @@
       border-color: #fff;
     }
     .cover .cover-main .action .button:last-child:hover { background: #f0f4ff; }
-
-    /* --- Install command box --- */
     .cover .install-cmd { margin: 2em auto 1.5em; max-width: 38em; }
     .cover .install-cmd .cmd-label {
       display: block;
@@ -178,22 +197,20 @@
       color: #4ade80 !important;
     }
 
-    /* ================================
-       Layout (sidebar hidden, full-width)
-       ================================ */
+    /* 布局：侧边栏隐藏，内容全屏 */
     .sidebar, .sidebar-toggle { display: none !important; }
     .content { left: 0 !important; }
-    main { margin-top: 56px; }
+    main { margin-top: 0 !important; padding-top: 0 !important; }
 
     /* ================================
-       Top Navbar — Desktop
+       导航栏：固定但不覆盖内容
        ================================ */
     .app-nav {
       position: fixed !important;
       top: 0 !important;
       left: 0 !important;
       right: 0 !important;
-      z-index: 1000 !important;
+      z-index: 9999 !important;
       background: #1a1a2e;
       border-bottom: 1px solid rgba(255,255,255,0.08);
       height: 56px;
@@ -202,6 +219,7 @@
       justify-content: space-between;
       padding: 0 1.2em;
       box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+      box-sizing: border-box !important;
     }
     .app-nav > ul {
       list-style: none;
@@ -210,20 +228,23 @@
       display: flex;
       align-items: center;
       gap: 0.15em;
+      box-sizing: border-box;
     }
-    .app-nav > ul > li { position: relative; }
+    .app-nav > ul > li {
+      position: relative;
+      white-space: nowrap;
+    }
     .app-nav > ul > li > a,
     .app-nav > ul > li > span {
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 0.2em;
-      padding: 0.35em 0.7em;
+      padding: 0.45em 0.9em;
       color: rgba(255,255,255,0.85);
       font-size: 0.92rem;
       font-weight: 500;
       border-radius: 6px;
       text-decoration: none;
-      white-space: nowrap;
       cursor: pointer;
       transition: background 0.15s ease;
     }
@@ -237,12 +258,12 @@
       font-weight: 600;
     }
 
-    /* --- Dropdown --- */
+    /* 下拉菜单 */
     .app-nav > ul > li > ul {
       display: none;
       position: absolute;
-      top: calc(100% + 0.3em);
-      right: 0;
+      top: 100%;
+      left: 0;
       min-width: 160px;
       background: #1e1e36;
       border: 1px solid rgba(255,255,255,0.1);
@@ -250,12 +271,12 @@
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
       padding: 0.4em 0;
       list-style: none;
-      z-index: 1100;
+      z-index: 10000;
     }
     .app-nav > ul > li:hover > ul { display: block; }
     .app-nav > ul > li > ul li a {
       display: block;
-      padding: 0.5em 1.2em;
+      padding: 0.6em 1.2em;
       color: rgba(255,255,255,0.85);
       font-size: 0.88rem;
       text-decoration: none;
@@ -266,7 +287,7 @@
       color: var(--theme-color);
     }
 
-    /* --- Hamburger (hidden on desktop) --- */
+    /* 汉堡按钮 */
     .nav-toggle {
       display: none;
       flex-direction: column;
@@ -282,14 +303,14 @@
       height: 2px;
       background: rgba(255,255,255,0.85);
       border-radius: 2px;
-      transition: transform 0.2s ease, opacity 0.2s ease;
+      transition: 0.2s ease;
     }
-    .nav-toggle.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+    .nav-toggle.open span:nth-child(1) { transform: rotate(45deg) translate(5px,5px); }
     .nav-toggle.open span:nth-child(2) { opacity: 0; }
-    .nav-toggle.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+    .nav-toggle.open span:nth-child(3) { transform: rotate(-45deg) translate(5px,-5px); }
 
     /* ================================
-       Markdown Section Styling
+       Markdown 内容样式
        ================================ */
     .markdown-section h1 {
       font-size: 2.2rem;
@@ -315,14 +336,12 @@
       border-radius: 0 8px 8px 0;
       padding: 1em 1.2em;
       font-size: 1.05rem;
-      color: rgba(255,255,255,0.85);
+      color: #222;
     }
     .markdown-section img {
       border-radius: 10px;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
     }
-
-    /* --- Tables --- */
     .markdown-section table {
       border-radius: 10px;
       overflow: hidden;
@@ -342,8 +361,6 @@
     }
     .markdown-section table tbody tr:last-child td { border-bottom: none; }
     .markdown-section table tbody tr:hover { background: #f8faff; }
-
-    /* --- Code block labels --- */
     pre[data-lang]::before {
       content: attr(data-lang);
       position: absolute;
@@ -354,22 +371,16 @@
       font-family: var(--code-font-family);
       opacity: 0.7;
     }
-
-    /* --- Horizontal rule --- */
     .markdown-section hr {
       border: none;
       height: 2px;
       background: linear-gradient(90deg, transparent, #dde1e6, transparent);
       margin: 2em 0;
     }
-
-    /* --- Scrollbar --- */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #aaa; }
-
-    /* --- Docsify copy button --- */
     .docsify-copy-code-button {
       border-radius: 6px;
       font-size: 12px;
@@ -377,10 +388,9 @@
     }
 
     /* ================================
-       Mobile (≤ 768px)
+       移动端适配
        ================================ */
     @media (max-width: 768px) {
-      /* Cover */
       .cover .cover-main { padding: 3em 1em 2em; }
       .cover .cover-main h1 { font-size: 2.2rem; }
       .cover .cover-main p { font-size: 1rem; }
@@ -389,17 +399,13 @@
       .cover .install-cmd .cmd-box { flex-direction: column; gap: 0.6em; padding: 0.8em; }
       .cover .install-cmd .cmd-box code { font-size: 0.66rem; white-space: nowrap; overflow-x: auto; width: 100%; }
       .cover .install-cmd .cmd-box .copy-btn { align-self: flex-end; width: 100%; padding: 0.5em; font-size: 0.9rem; justify-content: center; }
-
-      /* Markdown */
       .markdown-section h1 { font-size: 1.8rem; }
-      .markdown-section { padding: 3.5em 1em 3em; }
-
-      /* Navbar */
-      main { margin-top: 48px; }
-      .app-nav { padding: 0 0.8em; height: 48px; }
+      .markdown-section { padding: 0 1em 3em; }
+      .app-nav {
+        height: 48px;
+        padding: 0 0.8em;
+      }
       .nav-toggle { display: flex; }
-
-      /* Mobile menu (hamburger) */
       .app-nav > ul {
         display: none;
         position: absolute;
@@ -411,37 +417,47 @@
         border-bottom: 1px solid rgba(255,255,255,0.08);
         padding: 0.5em 0;
         box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        z-index: 9998;
       }
       .app-nav > ul.open { display: flex; }
       .app-nav > ul > li { width: 100%; }
       .app-nav > ul > li > a,
       .app-nav > ul > li > span {
-        padding: 0.7em 1.2em;
+        padding: 0.8em 1.2em;
         font-size: 0.95rem;
-        border-radius: 0;
         width: 100%;
         justify-content: space-between;
+        border-radius: 0;
       }
-      /* Mobile dropdown: static, visible on parent .open */
       .app-nav > ul > li > ul {
         position: static;
         display: none;
-        box-shadow: none;
         border: none;
         border-top: 1px solid rgba(255,255,255,0.06);
-        border-radius: 0;
         background: rgba(0,0,0,0.2);
         padding: 0;
+        border-radius: 0;
+        box-shadow: none;
       }
       .app-nav > ul > li.open > ul { display: block; }
-      .app-nav > ul > li > ul li a { padding: 0.55em 2em; font-size: 0.88rem; }
-      .app-nav > ul > li > ul { min-width: 136px; }
+      .app-nav > ul > li > ul li a {
+        padding: 0.7em 2em;
+        font-size: 0.88rem;
+      }
+    }
+
+    /* GitHub 角标：放到导航右侧，正常显示不被挡 */
+    .github-corner {
+      position: fixed !important;
+      top: 0 !important;
+      right: 0 !important;
+      z-index: 10000 !important;
     }
   </style>
 </head>
 <body>
   <nav class="app-nav">
-    <button class="nav-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')" aria-label="Menu">
+    <button class="nav-toggle" onclick="this.classList.toggle('open');const ul=this.nextElementSibling;ul.classList.toggle('open');if(!ul.classList.contains('open')){document.querySelectorAll('.app-nav li.open').forEach(el=>el.classList.remove('open'));}" aria-label="Menu">
       <span></span><span></span><span></span>
     </button>
     <ul>
@@ -488,7 +504,7 @@
       auto2top: true,
       executeScript: true,
       mergeNavbar: false,
-      topMargin: 60,
+      topMargin: 0,
       themeColor: '#4a90d9',
       themeable: { readyTransition: true, responsiveTables: true },
       search: {
@@ -501,77 +517,14 @@
         buttonText: '📋 Copy',
         errorText: '❌ Failed',
         successText: '✅ Copied!'
-      },
-      plugins: [
-        function (hook) {
-          hook.doneEach(function () {
-            var boxes = document.querySelectorAll('.cover .cmd-box');
-            boxes.forEach(function (box) {
-              var btn = box.querySelector('.copy-btn');
-              var cmd = box.querySelector('code');
-              if (btn && cmd && !btn.dataset.bound) {
-                btn.dataset.bound = '1';
-                btn.addEventListener('click', function () {
-                  var text = cmd.textContent.trim();
-                  var originalBg = btn.style.background;
-                  var originalBorder = btn.style.borderColor;
-                  var originalColor = btn.style.color;
-                  var originalText = btn.textContent;
-                  function onSuccess() {
-                    btn.style.background = 'rgba(34,197,94,0.3)';
-                    btn.style.borderColor = 'rgba(34,197,94,0.5)';
-                    btn.style.color = '#4ade80';
-                    btn.textContent = '✅ Copied!';
-                    setTimeout(function () {
-                      btn.style.background = originalBg;
-                      btn.style.borderColor = originalBorder;
-                      btn.style.color = originalColor;
-                      btn.textContent = originalText;
-                    }, 2000);
-                  }
-                  function onFail() {
-                    btn.style.background = 'rgba(239,68,68,0.3)';
-                    btn.style.borderColor = 'rgba(239,68,68,0.5)';
-                    btn.style.color = '#f87171';
-                    btn.textContent = '❌ Failed';
-                    setTimeout(function () {
-                      btn.style.background = originalBg;
-                      btn.style.borderColor = originalBorder;
-                      btn.style.color = originalColor;
-                      btn.textContent = originalText;
-                    }, 2000);
-                  }
-                  if (navigator.clipboard) {
-                    navigator.clipboard.writeText(text).then(onSuccess).catch(onFail);
-                  } else {
-                    try {
-                      var ta = document.createElement('textarea');
-                      ta.value = text;
-                      ta.style.position = 'fixed';
-                      ta.style.left = '-9999px';
-                      document.body.appendChild(ta);
-                      ta.select();
-                      var ok = document.execCommand('copy');
-                      document.body.removeChild(ta);
-                      if (ok) onSuccess(); else onFail();
-                    } catch (e) { onFail(); }
-                  }
-                });
-              }
-            });
-          });
-        }
-      ]
-    }
+      }
+    };
   </script>
 
-  <!-- docsify core -->
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
-  <!-- plugins -->
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/zoom-image.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docsify-copy-code@3/dist/docsify-copy-code.min.js"></script>
-  <!-- syntax highlight -->
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-typescript.min.js"></script>
