@@ -20,6 +20,18 @@ main:has(.hero) h1[id="_top"] {
   margin-bottom: 0.5rem;
 }
 
+/* Inject ⚡ before title on desktop only */
+main:has(.hero) h1[id="_top"]::before {
+  content: '⚡';
+}
+
+/* Hide ⚡ on mobile */
+@media (max-width: 768px) {
+  main:has(.hero) h1[id="_top"]::before {
+    content: '';
+  }
+}
+
 .hero .hero-subtitle {
   font-size: 1.25rem;
   color: var(--sl-color-gray-3);
