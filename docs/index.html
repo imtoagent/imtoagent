@@ -22,7 +22,7 @@
       --notice-color: #e8f4fd;
       --code-font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
       --code-inline-color: var(--theme-color);
-      --code-inline-background: #f0f4f8;
+      --code-inline-background: rgba(255,255,255,0.1);
       --code-inline-padding: 0.15em 0.4em;
       --code-inline-radius: 4px;
       --code-block-color: #f8f9fa;
@@ -100,7 +100,7 @@
       border-color: rgba(255, 255, 255, 0.5);
     }
     .cover .cover-main .action .button:last-child {
-      background: #fff;
+      background: #1e1e36;
       color: #0f3460;
       border-color: #fff;
     }
@@ -208,14 +208,14 @@
       left: 0 !important;
       right: 0 !important;
       z-index: 1000 !important;
-      background: #ffffff;
-      border-bottom: 1px solid #e8ecf0;
+      background: #1a1a2e;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
       padding: 0 1.5em;
       height: 56px;
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+      box-shadow: 0 2px 12px rgba(0,0,0,0.3);
     }
     .app-nav ul {
       list-style: none;
@@ -234,7 +234,7 @@
       align-items: center;
       gap: 0.25em;
       padding: 0.4em 0.8em;
-      color: #444;
+      color: rgba(255,255,255,0.85);
       font-size: 0.92rem;
       font-weight: 500;
       border-radius: 6px;
@@ -243,7 +243,7 @@
       white-space: nowrap;
     }
     .app-nav > ul > li > a:hover {
-      background: #f0f4f8;
+      background: rgba(255,255,255,0.1);
       color: var(--theme-color);
     }
     .app-nav > ul > li > a.active {
@@ -263,10 +263,10 @@
       top: calc(100% + 0.3em);
       left: 0;
       min-width: 170px;
-      background: #fff;
-      border: 1px solid #e8ecf0;
+      background: #1e1e36;
+      border: 1px solid rgba(255,255,255,0.1);
       border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
       padding: 0.4em 0;
       list-style: none;
       z-index: 1100;
@@ -277,13 +277,13 @@
     .app-nav > ul > li > ul li a {
       display: block;
       padding: 0.45em 1em;
-      color: #444;
+      color: rgba(255,255,255,0.85);
       font-size: 0.88rem;
       text-decoration: none;
       transition: all 0.15s ease;
     }
     .app-nav > ul > li > ul li a:hover {
-      background: #f0f4f8;
+      background: rgba(255,255,255,0.1);
       color: var(--theme-color);
     }
     /* Content area full-width when sidebar is hidden */
@@ -306,7 +306,7 @@
     .markdown-section h2 {
       font-size: 1.5rem;
       font-weight: 600;
-      border-bottom: 1px solid #e8ecf0;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
       padding-bottom: 0.25em;
       margin-top: 2em;
     }
@@ -320,7 +320,7 @@
       border-radius: 0 8px 8px 0;
       padding: 1em 1.2em;
       font-size: 1.05rem;
-      color: #444;
+      color: rgba(255,255,255,0.85);
     }
     .markdown-section img {
       border-radius: 10px;
@@ -438,13 +438,13 @@
 <body>
     <nav class="app-nav">
       <ul>
-        <li><a href="/">🏠 Home</a></li>
+        <li><a href="/">⚡ Home</a></li>
         <li>
-          <span>Getting Started ▾</span>
+          <span>Guide ▾</span>
           <ul>
             <li><a href="#/guide/quick-start">Quick Start</a></li>
-            <li><a href="#/guide/installation">Installation</a></li>
-            <li><a href="#/guide/configuration">Configuration</a></li>
+            <li><a href="#/guide/installation">Install</a></li>
+            <li><a href="#/guide/configuration">Config</a></li>
           </ul>
         </li>
         <li>
@@ -461,7 +461,7 @@
           <span>Agents ▾</span>
           <ul>
             <li><a href="#/agents/README">Overview</a></li>
-            <li><a href="#/agents/claude">Claude Code</a></li>
+            <li><a href="#/agents/claude">Claude</a></li>
             <li><a href="#/agents/codex">Codex</a></li>
             <li><a href="#/agents/opencode">OpenCode</a></li>
           </ul>
