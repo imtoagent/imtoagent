@@ -214,7 +214,6 @@
       background: #1a1a2e;
       border-bottom: 1px solid rgba(255,255,255,0.08);
       height: 56px;
-      padding-right: 60px !important;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -409,10 +408,12 @@
       .nav-toggle { display: flex; }
       .app-nav > ul {
         display: none;
-        position: relative !important;
-        top: auto !important;
+        position: fixed;
+        top: 48px;
         left: 0;
         right: 0;
+        max-height: calc(100vh - 48px);
+        overflow-y: auto;
         flex-direction: column;
         background: #1a1a2e;
         border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -421,7 +422,7 @@
         z-index: 9998;
       }
       .app-nav > ul.open { display: flex; }
-      .app-nav > ul > li { width: 100%; position: relative; }
+      .app-nav > ul > li { width: 100%; }
       .app-nav > ul > li > a,
       .app-nav > ul > li > span {
         padding: 0.8em 1.2em;
@@ -431,12 +432,8 @@
         border-radius: 0;
       }
       .app-nav > ul > li > ul {
-        position: absolute;
+        position: static;
         display: none;
-        left: 0;
-        right: 0;
-        min-width: 0;
-        width: 100%;
         border: none;
         border-top: 1px solid rgba(255,255,255,0.06);
         background: rgba(0,0,0,0.2);
@@ -482,7 +479,7 @@
       <span></span><span></span><span></span>
     </button>
     <ul>
-      <li><a href="/">Home</a></li>
+      <li><a href="/">⚡ Home</a></li>
       <li>
         <span onclick="this.parentElement.classList.toggle('open')">Guide ▾</span>
         <ul>
