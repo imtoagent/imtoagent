@@ -5,6 +5,9 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'IMtoAgent',
+      logo: {
+        src: './src/assets/logo.svg',
+      },
       social: {
         github: 'https://github.com/imtoagent/imtoagent',
       },
