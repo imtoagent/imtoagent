@@ -1,0 +1,47 @@
+node_modules/
+*.log
+logs/
+sessions/
+*.backup
+*.backup2
+*.bak
+*.bak.*
+*.broken
+*.restored
+*.safe
+*.lock
+.DS_Store
+*.csv
+*.txt
+
+# 运行时配置（统一收敛到 ~/.imtoagent/）
+config.json
+providers.json
+opencode.json
+data/
+media/
+
+# 临时文件
+/tmp/
+*.pid
+
+# AI agent private logs
+.workbuddy/
+
+# User private media
+media/inbound/
+
+# Personal bot configs (templates/ handles distribution)
+soul/
+
+# Internal dev docs
+.codex-docs/
+
+# Development tools
+dev.sh
+proxy-only.ts
+data/
+
+# Source scripts (keep compiled .cjs)
+scripts/postinstall.ts
+bot-ids.json

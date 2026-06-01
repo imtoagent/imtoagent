@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IMtoAgent — IM ↔ Agent Unified Gateway</title>
+  <meta name="description" content="Connect Feishu, Telegram, WeChat, WeCom to Claude Code, Codex, OpenCode — one gateway, infinite bots.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+  <!-- docsify-themeable -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple.css">
+  <style>
+    :root {
+      --theme-color: #4a90d9;
+      --theme-color-dark: #357abd;
+      --base-font-size: 16px;
+      --base-line-height: 1.8;
+      --heading-font-weight: 700;
+      --blockquote-color: var(--theme-color);
+      /* sidebar removed — top navbar instead */
+      --cover-max-width: 52em;
+      --cover-blockquote-color: var(--theme-color);
+      --notice-color: #e8f4fd;
+      --code-font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+      --code-inline-color: var(--theme-color);
+      --code-inline-background: #f0f4f8;
+      --code-inline-padding: 0.15em 0.4em;
+      --code-inline-radius: 4px;
+      --code-block-color: #f8f9fa;
+      --code-block-radius: 8px;
+      --code-block-tab-background: #eef1f5;
+      --code-block-tab-color: #666;
+    }
+
+    /* ========== Cover / Hero ========== */
+    .cover {
+      background: #1a1a2e !important;
+      background-image: linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%) !important;
+      min-height: 100vh;
+    }
+    .cover::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at top right, rgba(102, 126, 234, 0.15) 0%, transparent 60%),
+                  radial-gradient(ellipse at bottom left, rgba(118, 75, 162, 0.1) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .cover .cover-main {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 4em 1.5em 3em;
+      margin-top: 0;
+    }
+    .cover .cover-main h1 {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.2em;
+      color: #ffffff;
+    }
+    .cover .cover-main h1 a {
+      color: #ffffff;
+      text-decoration: none;
+    }
+    .cover .cover-main p {
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 1.2rem;
+      max-width: 42em;
+      margin: 0 auto 0.5em;
+      line-height: 1.6;
+    }
+    /* Badges on cover */
+    .cover .cover-main p img {
+      margin: 0 0.3em;
+      vertical-align: middle;
+      filter: brightness(1.05);
+    }
+    .cover .cover-main .action {
+      margin-top: 2em;
+    }
+    .cover .cover-main .action .button {
+      display: inline-block;
+      border-radius: 10px;
+      padding: 0.75em 2.2em;
+      font-weight: 600;
+      font-size: 1.05rem;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      backdrop-filter: blur(8px);
+      text-decoration: none;
+      margin: 0 0.4em;
+    }
+    .cover .cover-main .action .button:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+    .cover .cover-main .action .button:last-child {
+      background: #fff;
+      color: #0f3460;
+      border-color: #fff;
+    }
+    .cover .cover-main .action .button:last-child:hover {
+      background: #f0f4ff;
+    }
+
+    /* Install command box on cover */
+    .cover .install-cmd {
+      margin: 2em auto 1.5em;
+      max-width: 38em;
+    }
+    .cover .install-cmd .cmd-label {
+      display: block;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.5em;
+      padding-left: 0.8em;
+    }
+    .cover .install-cmd .cmd-box {
+      display: flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      padding: 0.6em 0.8em;
+      backdrop-filter: blur(8px);
+      gap: 0.5em;
+      transition: border-color 0.2s ease;
+    }
+    .cover .install-cmd .cmd-box:hover {
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+    .cover .install-cmd .cmd-box code {
+      flex: 1;
+      color: #e2e8f0;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+      font-size: 0.95rem;
+      white-space: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+      background: none;
+      border: none;
+      padding: 0;
+      margin: 0;
+      min-width: 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.2) transparent;
+    }
+    .cover .install-cmd .cmd-box code::-webkit-scrollbar {
+      height: 3px;
+    }
+    .cover .install-cmd .cmd-box code::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.2);
+      border-radius: 2px;
+    }
+    .cover .install-cmd .cmd-box .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      padding: 0.35em 0.7em;
+      color: #fff;
+      font-size: 0.85rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+    .cover .install-cmd .cmd-box .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: rgba(255, 255, 255, 0.4);
+    }
+    .cover .install-cmd .cmd-box .copy-btn.copied {
+      background: rgba(34, 197, 94, 0.3) !important;
+      border-color: rgba(34, 197, 94, 0.5) !important;
+      color: #4ade80 !important;
+    }
+
+    /* ========== Top Navbar ========== */
+    /* Hide sidebar everywhere (cover + pages) */
+    .sidebar {
+      display: none !important;
+    }
+    .sidebar-toggle {
+      display: none !important;
+    }
+    /* Hide sidebar/hamburger on cover page */
+    section.cover .sidebar,
+    section.cover .sidebar-toggle {
+      display: none !important;
+    }
+    /* Content takes full width */
+    .content {
+      left: 0 !important;
+    }
+    .app-nav {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      z-index: 1000 !important;
+      background: #ffffff;
+      border-bottom: 1px solid #e8ecf0;
+      padding: 0 1.5em;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+    }
+    .app-nav ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.2em;
+    }
+    .app-nav > ul > li {
+      position: relative;
+    }
+    .app-nav > ul > li > a,
+    .app-nav > ul > li > span {
+      display: flex;
+      align-items: center;
+      gap: 0.25em;
+      padding: 0.4em 0.8em;
+      color: #444;
+      font-size: 0.92rem;
+      font-weight: 500;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .app-nav > ul > li > a:hover {
+      background: #f0f4f8;
+      color: var(--theme-color);
+    }
+    .app-nav > ul > li > a.active {
+      color: var(--theme-color);
+      font-weight: 600;
+    }
+    /* Force visibility - guarantee navbar text shows */
+    .app-nav * {
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+
+    /* Dropdown */
+    .app-nav > ul > li > ul {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.3em);
+      left: 0;
+      min-width: 170px;
+      background: #fff;
+      border: 1px solid #e8ecf0;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+      padding: 0.4em 0;
+      list-style: none;
+      z-index: 1100;
+    }
+    .app-nav > ul > li:hover > ul {
+      display: block;
+    }
+    .app-nav > ul > li > ul li a {
+      display: block;
+      padding: 0.45em 1em;
+      color: #444;
+      font-size: 0.88rem;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .app-nav > ul > li > ul li a:hover {
+      background: #f0f4f8;
+      color: var(--theme-color);
+    }
+    /* Content area full-width when sidebar is hidden */
+    .content {
+      left: 0 !important;
+    }
+    .markdown-section {
+      max-width: 960px;
+      padding: 4.5em 2em 4em;
+    }
+
+
+    .markdown-section h1 {
+      font-size: 2.2rem;
+      font-weight: 700;
+      border-bottom: 3px solid var(--theme-color);
+      padding-bottom: 0.3em;
+      margin-bottom: 0.8em;
+    }
+    .markdown-section h2 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      border-bottom: 1px solid #e8ecf0;
+      padding-bottom: 0.25em;
+      margin-top: 2em;
+    }
+    .markdown-section h3 {
+      font-weight: 600;
+      color: #333;
+    }
+    .markdown-section blockquote {
+      border-left: 4px solid var(--theme-color);
+      background: linear-gradient(135deg, #f0f7ff 0%, #f8fbff 100%);
+      border-radius: 0 8px 8px 0;
+      padding: 1em 1.2em;
+      font-size: 1.05rem;
+      color: #444;
+    }
+    .markdown-section img {
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+    }
+
+    /* Tables */
+    .markdown-section table {
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    .markdown-section table thead th {
+      background: linear-gradient(135deg, #f5f7fa 0%, #eef1f5 100%);
+      font-weight: 600;
+      border-bottom: 2px solid #dde1e6;
+      padding: 0.8em 1em;
+    }
+    .markdown-section table tbody td {
+      padding: 0.7em 1em;
+      border-bottom: 1px solid #f0f2f4;
+    }
+    .markdown-section table tbody tr:last-child td {
+      border-bottom: none;
+    }
+    .markdown-section table tbody tr:hover {
+      background: #f8faff;
+    }
+
+    /* Code */
+    pre[data-lang]::before {
+      content: attr(data-lang);
+      position: absolute;
+      top: 8px;
+      right: 64px;
+      font-size: 11px;
+      color: #999;
+      font-family: var(--code-font-family);
+      opacity: 0.7;
+    }
+
+    /* Horizontal rule */
+    .markdown-section hr {
+      border: none;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #dde1e6, transparent);
+      margin: 2em 0;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #aaa; }
+
+    /* Copy button */
+    .docsify-copy-code-button {
+      border-radius: 6px;
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .cover .cover-main { padding: 3em 1em 2em; }
+      .cover .cover-main h1 { font-size: 2.2rem; }
+      .cover .cover-main p { font-size: 1rem; }
+      .cover .cover-main .action .button {
+        padding: 0.6em 1.4em;
+        font-size: 0.9rem;
+      }
+      .cover .install-cmd {
+        margin: 1.5em auto 1em;
+        max-width: 100%;
+      }
+      .cover .install-cmd .cmd-box {
+        flex-direction: column;
+        gap: 0.6em;
+        padding: 0.8em;
+      }
+      .cover .install-cmd .cmd-box code {
+        font-size: 0.66rem;
+        white-space: nowrap;
+        overflow-x: auto;
+        width: 100%;
+      }
+      .cover .install-cmd .cmd-box .copy-btn {
+        align-self: flex-end;
+        width: 100%;
+        padding: 0.5em;
+        font-size: 0.9rem;
+        justify-content: center;
+      }
+      .markdown-section h1 { font-size: 1.8rem; }
+      .app-nav {
+        padding: 0 0.8em;
+        height: 48px;
+      }
+      .app-nav > ul > li > a,
+    .app-nav > ul > li > span {
+        padding: 0.3em 0.5em;
+        font-size: 0.85rem;
+      }
+      .app-nav > ul > li > ul {
+        min-width: 136px;
+      }
+      .markdown-section {
+        padding: 3.5em 1em 3em;
+      }
+    }
+  </style>
+</head>
+<body>
+    <nav></nav>
+  <div id="app">Loading...</div>
+  <script>
+    window.$docsify = {
+      name: '⚡ IMtoAgent',
+      repo: 'https://github.com/imtoagent/imtoagent',
+      coverpage: true,
+      loadNavbar: '/_navbar.md',
+      subMaxLevel: 3,
+      auto2top: true,
+      executeScript: true,
+      mergeNavbar: false,
+      topMargin: 60,
+      themeColor: '#4a90d9',
+      themeable: {
+        readyTransition: true,
+        responsiveTables: true
+      },
+      search: {
+        maxAge: 86400000,
+        paths: 'auto',
+        placeholder: 'Search...',
+        noData: 'No results.'
+      },
+      copyCode: {
+        buttonText: '📋 Copy',
+        errorText: '❌ Failed',
+        successText: '✅ Copied!'
+      },
+      // Bind install-cmd copy button via docsify hook
+      plugins: [
+        function (hook) {
+          hook.doneEach(function () {
+            var boxes = document.querySelectorAll('.cover .cmd-box');
+            boxes.forEach(function (box) {
+              var btn = box.querySelector('.copy-btn');
+              var cmd = box.querySelector('code');
+              if (btn && cmd && !btn.dataset.bound) {
+                btn.dataset.bound = '1';
+                btn.addEventListener('click', function () {
+                  var text = cmd.textContent.trim();
+                  var originalBg = btn.style.background;
+                  var originalBorder = btn.style.borderColor;
+                  var originalColor = btn.style.color;
+                  var originalText = btn.textContent;
+                  function onSuccess() {
+                    btn.style.background = 'rgba(34,197,94,0.3)';
+                    btn.style.borderColor = 'rgba(34,197,94,0.5)';
+                    btn.style.color = '#4ade80';
+                    btn.textContent = '✅ Copied!';
+                    setTimeout(function () {
+                      btn.style.background = originalBg;
+                      btn.style.borderColor = originalBorder;
+                      btn.style.color = originalColor;
+                      btn.textContent = originalText;
+                    }, 2000);
+                  }
+                  function onFail() {
+                    btn.style.background = 'rgba(239,68,68,0.3)';
+                    btn.style.borderColor = 'rgba(239,68,68,0.5)';
+                    btn.style.color = '#f87171';
+                    btn.textContent = '❌ Failed';
+                    setTimeout(function () {
+                      btn.style.background = originalBg;
+                      btn.style.borderColor = originalBorder;
+                      btn.style.color = originalColor;
+                      btn.textContent = originalText;
+                    }, 2000);
+                  }
+                  if (navigator.clipboard) {
+                    navigator.clipboard.writeText(text).then(onSuccess).catch(onFail);
+                  } else {
+                    try {
+                      var ta = document.createElement('textarea');
+                      ta.value = text;
+                      ta.style.position = 'fixed';
+                      ta.style.left = '-9999px';
+                      document.body.appendChild(ta);
+                      ta.select();
+                      var ok = document.execCommand('copy');
+                      document.body.removeChild(ta);
+                      if (ok) onSuccess(); else onFail();
+                    } catch (e) { onFail(); }
+                  }
+                });
+              }
+            });
+          });
+        }
+      ]
+    }
+  </script>
+  <!-- docsify core -->
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+  <!-- plugins -->
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/zoom-image.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify-copy-code@3/dist/docsify-copy-code.min.js"></script>
+  <!-- syntax highlight -->
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-typescript.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-yaml.min.js"></script>
+  <!-- Install copy button bound via docsify hook (doneEach) -->
+<!-- (handled in $docsify.plugins below) -->
+
+</body>
+</html>
