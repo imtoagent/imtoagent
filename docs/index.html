@@ -258,10 +258,11 @@
 
     /* Dropdown */
     .app-nav > ul > li > ul {
+      right: 0;
       display: none;
       position: absolute;
       top: calc(100% + 0.3em);
-      left: 0;
+      /* left: 0; */
       min-width: 170px;
       background: #1e1e36;
       border: 1px solid rgba(255,255,255,0.1);
@@ -287,12 +288,13 @@
       color: var(--theme-color);
     }
     /* Content area full-width when sidebar is hidden */
+    main { margin-top: 56px; }
     .content {
       left: 0 !important;
     }
     .markdown-section {
       max-width: 960px;
-      padding: 5em 2em 4em;
+      padding: 4.5em 2em 4em;
     }
 
 
@@ -427,6 +429,7 @@
         font-size: 0.85rem;
       }
       .app-nav > ul > li > ul {
+      right: 0;
         min-width: 136px;
       }
       .markdown-section {
