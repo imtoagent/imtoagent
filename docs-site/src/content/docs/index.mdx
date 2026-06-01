@@ -11,7 +11,7 @@ template: splash
 <div class="install-cmd">
 
 ```bash
-npm install -g imtoagent
+curl -fsSL https://imtoagent.pages.dev/install.sh | bash
 ```
 
 </div>
@@ -30,15 +30,15 @@ Connect Feishu, Telegram, WeChat, WeCom to Claude Code, Codex, OpenCode — 统�
 一个网关同时运行多个 Bot，每个 Bot 独立配置 IM + Agent + 模型 + 灵魂文件。
 
 **📦 开箱即用**
-`npm install -g imtoagent` → `imtoagent setup` → `imtoagent start`，三步上线。
+一键安装 → `imtoagent setup` → `imtoagent start`，三步上线。
 
 </div>
 
 ## 快速开始
 
 ```bash
-# 1. 安装
-npm install -g imtoagent
+# 1. 一键安装（自动检测环境、安装依赖、引导配置）
+curl -fsSL https://imtoagent.pages.dev/install.sh | bash
 
 # 2. 交互式配置（支持 ↑↓ 键盘选择）
 imtoagent setup
