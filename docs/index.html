@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IMtoAgent — IM ↔ Agent Unified Gateway</title>
+  <meta name="description" content="Connect Feishu, Telegram, WeChat, WeCom to Claude Code, Codex, OpenCode — one gateway, infinite bots.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
   <!-- docsify-themeable -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/css/theme-simple.css">
@@ -13,7 +14,7 @@
       --theme-color-dark: #357abd;
       --base-font-size: 16px;
       --base-line-height: 1.8;
-      --heading-font-weight: 600;
+      --heading-font-weight: 700;
       --blockquote-color: var(--theme-color);
       --sidebar-name-color: var(--theme-color);
       --sidebar-nav-link-color: #444;
@@ -22,7 +23,7 @@
       --sidebar-nav-link-active-font-weight: 600;
       --sidebar-nav-link-before-content: '';
       --sidebar-nav-pagelink-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23999'%3E%3Cpath d='M6 4l4 4-4 4'/%3E%3C/svg%3E") no-repeat center left;
-      --cover-max-width: 48em;
+      --cover-max-width: 52em;
       --cover-blockquote-color: var(--theme-color);
       --notice-color: #e8f4fd;
       --code-font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
@@ -36,61 +37,192 @@
       --code-block-tab-color: #666;
     }
 
-    /* Cover page center */
-    .cover .cover-main { margin-top: -2em; }
-    .cover .cover-main > p:last-child { margin: 1.5em 0; }
-    .cover .cover-main .action { margin: 0.5em; }
+    /* ========== Cover / Hero ========== */
+    .cover {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .cover::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at top, rgba(255,255,255,0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .cover .cover-main {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 3em 1.5em;
+      margin-top: 0;
+    }
+    .cover .cover-main h1 {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.3em;
+      color: #fff;
+      text-shadow: 0 2px 20px rgba(0,0,0,0.15);
+    }
+    .cover .cover-main h1 a {
+      color: #fff;
+      text-decoration: none;
+    }
+    .cover .cover-main p {
+      color: rgba(255,255,255,0.85);
+      font-size: 1.25rem;
+      max-width: 42em;
+      margin: 0 auto 0.5em;
+      line-height: 1.6;
+    }
+    /* Badges on cover */
+    .cover .cover-main p img {
+      margin: 0 0.3em;
+      vertical-align: middle;
+      filter: brightness(1.05);
+    }
+    .cover .cover-main .action {
+      margin-top: 2em;
+    }
     .cover .cover-main .action .button {
-      border-radius: 8px;
-      padding: 0.6em 1.8em;
+      display: inline-block;
+      border-radius: 10px;
+      padding: 0.75em 2.2em;
       font-weight: 600;
-      font-size: 1rem;
-      transition: all 0.2s ease;
+      font-size: 1.05rem;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      border: 2px solid rgba(255,255,255,0.3);
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      backdrop-filter: blur(8px);
+      text-decoration: none;
+      margin: 0 0.4em;
     }
     .cover .cover-main .action .button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(74, 144, 217, 0.3);
+      transform: translateY(-3px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+      background: rgba(255,255,255,0.2);
+      border-color: rgba(255,255,255,0.5);
     }
-    .cover .cover-main h1 a { font-weight: 700; }
+    .cover .cover-main .action .button:last-child {
+      background: #fff;
+      color: #764ba2;
+      border-color: #fff;
+    }
+    .cover .cover-main .action .button:last-child:hover {
+      background: #f8f9ff;
+      color: #667eea;
+    }
 
-    /* Sidebar */
-    .sidebar { padding: 0; }
+    /* ========== Sidebar ========== */
+    .sidebar {
+      padding: 0;
+      background: #fafbfc;
+      border-right: 1px solid #e8ecf0;
+    }
+    .sidebar > h1 {
+      padding: 1.2em 0.8em 0.6em;
+      font-size: 1.1rem;
+      border-bottom: 1px solid #e8ecf0;
+      margin: 0 0 0.5em;
+    }
     .sidebar-nav > ul { padding-left: 0; }
     .sidebar-nav li { margin: 2px 0; }
-    .sidebar-nav a { border-radius: 4px; margin: 0 8px; padding: 4px 8px; transition: all 0.15s ease; }
-    .sidebar-nav a:hover { background: #f0f4f8; }
-    .sidebar-nav .active > a { background: var(--theme-color); color: #fff !important; }
-
-    /* Content */
-    .markdown-section { max-width: 860px; padding: 2em 1em; }
-    .markdown-section h1 { border-bottom: 2px solid var(--theme-color); padding-bottom: 0.3em; }
-    .markdown-section h2 { border-bottom: 1px solid #e8e8e8; padding-bottom: 0.2em; }
-    .markdown-section img { border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-
-    /* Tables */
-    .markdown-section table { border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
-    .markdown-section table thead th { background: #f5f7fa; font-weight: 600; }
-
-    /* Blockquote */
-    .markdown-section blockquote {
-      border-left: 4px solid var(--theme-color);
-      background: #f8fbff;
-      border-radius: 0 6px 6px 0;
-      padding: 0.8em 1em;
+    .sidebar-nav a {
+      border-radius: 6px;
+      margin: 0 10px;
+      padding: 5px 10px;
+      transition: all 0.15s ease;
+    }
+    .sidebar-nav a:hover { background: #e8ecf0; }
+    .sidebar-nav .active > a {
+      background: var(--theme-color);
+      color: #fff !important;
+      font-weight: 600;
     }
 
-    /* Copy button */
-    .docsify-copy-code-button { border-radius: 4px; font-size: 12px; }
+    /* ========== Content ========== */
+    .markdown-section {
+      max-width: 900px;
+      padding: 2.5em 1.5em 4em;
+    }
+    .markdown-section h1 {
+      font-size: 2.2rem;
+      font-weight: 700;
+      border-bottom: 3px solid var(--theme-color);
+      padding-bottom: 0.3em;
+      margin-bottom: 0.8em;
+    }
+    .markdown-section h2 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      border-bottom: 1px solid #e8ecf0;
+      padding-bottom: 0.25em;
+      margin-top: 2em;
+    }
+    .markdown-section h3 {
+      font-weight: 600;
+      color: #333;
+    }
+    .markdown-section blockquote {
+      border-left: 4px solid var(--theme-color);
+      background: linear-gradient(135deg, #f0f7ff 0%, #f8fbff 100%);
+      border-radius: 0 8px 8px 0;
+      padding: 1em 1.2em;
+      font-size: 1.05rem;
+      color: #444;
+    }
+    .markdown-section img {
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    }
 
-    /* Badge-like styling for code blocks */
+    /* Tables */
+    .markdown-section table {
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    .markdown-section table thead th {
+      background: linear-gradient(135deg, #f5f7fa 0%, #eef1f5 100%);
+      font-weight: 600;
+      border-bottom: 2px solid #dde1e6;
+      padding: 0.8em 1em;
+    }
+    .markdown-section table tbody td {
+      padding: 0.7em 1em;
+      border-bottom: 1px solid #f0f2f4;
+    }
+    .markdown-section table tbody tr:last-child td {
+      border-bottom: none;
+    }
+    .markdown-section table tbody tr:hover {
+      background: #f8faff;
+    }
+
+    /* Code */
     pre[data-lang]::before {
       content: attr(data-lang);
       position: absolute;
-      top: 6px;
-      right: 60px;
+      top: 8px;
+      right: 64px;
       font-size: 11px;
       color: #999;
       font-family: var(--code-font-family);
+      opacity: 0.7;
+    }
+
+    /* Horizontal rule */
+    .markdown-section hr {
+      border: none;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #dde1e6, transparent);
+      margin: 2em 0;
     }
 
     /* Scrollbar */
@@ -99,10 +231,22 @@
     ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #aaa; }
 
+    /* Copy button */
+    .docsify-copy-code-button {
+      border-radius: 6px;
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+
     /* Responsive */
     @media (max-width: 768px) {
-      .cover .cover-main h1 { font-size: 2em; }
-      .cover .cover-main .action .button { padding: 0.5em 1.2em; font-size: 0.9rem; }
+      .cover .cover-main h1 { font-size: 2.4rem; }
+      .cover .cover-main p { font-size: 1.05rem; }
+      .cover .cover-main .action .button {
+        padding: 0.6em 1.4em;
+        font-size: 0.95rem;
+      }
+      .markdown-section h1 { font-size: 1.8rem; }
     }
   </style>
 </head>
