@@ -39,41 +39,39 @@
 
     /* ========== Cover / Hero ========== */
     .cover {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: #1a1a2e !important;
+      background-image: linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%) !important;
       min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
     }
     .cover::before {
       content: '';
       position: absolute;
       inset: 0;
-      background: radial-gradient(ellipse at top, rgba(255,255,255,0.08) 0%, transparent 70%);
+      background: radial-gradient(ellipse at top right, rgba(102, 126, 234, 0.15) 0%, transparent 60%),
+                  radial-gradient(ellipse at bottom left, rgba(118, 75, 162, 0.1) 0%, transparent 60%);
       pointer-events: none;
     }
     .cover .cover-main {
       position: relative;
       z-index: 1;
       text-align: center;
-      padding: 3em 1.5em;
+      padding: 4em 1.5em 3em;
       margin-top: 0;
     }
     .cover .cover-main h1 {
       font-size: 3.5rem;
       font-weight: 800;
       letter-spacing: -0.02em;
-      margin-bottom: 0.3em;
-      color: #fff;
-      text-shadow: 0 2px 20px rgba(0,0,0,0.15);
+      margin-bottom: 0.2em;
+      color: #ffffff;
     }
     .cover .cover-main h1 a {
-      color: #fff;
+      color: #ffffff;
       text-decoration: none;
     }
     .cover .cover-main p {
-      color: rgba(255,255,255,0.85);
-      font-size: 1.25rem;
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 1.2rem;
       max-width: 42em;
       margin: 0 auto 0.5em;
       line-height: 1.6;
@@ -94,8 +92,8 @@
       font-weight: 600;
       font-size: 1.05rem;
       transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-      border: 2px solid rgba(255,255,255,0.3);
-      background: rgba(255,255,255,0.12);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.1);
       color: #fff;
       backdrop-filter: blur(8px);
       text-decoration: none;
@@ -103,18 +101,103 @@
     }
     .cover .cover-main .action .button:hover {
       transform: translateY(-3px);
-      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
-      background: rgba(255,255,255,0.2);
-      border-color: rgba(255,255,255,0.5);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.5);
     }
     .cover .cover-main .action .button:last-child {
       background: #fff;
-      color: #764ba2;
+      color: #0f3460;
       border-color: #fff;
     }
     .cover .cover-main .action .button:last-child:hover {
-      background: #f8f9ff;
-      color: #667eea;
+      background: #f0f4ff;
+    }
+
+    /* Install command box on cover */
+    .cover .install-cmd {
+      margin: 2em auto 1.5em;
+      max-width: 38em;
+    }
+    .cover .install-cmd .cmd-label {
+      display: block;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.5em;
+    }
+    .cover .install-cmd .cmd-box {
+      display: flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      padding: 0.6em 0.8em;
+      backdrop-filter: blur(8px);
+      gap: 0.5em;
+      transition: border-color 0.2s ease;
+    }
+    .cover .install-cmd .cmd-box:hover {
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+    .cover .install-cmd .cmd-box code {
+      flex: 1;
+      color: #e2e8f0;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+      font-size: 0.95rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      background: none;
+      border: none;
+      padding: 0;
+      margin: 0;
+    }
+    .cover .install-cmd .cmd-box .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      padding: 0.35em 0.7em;
+      color: #fff;
+      font-size: 0.85rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+    .cover .install-cmd .cmd-box .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: rgba(255, 255, 255, 0.4);
+    }
+    .cover .install-cmd .cmd-box .copy-btn.copied {
+      background: rgba(34, 197, 94, 0.3);
+      border-color: rgba(34, 197, 94, 0.5);
+      color: #4ade80;
+    }
+
+    /* ========== Hamburger / Sidebar toggle ========== */
+    .sidebar-toggle {
+      position: fixed;
+      top: 0.8em;
+      left: 0.8em;
+      z-index: 2000 !important;
+      background: rgba(26, 26, 46, 0.85);
+      backdrop-filter: blur(8px);
+      border-radius: 8px;
+      padding: 0.4em;
+      transition: background 0.2s ease;
+    }
+    .sidebar-toggle:hover {
+      background: rgba(26, 26, 46, 0.95);
+    }
+    .sidebar-toggle span {
+      background: #fff !important;
+      border-radius: 2px;
     }
 
     /* ========== Sidebar ========== */
@@ -122,6 +205,7 @@
       padding: 0;
       background: #fafbfc;
       border-right: 1px solid #e8ecf0;
+      z-index: 1500;
     }
     .sidebar > h1 {
       padding: 1.2em 0.8em 0.6em;
@@ -177,14 +261,14 @@
     }
     .markdown-section img {
       border-radius: 10px;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
     }
 
     /* Tables */
     .markdown-section table {
       border-radius: 10px;
       overflow: hidden;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
       border-collapse: separate;
       border-spacing: 0;
     }
@@ -240,13 +324,16 @@
 
     /* Responsive */
     @media (max-width: 768px) {
-      .cover .cover-main h1 { font-size: 2.4rem; }
-      .cover .cover-main p { font-size: 1.05rem; }
+      .cover .cover-main { padding: 3em 1em 2em; }
+      .cover .cover-main h1 { font-size: 2.2rem; }
+      .cover .cover-main p { font-size: 1rem; }
       .cover .cover-main .action .button {
         padding: 0.6em 1.4em;
-        font-size: 0.95rem;
+        font-size: 0.9rem;
       }
+      .cover .install-cmd .cmd-box code { font-size: 0.8rem; }
       .markdown-section h1 { font-size: 1.8rem; }
+      .sidebar-toggle { top: 0.6em; left: 0.6em; }
     }
   </style>
 </head>
@@ -292,5 +379,47 @@
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-typescript.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-yaml.min.js"></script>
+  <!-- Install copy button script -->
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var observer = new MutationObserver(function () {
+        var box = document.querySelector('.cover .cmd-box');
+        if (box) {
+          var btn = box.querySelector('.copy-btn');
+          var cmd = box.querySelector('code');
+          if (btn && cmd && !btn.dataset.bound) {
+            btn.dataset.bound = '1';
+            btn.addEventListener('click', function () {
+              var text = cmd.textContent.trim();
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(text).then(function () {
+                  btn.classList.add('copied');
+                  btn.textContent = '✅ Copied!';
+                  setTimeout(function () {
+                    btn.classList.remove('copied');
+                    btn.textContent = '📋 Copy';
+                  }, 2000);
+                });
+              } else {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                btn.classList.add('copied');
+                btn.textContent = '✅ Copied!';
+                setTimeout(function () {
+                  btn.classList.remove('copied');
+                  btn.textContent = '📋 Copy';
+                }, 2000);
+              }
+            });
+          }
+        }
+      });
+      observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+    });
+  </script>
 </body>
 </html>
