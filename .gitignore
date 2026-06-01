@@ -45,3 +45,4 @@ data/
 # Source scripts (keep compiled .cjs)
 scripts/postinstall.ts
 bot-ids.json
+docs-site/dist/

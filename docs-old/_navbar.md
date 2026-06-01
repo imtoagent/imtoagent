@@ -1,0 +1,19 @@
+- [🏠 Home](/)
+- Getting Started
+  - [Quick Start](guide/quick-start.md)
+  - [Installation](guide/installation.md)
+  - [Configuration](guide/configuration.md)
+- Adapters
+  - [Overview](adapters/README.md)
+  - [Feishu](adapters/feishu.md)
+  - [Telegram](adapters/telegram.md)
+  - [WeChat](adapters/wechat.md)
+  - [WeCom](adapters/wecom.md)
+- Agents
+  - [Overview](agents/README.md)
+  - [Claude Code](agents/claude.md)
+  - [Codex](agents/codex.md)
+  - [OpenCode](agents/opencode.md)
+- [Architecture](architecture/README.md)
+- [CLI Reference](cli/README.md)
+- [GitHub](https://github.com/imtoagent/imtoagent)
