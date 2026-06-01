@@ -186,22 +186,13 @@
     }
 
     /* ========== Top Navbar ========== */
-    /* Hide sidebar everywhere (cover + pages) */
-    .sidebar {
-      display: none !important;
-    }
-    .sidebar-toggle {
-      display: none !important;
-    }
-    /* Hide sidebar/hamburger on cover page */
-    section.cover .sidebar,
-    section.cover .sidebar-toggle {
-      display: none !important;
-    }
-    /* Content takes full width */
-    .content {
-      left: 0 !important;
-    }
+    /* Hide sidebar everywhere */
+    .sidebar, .sidebar-toggle { display: none !important; }
+    section.cover .sidebar, section.cover .sidebar-toggle { display: none !important; }
+    .content { left: 0 !important; }
+    main { margin-top: 56px; }
+
+    /* --- Navbar container --- */
     .app-nav {
       position: fixed !important;
       top: 0 !important;
@@ -210,20 +201,22 @@
       z-index: 1000 !important;
       background: #1a1a2e;
       border-bottom: 1px solid rgba(255,255,255,0.08);
-      padding: 0 1.5em;
       height: 56px;
       display: flex;
       align-items: center;
-      justify-content: flex-end;
+      justify-content: space-between;
+      padding: 0 1.2em;
       box-shadow: 0 2px 12px rgba(0,0,0,0.3);
     }
-    .app-nav ul {
+
+    /* --- Desktop menu (horizontal) --- */
+    .app-nav > ul {
       list-style: none;
       margin: 0;
       padding: 0;
       display: flex;
       align-items: center;
-      gap: 0.2em;
+      gap: 0.15em;
     }
     .app-nav > ul > li {
       position: relative;
@@ -232,17 +225,19 @@
     .app-nav > ul > li > span {
       display: flex;
       align-items: center;
-      gap: 0.25em;
-      padding: 0.4em 0.8em;
+      gap: 0.2em;
+      padding: 0.35em 0.7em;
       color: rgba(255,255,255,0.85);
       font-size: 0.92rem;
       font-weight: 500;
       border-radius: 6px;
-      transition: all 0.15s ease;
       text-decoration: none;
       white-space: nowrap;
+      cursor: pointer;
+      transition: background 0.15s ease;
     }
-    .app-nav > ul > li > a:hover {
+    .app-nav > ul > li > a:hover,
+    .app-nav > ul > li > span:hover {
       background: rgba(255,255,255,0.1);
       color: var(--theme-color);
     }
@@ -250,20 +245,14 @@
       color: var(--theme-color);
       font-weight: 600;
     }
-    /* Force visibility - guarantee navbar text shows */
-    .app-nav * {
-      visibility: visible !important;
-      opacity: 1 !important;
-    }
 
-    /* Dropdown */
+    /* --- Dropdown --- */
     .app-nav > ul > li > ul {
-      right: 0;
       display: none;
       position: absolute;
       top: calc(100% + 0.3em);
-      /* left: 0; */
-      min-width: 170px;
+      right: 0;
+      min-width: 160px;
       background: #1e1e36;
       border: 1px solid rgba(255,255,255,0.1);
       border-radius: 8px;
@@ -277,28 +266,104 @@
     }
     .app-nav > ul > li > ul li a {
       display: block;
-      padding: 0.45em 1em;
+      padding: 0.5em 1.2em;
       color: rgba(255,255,255,0.85);
       font-size: 0.88rem;
       text-decoration: none;
-      transition: all 0.15s ease;
+      transition: background 0.15s ease;
     }
     .app-nav > ul > li > ul li a:hover {
       background: rgba(255,255,255,0.1);
       color: var(--theme-color);
     }
-    /* Content area full-width when sidebar is hidden */
-    main { margin-top: 56px; }
-    .content {
-      left: 0 !important;
+
+    /* --- Hamburger toggle (hidden on desktop) --- */
+    .nav-toggle {
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+      cursor: pointer;
+      padding: 4px;
+      background: none;
+      border: none;
     }
-    .markdown-section {
-      max-width: 960px;
-      padding: 4.5em 2em 4em;
+    .nav-toggle span {
+      display: block;
+      width: 22px;
+      height: 2px;
+      background: rgba(255,255,255,0.85);
+      border-radius: 2px;
+      transition: transform 0.2s ease, opacity 0.2s ease;
+    }
+    .nav-toggle.open span:nth-child(1) { transform: rotate(45deg) translate(5px, 5px); }
+    .nav-toggle.open span:nth-child(2) { opacity: 0; }
+    .nav-toggle.open span:nth-child(3) { transform: rotate(-45deg) translate(5px, -5px); }
+
+    /* --- Mobile styles --- */
+    @media (max-width: 768px) {
+      .cover .cover-main { padding: 3em 1em 2em; }
+      .cover .cover-main h1 { font-size: 2.2rem; }
+      .cover .cover-main p { font-size: 1rem; }
+      .cover .cover-main .action .button { padding: 0.6em 1.4em; font-size: 0.9rem; }
+      .cover .install-cmd { margin: 1.5em auto 1em; max-width: 100%; }
+      .cover .install-cmd .cmd-box { flex-direction: column; gap: 0.6em; padding: 0.8em; }
+      .cover .install-cmd .cmd-box code { font-size: 0.66rem; white-space: nowrap; overflow-x: auto; width: 100%; }
+      .cover .install-cmd .cmd-box .copy-btn { align-self: flex-end; width: 100%; padding: 0.5em; font-size: 0.9rem; justify-content: center; }
+      .markdown-section h1 { font-size: 1.8rem; }
+    }
+      .nav-toggle {
+        display: flex;
+      }
+      /* Hide desktop menu by default on mobile */
+      .app-nav > ul {
+        display: none;
+        position: absolute;
+        top: 48px;
+        left: 0;
+        right: 0;
+        flex-direction: column;
+        background: #1a1a2e;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        padding: 0.5em 0;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      }
+      .app-nav > ul.open {
+        display: flex;
+      }
+      .app-nav > ul > li {
+        width: 100%;
+      }
+      .app-nav > ul > li > a,
+      .app-nav > ul > li > span {
+        padding: 0.7em 1.2em;
+        font-size: 0.95rem;
+        border-radius: 0;
+        width: 100%;
+        justify-content: space-between;
+      }
+      /* Dropdown on mobile: static, always visible when parent is in open menu */
+      .app-nav > ul > li > ul {
+        position: static;
+        display: none;
+        box-shadow: none;
+        border: none;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        border-radius: 0;
+        background: rgba(0,0,0,0.2);
+        padding: 0;
+      }
+      .app-nav > ul > li.open > ul {
+        display: block;
+      }
+      .app-nav > ul > li > ul li a {
+        padding: 0.55em 2em;
+        font-size: 0.88rem;
+      }
+      main { margin-top: 48px; }
+      .markdown-section { padding: 2em 1em 3em; }
     }
 
-
-    .markdown-section h1 {
+.markdown-section h1 {
       font-size: 2.2rem;
       font-weight: 700;
       border-bottom: 3px solid var(--theme-color);
@@ -392,10 +457,13 @@
       .cover .cover-main { padding: 3em 1em 2em; }
       .cover .cover-main h1 { font-size: 2.2rem; }
       .cover .cover-main p { font-size: 1rem; }
-      .cover .cover-main .action .button {
-        padding: 0.6em 1.4em;
-        font-size: 0.9rem;
-      }
+      .cover .cover-main .action .button { padding: 0.6em 1.4em; font-size: 0.9rem; }
+      .cover .install-cmd { margin: 1.5em auto 1em; max-width: 100%; }
+      .cover .install-cmd .cmd-box { flex-direction: column; gap: 0.6em; padding: 0.8em; }
+      .cover .install-cmd .cmd-box code { font-size: 0.66rem; white-space: nowrap; overflow-x: auto; width: 100%; }
+      .cover .install-cmd .cmd-box .copy-btn { align-self: flex-end; width: 100%; padding: 0.5em; font-size: 0.9rem; justify-content: center; }
+      .markdown-section h1 { font-size: 1.8rem; }
+    }
       .cover .install-cmd {
         margin: 1.5em auto 1em;
         max-width: 100%;
@@ -439,11 +507,14 @@
   </style>
 </head>
 <body>
-    <nav class="app-nav">
+        <nav class="app-nav">
+      <button class="nav-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </button>
       <ul>
         <li><a href="/">⚡ Home</a></li>
         <li>
-          <span>Guide ▾</span>
+          <span onclick="this.parentElement.classList.toggle('open')">Guide ▾</span>
           <ul>
             <li><a href="#/guide/quick-start">Quick Start</a></li>
             <li><a href="#/guide/installation">Install</a></li>
@@ -451,7 +522,7 @@
           </ul>
         </li>
         <li>
-          <span>Adapters ▾</span>
+          <span onclick="this.parentElement.classList.toggle('open')">Adapters ▾</span>
           <ul>
             <li><a href="#/adapters/README">Overview</a></li>
             <li><a href="#/adapters/feishu">Feishu</a></li>
@@ -461,7 +532,7 @@
           </ul>
         </li>
         <li>
-          <span>Agents ▾</span>
+          <span onclick="this.parentElement.classList.toggle('open')">Agents ▾</span>
           <ul>
             <li><a href="#/agents/README">Overview</a></li>
             <li><a href="#/agents/claude">Claude</a></li>
@@ -469,7 +540,6 @@
             <li><a href="#/agents/opencode">OpenCode</a></li>
           </ul>
         </li>
-        
       </ul>
     </nav>
   <div id="app">Loading...</div>
