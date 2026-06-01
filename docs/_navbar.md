@@ -1,3 +1,4 @@
+- [🏠 Home](/)
 - Getting Started
   - [Quick Start](guide/quick-start.md)
   - [Installation](guide/installation.md)
