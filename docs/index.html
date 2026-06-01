@@ -433,7 +433,7 @@
         border-radius: 0;
       }
       .app-nav > ul > li > ul {
-        position: static !important;
+        position: relative !important;
         display: none !important;
         background: rgba(0,0,0,0.2) !important;
         border: none;
@@ -441,6 +441,10 @@
         margin: 0 !important;
         padding: 0 !important;
         box-sizing: border-box !important;
+        right: auto !important;
+        left: auto !important;
+        min-width: unset !important;
+        width: 100% !important;
         border-top: 1px solid rgba(255,255,255,0.06);
         background: rgba(0,0,0,0.2);
         padding: 0;
