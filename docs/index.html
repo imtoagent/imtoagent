@@ -16,13 +16,7 @@
       --base-line-height: 1.8;
       --heading-font-weight: 700;
       --blockquote-color: var(--theme-color);
-      --sidebar-name-color: var(--theme-color);
-      --sidebar-nav-link-color: #444;
-      --sidebar-nav-link-font-weight: 400;
-      --sidebar-nav-link-active-color: var(--theme-color);
-      --sidebar-nav-link-active-font-weight: 600;
-      --sidebar-nav-link-before-content: '';
-      --sidebar-nav-pagelink-background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23999'%3E%3Cpath d='M6 4l4 4-4 4'/%3E%3C/svg%3E") no-repeat center left;
+      /* sidebar removed — top navbar instead */
       --cover-max-width: 52em;
       --cover-blockquote-color: var(--theme-color);
       --notice-color: #e8f4fd;
@@ -190,69 +184,110 @@
       color: #4ade80;
     }
 
-    /* ========== Hamburger / Sidebar toggle ========== */
-    .sidebar-toggle {
-      position: fixed !important;
-      top: 12px !important;
-      left: 12px !important;
-      z-index: 9999 !important;
-      background: rgba(26, 26, 46, 0.9) !important;
-      backdrop-filter: blur(8px);
-      border-radius: 8px !important;
-      padding: 8px !important;
-      width: 36px;
-      height: 36px;
-      display: flex !important;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.2s ease;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    }
-    .sidebar-toggle:hover {
-      background: rgba(26, 26, 46, 0.98) !important;
-    }
-    .sidebar-toggle span {
-      display: block !important;
-      width: 20px !important;
-      height: 2px !important;
-      background: #fff !important;
-      border-radius: 2px;
-      margin: 4px 0 !important;
-    }
-
-    /* ========== Sidebar ========== */
+    /* ========== Top Navbar ========== */
+    /* Hide sidebar everywhere (cover + pages) */
     .sidebar {
-      padding: 0;
-      background: #fafbfc;
-      border-right: 1px solid #e8ecf0;
-      z-index: 1500;
+      display: none !important;
     }
-    .sidebar > h1 {
-      padding: 1.2em 0.8em 0.6em;
-      font-size: 1.1rem;
+    .sidebar-toggle {
+      display: none !important;
+    }
+    /* Hide sidebar/hamburger on cover page */
+    section.cover .sidebar,
+    section.cover .sidebar-toggle {
+      display: none !important;
+    }
+    /* Content takes full width */
+    .content {
+      left: 0 !important;
+    }
+    .app-nav {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      z-index: 1000 !important;
+      background: #ffffff;
       border-bottom: 1px solid #e8ecf0;
-      margin: 0 0 0.5em;
+      padding: 0 1.5em;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
     }
-    .sidebar-nav > ul { padding-left: 0; }
-    .sidebar-nav li { margin: 2px 0; }
-    .sidebar-nav a {
+    .app-nav ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.2em;
+    }
+    .app-nav > ul > li {
+      position: relative;
+    }
+    .app-nav > ul > li > a {
+      display: flex;
+      align-items: center;
+      gap: 0.25em;
+      padding: 0.4em 0.8em;
+      color: #444;
+      font-size: 0.92rem;
+      font-weight: 500;
       border-radius: 6px;
-      margin: 0 10px;
-      padding: 5px 10px;
       transition: all 0.15s ease;
+      text-decoration: none;
+      white-space: nowrap;
     }
-    .sidebar-nav a:hover { background: #e8ecf0; }
-    .sidebar-nav .active > a {
-      background: var(--theme-color);
-      color: #fff !important;
+    .app-nav > ul > li > a:hover {
+      background: #f0f4f8;
+      color: var(--theme-color);
+    }
+    .app-nav > ul > li > a.active {
+      color: var(--theme-color);
       font-weight: 600;
     }
-
-    /* ========== Content ========== */
-    .markdown-section {
-      max-width: 900px;
-      padding: 2.5em 1.5em 4em;
+    /* Dropdown */
+    .app-nav > ul > li > ul {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.3em);
+      left: 0;
+      min-width: 170px;
+      background: #fff;
+      border: 1px solid #e8ecf0;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+      padding: 0.4em 0;
+      list-style: none;
+      z-index: 1100;
     }
+    .app-nav > ul > li:hover > ul {
+      display: block;
+    }
+    .app-nav > ul > li > ul li a {
+      display: block;
+      padding: 0.45em 1em;
+      color: #444;
+      font-size: 0.88rem;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .app-nav > ul > li > ul li a:hover {
+      background: #f0f4f8;
+      color: var(--theme-color);
+    }
+    /* Content area full-width when sidebar is hidden */
+    .content {
+      left: 0 !important;
+    }
+    .markdown-section {
+      max-width: 960px;
+      padding: 4.5em 2em 4em;
+    }
+
+
     .markdown-section h1 {
       font-size: 2.2rem;
       font-weight: 700;
@@ -374,7 +409,17 @@
         justify-content: center;
       }
       .markdown-section h1 { font-size: 1.8rem; }
-      .sidebar-toggle { top: 10px !important; left: 10px !important; }
+      .app-nav {
+        padding: 0 0.8em;
+        height: 48px;
+      }
+      .app-nav > ul > li > a {
+        padding: 0.3em 0.5em;
+        font-size: 0.85rem;
+      }
+      .markdown-section {
+        padding: 3.5em 1em 3em;
+      }
     }
   </style>
 </head>
@@ -385,7 +430,7 @@
       name: '⚡ IMtoAgent',
       repo: 'https://github.com/imtoagent/imtoagent',
       coverpage: true,
-      loadSidebar: '/_sidebar.md',
+      loadNavbar: '/_navbar.md',
       subMaxLevel: 3,
       auto2top: true,
       executeScript: true,
