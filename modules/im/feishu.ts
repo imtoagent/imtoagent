@@ -51,6 +51,9 @@ export class FeishuIMModule implements IMModule {
   private _mediaStore: MediaStore;
   private _mediaResolver: InboundMediaResolver;
 
+  // File upload limits
+  private maxFileSize = 20 * 1024 * 1024; // 20MB (Feishu file message limit)
+
   constructor(cfg: FeishuConfig) {
     this.appId = cfg.appId;
     this.appSecret = cfg.appSecret;
@@ -150,10 +153,177 @@ export class FeishuIMModule implements IMModule {
   }
 
   // ================================================================
+  // Markdown 样式优化（参考 larksuite/cli optimizeMarkdownStyle）
+  // ================================================================
+  // 1. H1-H3 标题在飞书卡片/帖子中渲染过大 → 降级为 H4-H5
+  // 2. 连续标题间无间距 → 补空行
+  // 3. 表格与前后文粘连 → 补空行
+  // 4. 多余空行（>2）→ 压缩为双空行
+
+  private optimizeMarkdownStyle(text: string): string {
+    const codeBlockRegex = /```[\s\S]*?```/g;
+    const codeBlocks: string[] = [];
+    const protectedText = text.replace(codeBlockRegex, (m) => {
+      codeBlocks.push(m);
+      return `___CB_${codeBlocks.length - 1}___`;
+    });
+
+    let result = protectedText;
+
+    // 标题降级：只在原文含 H1-H3 时触发
+    if (/^#{1,3} /m.test(text)) {
+      result = result.replace(/^### (.+)$/gm, '##### $1');  // H3→H5
+      result = result.replace(/^## (.+)$/gm, '##### $1');   // H2→H5
+      result = result.replace(/^# (.+)$/gm, '#### $1');     // H1→H4
+    }
+
+    // 连续标题间补空行
+    result = result.replace(/^(#{4,5} .+)\n(#{4,5} )/gm, '$1\n\n$2');
+
+    // 表格上面补空行
+    result = result.replace(/^([^|\n].*)\n(\|.+\|)/gm, '$1\n\n$2');
+
+    // 还原代码块
+    for (let i = 0; i < codeBlocks.length; i++) {
+      result = result.replace(`___CB_${i}___`, codeBlocks[i]);
+    }
+
+    // 压缩多余空行
+    result = result.replace(/\n{3,}/g, '\n\n');
+
+    return result;
+  }
+
+  /** 纯文本/代码/表格/分隔线/图片 → 走 post；含按钮卡片 → 走 interactive */
+  private canUsePostFormat(blocks: UnifiedBlock[]): boolean {
+    return blocks.length > 0 && blocks.every(b =>
+      b.type === 'text' || b.type === 'code_block' ||
+      b.type === 'table' || b.type === 'divider' ||
+      b.type === 'image'
+    );
+  }
+
+  /** 拼接 blocks → 飞书 post 格式（支持图文混排，含 title） */
+  private async sendAsPost(chatId: string, blocks: UnifiedBlock[]) {
+    // 1. 提取 title（首个 text block 的首行）
+    let title = '';
+    for (const b of blocks) {
+      if (b.type === 'text' && b.content.trim()) {
+        title = b.content.trim().split('\n')[0].slice(0, 128);
+        break;
+      }
+    }
+
+    // 2. 按段落构建 content：每个 block → 一个或多个 post element
+    const paragraphs: Array<Array<Record<string, unknown>>> = [];
+
+    for (const block of blocks) {
+      switch (block.type) {
+        case 'image': {
+          // 图片 → 上传图片拿 image_key → 单独一个段落
+          if (block.url) {
+            try {
+              const imageKey = await this.uploadImageFromUrl(block.url);
+              if (imageKey) {
+                paragraphs.push([{ tag: 'img', image_key: imageKey }]);
+              }
+            } catch (e: unknown) {
+              console.error(`[Feishu] Image upload in post failed: ${e.message}`);
+            }
+          }
+          break;
+        }
+
+        case 'code_block': {
+          const code = `\`\`\`${block.language || ''}\n${this.escapeCodeBlock(block.code)}\n\`\`\``;
+          paragraphs.push([{ tag: 'md', text: code }]);
+          break;
+        }
+
+        case 'table': {
+          const mdTable = this.renderMarkdownTable(block.headers, block.rows, block.caption);
+          paragraphs.push([{ tag: 'md', text: mdTable }]);
+          break;
+        }
+
+        case 'divider': {
+          // 分隔线 → 空段落或分隔标记（飞书 post 不支持 hr，用空行替代）
+          paragraphs.push([{ tag: 'text', text: '---' }]);
+          break;
+        }
+
+        default: { // text
+          const optimized = this.optimizeMarkdownStyle(block.content);
+          // 按空行分段，每段一个 paragraph
+          const parts = optimized.split(/\n\n+/).filter(p => p.trim());
+          for (const part of parts) {
+            paragraphs.push([{ tag: 'md', text: part.trim() }]);
+          }
+          break;
+        }
+      }
+    }
+
+    if (paragraphs.length === 0) return;
+
+    const payload: Record<string, unknown> = {
+      zh_cn: {
+        content: paragraphs,
+      },
+    };
+    if (title) {
+      (payload.zh_cn as Record<string, unknown>).title = title;
+    }
+
+    await this.client.im.message.create({
+      params: { receive_id_type: 'chat_id' },
+      data: {
+        receive_id: chatId,
+        msg_type: 'post',
+        content: JSON.stringify(payload),
+      },
+    });
+    console.log(`[Feishu] Post message sent (${blocks.length} blocks → ${paragraphs.length} paragraphs${title ? ', with title' : ''})`);
+  }
+
+  // ================================================================
   // 富文本卡片发送
   // ================================================================
 
   async sendBlocks(chatId: string, blocks: UnifiedBlock[]) {
+    // 纯文本块（无图片/按钮）优先走 post 格式，markdown 渲染更好
+    const nonFileBlocks = blocks.filter(b => b.type !== 'file');
+    if (this.canUsePostFormat(nonFileBlocks)) {
+      // 文件单独发，文本主体走 post
+      const fileBlocks = blocks.filter(b => b.type === 'file' && b.url);
+      for (const fb of fileBlocks) {
+        try {
+          let fileKey: string | null = null;
+          if (fb.url.startsWith('file://')) {
+            fileKey = await this.uploadFileFromPath(fb.url.replace('file://', ''));
+          } else {
+            fileKey = await this.uploadFileFromUrl(fb.url, fb.filename);
+          }
+          if (fileKey) await this.sendFile(chatId, fileKey, fb.filename);
+        } catch (e: unknown) {
+          console.error(`[Feishu] File send failed: ${fb.filename} - ${(e as Error).message}`);
+        }
+      }
+      try {
+        await this.sendAsPost(chatId, nonFileBlocks);
+      } catch (e: unknown) {
+        console.error(`[Feishu] Post send failed: ${(e as Error).message}, falling back to interactive`);
+        await this._sendCard(chatId, blocks);
+      }
+      return;
+    }
+
+    // 含交互元素（图片/按钮）→ 走 interactive 卡片
+    return this._sendCard(chatId, blocks);
+  }
+
+  /** 原有 interactive 卡片发送逻辑（内部方法，供 sendBlocks 和降级调用） */
+  private async _sendCard(chatId: string, blocks: UnifiedBlock[]) {
     // 拆分：文件 block 必须单独发飞书文件消息，不能进卡片
     const fileBlocks = blocks.filter(b => b.type === 'file' && b.url);
     const cardBlocks = blocks.filter(b => b.type !== 'file');
@@ -319,6 +489,11 @@ ${b.content || ''}`;
         buffer = await this.downloadFile(url);
       } else if (url.startsWith('file://')) {
         const filePath = url.replace('file://', '');
+        const stat = require('fs').statSync(filePath);
+        if (stat.size > this.maxFileSize) {
+          console.error(`[Feishu] File too large: ${filePath} (${stat.size} bytes, max ${this.maxFileSize})`);
+          return null;
+        }
         buffer = require('fs').readFileSync(filePath);
       } else {
         // 可能是相对/绝对本地路径
@@ -347,6 +522,11 @@ ${b.content || ''}`;
   // Upload image from local file to Feishu, returns image_key
   async uploadImageFromFile(filePath: string): Promise<string | null> {
     try {
+      const stat = fs.statSync(filePath);
+      if (stat.size > this.maxFileSize) {
+        console.error(`[Feishu] File too large: ${filePath} (${stat.size} bytes, max ${this.maxFileSize})`);
+        return null;
+      }
       const buffer = fs.readFileSync(filePath);
       // 使用 SDK 原生上传方法
       const r = await (this.client as any).im.v1.image.create({
@@ -381,6 +561,11 @@ ${b.content || ''}`;
   // Upload file from local path to Feishu, returns file_key
   async uploadFileFromPath(filePath: string): Promise<string | null> {
     try {
+      const stat = fs.statSync(filePath);
+      if (stat.size > this.maxFileSize) {
+        console.error(`[Feishu] File too large: ${filePath} (${stat.size} bytes, max ${this.maxFileSize})`);
+        return null;
+      }
       const buffer = fs.readFileSync(filePath);
       return this.uploadFileFromBuffer(buffer, path.basename(filePath));
     } catch (e: unknown) {

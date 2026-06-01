@@ -119,15 +119,19 @@ export class CodexAppServerClient {
   // 发送消息
   // ================================================================
 
-  async sendPrompt(threadId: string, prompt: string, cwd: string): Promise<void> {
+  async sendPrompt(threadId: string, prompt: string, cwd: string, systemPrompt?: string): Promise<void> {
     this.notifyTurnStart();
-    await this._sendRequest('turn/start', {
+    const req: Record<string, unknown> = {
       threadId,
       input: [{ type: 'text', text: prompt }],
       cwd,
       model: 'gpt-5.5',
       effort: 'medium',
-    });
+    };
+    if (systemPrompt) {
+      req.systemInstructions = systemPrompt;
+    }
+    await this._sendRequest('turn/start', req);
   }
 
   async *receiveEvents(): AsyncGenerator<AgentEvent> {

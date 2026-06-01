@@ -72,7 +72,19 @@ export function buildCapabilityPrompt(caps: IMCapabilities): string {
     lines.push('Example: `🎙️ [announcement.mp3](file:///tmp/tts-output.mp3)`');
   }
 
-  // 注：buttonAction 有 IM 能力但无 markdown 语法，不生成提示词
+  // Button — custom markdown to trigger card action buttons
+  if (caps.buttonAction) {
+    lines.push('**Buttons**: You can add action buttons to a message using this syntax on its own line:');
+    lines.push('`[BUTTON: Label](action_url)`');
+    lines.push('Each button line is rendered as an interactive card button. Multiple lines = multiple buttons.');
+    lines.push('');
+  }
+
+  // Divider — available when cardMessage is supported
+  if (caps.cardMessage) {
+    lines.push('**Divider**: Use `---` on a line by itself to insert a horizontal divider between sections.');
+    lines.push('');
+  }
 
   lines.push('');
   lines.push('### Behavior Rules');
@@ -106,7 +118,7 @@ export function parseToBlocks(text: string, caps: IMCapabilities): UnifiedBlock[
   }
   if (caps.audioSend) {
     patterns.push({
-      regex: /🎙️\s*\[([^\]]*)\]\((file:\/\/[^)]+)\)/g,
+      regex: /🎙️\s*\[([^\]]*)\]\((file:\/\/[^\s]+?)\)/g,
       make: (m) => ({ type: 'audio', url: m[2], filename: m[1] }),
     });
   }
@@ -118,8 +130,24 @@ export function parseToBlocks(text: string, caps: IMCapabilities): UnifiedBlock[
   }
   if (caps.fileSend) {
     patterns.push({
-      regex: /📎\s*\[([^\]]*)\]\((file:\/\/[^)]+)\)/g,
+      regex: /📎\s*\[([^\]]*)\]\((file:\/\/[^\s]+?)\)/g,
       make: (m) => ({ type: 'file', url: m[2], filename: m[1] }),
+    });
+  }
+
+  // Button syntax: [BUTTON: Label](url) — only when buttonAction enabled
+  if (caps.buttonAction) {
+    patterns.push({
+      regex: /\[BUTTON:\s*([^\]]+)\]\(([^)]+)\)/g,
+      make: (m) => ({ type: 'card', title: '', content: '', buttons: [{ label: m[1].trim(), url: m[2].trim() }] }),
+    });
+  }
+
+  // Divider: standalone --- line — only when cardMessage enabled
+  if (caps.cardMessage) {
+    patterns.push({
+      regex: /(?:^|\n)\s*---\s*(?:\n|$)/gm,
+      make: () => ({ type: 'divider' }),
     });
   }
 

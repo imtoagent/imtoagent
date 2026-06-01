@@ -19,6 +19,9 @@ import { spawn, execSync } from 'child_process';
 import { getDataDir, getLogsDir } from '../modules/utils/paths';
 
 const PID_FILE = '/tmp/imtoagent.pid';
+const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_ROTATED_FILES = 7;
+const RETENTION_DAYS = 30;
 
 // ================================================================
 // Command dispatch
@@ -219,6 +222,46 @@ function ensureLogDir(dataDir: string) {
 }
 
 // ================================================================
+// Log rotation for imtoagent.log
+// ================================================================
+function rotateLogFile(logPath: string): void {
+  if (!fs.existsSync(logPath)) return;
+
+  // Clean old rotated files by mtime
+  const logsDir = path.dirname(logPath);
+  const baseName = path.basename(logPath);
+  const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  try {
+    const files = fs.readdirSync(logsDir);
+    for (const file of files) {
+      if (!file.startsWith(baseName)) continue;
+      const filePath = path.join(logsDir, file);
+      const stats = fs.statSync(filePath);
+      if (stats.mtimeMs < cutoff) fs.unlinkSync(filePath);
+    }
+  } catch {}
+
+  // Check if current file needs rotation
+  const stats = fs.statSync(logPath);
+  if (stats.size < MAX_LOG_SIZE) return;
+
+  // Shift: imtoagent.log.6 → .7 (delete), .5 → .6, ...
+  for (let i = MAX_ROTATED_FILES - 1; i >= 1; i--) {
+    const src = path.join(logsDir, `${baseName}.${i}`);
+    const dst = path.join(logsDir, `${baseName}.${i + 1}`);
+    if (fs.existsSync(src)) {
+      if (i + 1 > MAX_ROTATED_FILES) {
+        fs.unlinkSync(src);
+      } else {
+        fs.renameSync(src, dst);
+      }
+    }
+  }
+  fs.renameSync(logPath, path.join(logsDir, `${baseName}.1`));
+  console.log(`[Rotate] Log rotated (was ${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
+}
+
+// ================================================================
 // start — background mode (spawn detached, log to file, return immediately)
 // ================================================================
 async function cmdStart() {
@@ -265,6 +308,7 @@ async function cmdStart() {
   }
 
   const logFile = ensureLogDir(dataDir);
+  rotateLogFile(logFile);
 
   console.log('🚀 Starting imtoagent gateway (background)...');
   console.log(`   Data directory: ${dataDir}`);
@@ -323,6 +367,7 @@ async function cmdRun() {
   }
 
   const logFile = ensureLogDir(dataDir);
+  rotateLogFile(logFile);
 
   // Warn if already running in background
   if (fs.existsSync(PID_FILE)) {
@@ -510,6 +555,7 @@ async function cmdDaemon(): Promise<void> {
   }
 
   const logFile = ensureLogDir(dataDir);
+  rotateLogFile(logFile);
   const { execPath, args } = getGatewayArgs();
 
   console.log(`🛡  imtoagent Daemon Mode`);

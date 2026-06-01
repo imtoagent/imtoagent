@@ -79,7 +79,7 @@ registerIM('wechat', {
   },
 });
 import { startAnthropicProxy, stopAnthropicProxy } from './modules/proxy/anthropic-proxy';
-import { initCodexProxyConfig } from './modules/proxy/codex-proxy';
+import { initCodexProxyConfig, resolveSupportedInputTypes } from './modules/proxy/codex-proxy';
 import { checkRateLimit, setRateLimitConfig } from './modules/rate-limiter';
 import { setCurrentBot } from './modules/bot-context';
 import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath } from './modules/utils/paths';
@@ -95,6 +95,7 @@ import { startOpenCodeServer, stopOpenCodeServer } from './modules/agent/opencod
 
 // ===== 全局活跃请求计数 =====
 let activeRequests = 0;
+let isShuttingDown = false;
 
 // ================================================================
 // 解析飞书消息内容
@@ -673,7 +674,7 @@ class Bot {
     cmd('/providers', () => {
       const providers = loadProviders();
       const list = Object.entries(providers).map(([name, p]: [string, any]) =>
-        `• **${name}**: ${(p.models || []).join(', ')}`
+        `• **${name}**: ${(p.models || []).map((m: any) => typeof m === 'string' ? m : m.id).join(', ')}`
       ).join('\n');
       return `📡 **Available Providers**\n\n${list}\n\nCurrent: ${this.activeModel}`;
     });
@@ -763,6 +764,10 @@ class Bot {
 
   // ===== 消息处理 — SDK 完整接入 =====
   async handleMessage(chatId: string, text: string, userId: string, attachments?: MessageAttachment[]) {
+    if (isShuttingDown) {
+      console.log(`[Shutdown] Rejecting new message during shutdown: ${text.slice(0, 50)}`);
+      return;
+    }
     activeRequests++;
     const controller = new AbortController();
     this.activeControllers.set(chatId, controller);
@@ -1008,16 +1013,18 @@ async function main() {
 
     try {
       const codexCfg = config.codex || {};
+      const modelId = codexCfg.model || 'deepseek-v4-pro';
       let apiKey = '';
       for (const name of Object.keys(config.providers || {})) {
         apiKey = config.providers[name].apiKey || '';
         if (apiKey) break;
       }
       initCodexProxyConfig({
-        model: codexCfg.model || 'deepseek-v4-pro',
+        model: modelId,
         reportedModel: codexCfg.reportedModel || 'gpt-5.5',
         upstream: codexCfg.upstream || 'https://api.deepseek.com/v1/chat/completions',
         apiKey,
+        supportedInputTypes: resolveSupportedInputTypes(config.providers || {}, modelId),
       });
       const rlCfg = config.rateLimit || {};
       if (rlCfg.enabled !== false) {
@@ -1191,14 +1198,28 @@ async function main() {
   // 优雅关闭
   async function gracefulShutdown(signal: string) {
     console.log(`[Shutdown] Received ${signal}, shutting down gracefully...`);
+    isShuttingDown = true;
+
     // 先 abort 所有适配器的活跃子进程（如 Claude CLI）
     for (const bot of bots) {
       try { if (bot.adapter && typeof (bot.adapter as any).cleanup === 'function') (bot.adapter as any).cleanup(); } catch {}
     }
-    for (const bot of bots) bot.im.stop();
 
-    // 立即关闭代理，让正在等待上游响应的请求快速失败
-    // 这样 handleMessage 的 catch/finally 才能执行，activeRequests 才能递减
+    // 让活跃请求先完成/失败，再关 IM——避免回复石沉大海
+    const DRAIN_TIMEOUT = 10_000;
+    const drainStart = Date.now();
+    while (activeRequests > 0 && Date.now() - drainStart < DRAIN_TIMEOUT) {
+      console.log(`[Shutdown] Waiting for ${activeRequests} active request(s)...`);
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (activeRequests > 0) {
+      console.warn(`[Shutdown] ⚠️ Timeout, ${activeRequests} request(s) still pending`);
+    } else {
+      console.log('[Shutdown] All requests completed');
+    }
+
+    // 现在关闭 IM 和代理
+    for (const bot of bots) bot.im.stop();
     await stopAnthropicProxy();
     await stopOpenCodeServer();
 
@@ -1207,17 +1228,6 @@ async function main() {
       for (const [chatId, session] of bot.sessions.entries()) {
         try { bot.sessionManager.persist(bot.id, session); } catch {}
       }
-    }
-    const DRAIN_TIMEOUT = 10_000;
-    const start = Date.now();
-    while (activeRequests > 0 && Date.now() - start < DRAIN_TIMEOUT) {
-      console.log(`[Shutdown] Waiting for ${activeRequests} active request(s)...`);
-      await new Promise(r => setTimeout(r, 500));
-    }
-    if (activeRequests > 0) {
-      console.warn(`[Shutdown] ⚠️ Timeout, ${activeRequests} request(s) still pending, force exit`);
-    } else {
-      console.log('[Shutdown] All requests completed');
     }
     console.log('[Shutdown] All services closed');
     process.exit(0);

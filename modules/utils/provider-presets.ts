@@ -12,7 +12,7 @@ export interface ProviderPreset {
   name: string;
   baseUrl: string;
   format: 'openai' | 'anthropic' | 'azure';
-  models: string[];
+  models: string[] | Array<{id: string; supportedInputTypes?: string[]}>;
   notes: string;
 }
 
@@ -74,7 +74,7 @@ export function presetToProvider(preset: ProviderPreset, apiKey: string): {
   return {
     baseUrl: preset.baseUrl,
     apiKey,
-    model: preset.models[0] || '',
+    model: (typeof preset.models[0] === 'string' ? preset.models[0] : (preset.models[0] as {id: string}).id) || '',
     format: preset.format,
   };
 }

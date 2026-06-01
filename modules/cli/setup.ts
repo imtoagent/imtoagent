@@ -174,6 +174,37 @@ async function confirm(label: string, defaultYes = true): Promise<boolean | -1> 
   }
 }
 
+
+// ================================================================
+// Model normalization: string[] → {id, supportedInputTypes}[]
+// ================================================================
+
+/**
+ * Convert preset models (string[] or object[]) to uniform object format.
+ * Presets keep string[] for brevity; config.json always gets object format.
+ */
+function normalizeModels(models: (string | {id: string; supportedInputTypes?: string[]})[], defaults = ['text']): Array<{id: string; supportedInputTypes: string[]}> {
+  return models.map(m => {
+    if (typeof m === 'string') return { id: m, supportedInputTypes: defaults };
+    if (typeof m === 'object' && m !== null) {
+      const obj = m as Record<string, unknown>;
+      return {
+        id: String(obj.id || ''),
+        supportedInputTypes: (obj.supportedInputTypes as string[] | undefined) || defaults,
+      };
+    }
+    return { id: String(m), supportedInputTypes: defaults };
+  });
+}
+
+/**
+ * Extract model IDs from models array (string[] or object[]).
+ */
+function extractModelIds(models: (string | {id: string})[] | undefined): string[] {
+  if (!models) return [];
+  return models.map(m => typeof m === 'string' ? m : m.id);
+}
+
 // ================================================================
 // Provider presets
 // ================================================================
@@ -182,7 +213,7 @@ interface ProviderPreset {
   name: string;
   baseUrl: string;
   format: 'openai' | 'anthropic';
-  models: string[];
+  models: string[] | Array<{id: string; supportedInputTypes?: string[]}>;
   hint?: string; // Additional note
 }
 
@@ -674,7 +705,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
       }
     }
 
-    providers[provName] = { baseUrl, apiKey, models, format, ...(Object.keys(pricing).length ? { pricing } : {}) };
+    providers[provName] = { baseUrl, apiKey, models: normalizeModels(models), format, ...(Object.keys(pricing).length ? { pricing } : {}) };
     console.log(`✅ Added: ${provName}\n`);
 
     const r = await confirm('Continue adding providers?', false);
@@ -696,7 +727,8 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
   const allModels: string[] = [];
   for (const [provName, prov] of Object.entries(providers)) {
-    for (const m of (prov as Record<string, unknown>).models as string[] || []) {
+    const modelIds = extractModelIds((prov as Record<string, unknown>).models as (string | {id: string})[]);
+    for (const m of modelIds) {
       allModels.push(`${provName}/${m}`);
     }
   }

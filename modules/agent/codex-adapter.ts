@@ -112,7 +112,7 @@ async function spawnCodexResume(cwd: string, threadId: string, prompt: string): 
 
 async function runViaAppServer(
   cwd: string, prompt: string, chatId: string, session: Session,
-  isFresh: boolean, onProgress?: (text: string) => Promise<void>
+  isFresh: boolean, systemPrompt?: string, onProgress?: (text: string) => Promise<void>
 ): Promise<{ threadId: string; response: string; usage: { inputTokens: number; outputTokens: number } }> {
   let turnCount = 0;
   const manager = getAppServerManager();
@@ -128,7 +128,7 @@ async function runViaAppServer(
     console.log(`[CodexAdapter] app-server new thread=${sessionAny.codexThreadId.slice(-8)}${threadExpired ? ' (process restarted)' : ''}`);
   }
 
-  await client.sendPrompt(sessionAny.codexThreadId, prompt, cwd);
+  await client.sendPrompt(sessionAny.codexThreadId, prompt, cwd, systemPrompt);
 
   let response = '';
   let totalUsage = { inputTokens: 0, outputTokens: 0 };
@@ -204,7 +204,7 @@ export class CodexAdapter implements AgentAdapter {
     let execServerUsage: { inputTokens: number; outputTokens: number } | null = null;
 
     try {
-      const r = await runViaAppServer(cwd, effectiveText, input.chatId, session, isFresh,
+      const r = await runViaAppServer(cwd, effectiveText, input.chatId, session, isFresh, overrideSystemPrompt,
       async (t: string) => { try { await input.sendProgress?.(t); } catch {} });
       response = r.response;
       execServerUsage = r.usage;
@@ -215,7 +215,7 @@ export class CodexAdapter implements AgentAdapter {
       if (errMsg.includes('thread not found') || errMsg.includes('Thread not found')) {
         try {
           sessionAny.codexThreadId = undefined;
-          const r2 = await runViaAppServer(cwd, effectiveText, input.chatId, session, true,
+          const r2 = await runViaAppServer(cwd, effectiveText, input.chatId, session, true, overrideSystemPrompt,
             async (t: string) => { try { await input.sendProgress?.(t); } catch {} });
           response = r2.response;
           execServerUsage = r2.usage;

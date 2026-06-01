@@ -18,6 +18,7 @@ export class DefaultErrorHandler implements ErrorHandler {
    * - 网络超时 → 自动重试 (最多 2 次)
    * - 429 限流 → 等待后重试
    * - 401 认证失败 → 直接返回用户提示
+   * - 402 余额不足 → 直接返回用户提示（不重试）
    * - 5xx 服务端错误 → 重试
    * - 其他 → 返回用户友好消息
    */
@@ -30,6 +31,12 @@ export class DefaultErrorHandler implements ErrorHandler {
     // 提取 HTTP 状态码
     const statusCode = this.extractStatusCode(error);
     const isTimeout = this.isTimeoutError(error);
+
+    // 402 余额不足 → 不重试，直接返回用户提示
+    if (statusCode === 402) {
+      const userMessage = this.getUserMessage(error, backend, ctx.attempt);
+      return { type: 'reply', message: userMessage };
+    }
 
     // 重试策略
     if (ctx.attempt < 2) {
@@ -58,7 +65,7 @@ export class DefaultErrorHandler implements ErrorHandler {
   /** 从错误中提取 HTTP 状态码 */
   private extractStatusCode(error: Error): number {
     const msg = error.message || '';
-    const match = msg.match(/status[:\s]+(\d+)/i) || msg.match(/(\d{3})\s/);
+    const match = msg.match(/status[:\s]+(\d+)/i) || msg.match(/(\d{3})\s/) || msg.match(/"code"\s*:\s*"?(\d{3})/);
     if (match) return parseInt(match[1]);
 
     // 尝试从 error 对象中获取
@@ -101,7 +108,11 @@ export class DefaultErrorHandler implements ErrorHandler {
     const statusCode = this.extractStatusCode(error);
 
     if (statusCode === 401 || statusCode === 403) {
-      return `⚠️ ${backend} backend authentication failed. Please ask an admin to check the configuration.`;
+      return `⚠️ ${backend} backend authentication failed. Please ask an admin to check the API key configuration.`;
+    }
+
+    if (statusCode === 402) {
+      return `⚠️ API balance is insufficient. The upstream service rejected your request. Please add credits and try again.`;
     }
 
     if (statusCode === 429) {

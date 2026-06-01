@@ -16,6 +16,7 @@ interface CodexProxyConfig {
   reportedModel: string;
   upstream: string;
   apiKey: string;
+  supportedInputTypes?: string[];  // e.g. ["text"], ["text","image_url"]
 }
 
 let _codexConfig: CodexProxyConfig | null = null;
@@ -34,16 +35,18 @@ function getConfig(): CodexProxyConfig {
       const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       const codex = raw.codex || {};
       const providers = raw.providers || {};
+      const modelId = codex.model || 'deepseek-v4-pro';
       let apiKey = '';
       for (const name of Object.keys(providers)) {
         apiKey = providers[name].apiKey || '';
         if (apiKey) break;
       }
       _codexConfig = {
-        model: codex.model || 'deepseek-v4-pro',
+        model: modelId,
         reportedModel: codex.reportedModel || 'gpt-5.5',
         upstream: codex.upstream || 'https://api.deepseek.com/v1/chat/completions',
         apiKey,
+        supportedInputTypes: resolveSupportedInputTypes(providers, modelId),
       };
       console.log('[Codex Proxy] Loaded config from config.json');
     } catch (e: unknown) {
@@ -57,6 +60,27 @@ const MODEL = () => getConfig().model;
 const REPORTED_MODEL = () => getConfig().reportedModel;
 const UPSTREAM = () => getConfig().upstream;
 const API_KEY = () => getConfig().apiKey;
+const SUPPORTED_INPUT_TYPES = () => getConfig().supportedInputTypes || ["text"];  // default: text-only
+
+/**
+ * Resolve supportedInputTypes from providers.models configuration.
+ * Handles both string format (old: ["model-id"]) and object format (new: [{id, supportedInputTypes}]).
+ * Missing capability declaration defaults to text-only.
+ */
+export function resolveSupportedInputTypes(providers: Record<string, unknown>, modelId: string): string[] {
+  for (const name of Object.keys(providers)) {
+    const p = providers[name] as Record<string, unknown>;
+    const models = (p.models as unknown[]) || [];
+    for (const m of models) {
+      if (typeof m === 'string' && m === modelId) return ['text'];  // old string format → text-only
+      if (typeof m === 'object' && m !== null && (m as Record<string, unknown>).id === modelId) {
+        const types = (m as Record<string, unknown>).supportedInputTypes as string[] | undefined;
+        return types && types.length > 0 ? types : ['text'];  // missing/empty → text-only
+      }
+    }
+  }
+  return ['text'];  // model not found → text-only
+}
 
 // ================================================================
 // 类型
@@ -178,6 +202,37 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
       continue;
     }
 
+    // Unsupported standalone types — degrade to text
+    if (msg.type === 'input_image') {
+      const mime = msg.media_type || msg.mime_type || 'image/png';
+      console.log(`[Codex] ⚠️ Degrading standalone input_image to text hint (mime=${mime})`);
+      const reasonText = `[Image received (${mime}), current model does not support image input]`;
+      const role: string = msg.role === 'developer' ? 'system' : (msg.role || 'user');
+      const last = chat.messages[chat.messages.length - 1];
+      if (last && last.role === role && role === 'user') {
+        last.content = (last.content || '') + '\n' + reasonText;
+      } else {
+        chat.messages.push({ role, content: reasonText });
+      }
+      i++;
+      continue;
+    }
+    if (msg.type === 'input_file') {
+      const name = msg.filename || msg.file_name || 'unknown file';
+      const textContent = msg.text || msg.content || '';
+      const fileText = textContent || `[File received: ${name}, current model does not support file input]`;
+      console.log(`[Codex] ⚠️ Degrading standalone input_file to text hint (${name})`);
+      const role: string = msg.role === 'developer' ? 'system' : (msg.role || 'user');
+      const last = chat.messages[chat.messages.length - 1];
+      if (last && last.role === role && role === 'user') {
+        last.content = (last.content || '') + '\n' + fileText;
+      } else {
+        chat.messages.push({ role, content: fileText });
+      }
+      i++;
+      continue;
+    }
+
     // 普通消息
     let content: string | Array<Record<string, unknown>>;
     let embeddedToolCalls: ToolCall[] | undefined;
@@ -191,16 +246,22 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
         if (b.type === 'function_call') {
           calls.push({ id: b.call_id || '', type: 'function', function: { name: b.name || '', arguments: b.arguments || '{}' } });
         } else if (b.type === 'input_image') {
-          // DeepSeek V4 doesn't support image input, degrade to text hint
           const mime = b.media_type || b.mime_type || 'image/png';
-          textParts.push(`[Image received (${mime}), current model doesn't support viewing image content directly]`);
+          if (!SUPPORTED_INPUT_TYPES().includes('image_url')) {
+            textParts.push(`[Image received (${mime}), current model doesn't support image input]`);
+          } else {
+            textParts.push(`[Image received (${mime}), format: image_url]`);
+          }
         } else if (b.type === 'input_file') {
-          // DeepSeek V4 doesn't support file input, extract text or degrade to hint
           if (b.text || b.content) {
             textParts.push(b.text || b.content || '');
           } else {
             const name = b.filename || b.file_name || 'unknown file';
-            textParts.push(`[File received: ${name}, current model doesn't support reading file content directly]`);
+            if (!SUPPORTED_INPUT_TYPES().includes('file')) {
+              textParts.push(`[File received: ${name}, current model doesn't support file input]`);
+            } else {
+              textParts.push(`[File received: ${name}]`);
+            }
           }
         } else {
           const t = b.text || b.input_text || b.output_text || '';
@@ -542,6 +603,49 @@ export function accumulateProxyUsage(inputTokens: number, outputTokens: number) 
 
 import type * as http from 'http';
 
+// ================================================================
+// Content filter — strip/convert unsupported types based on declared capabilities
+// ================================================================
+function filterUnsupportedTypes(chatReq: { messages: ChatMessage[]; [key: string]: unknown }, supportedTypes: string[]): { messages: ChatMessage[]; [key: string]: unknown } {
+  const supportsImage = supportedTypes.includes('image_url');
+  const supportsFile = supportedTypes.includes('file');
+  const filtered: ChatMessage[] = [];
+
+  for (const msg of chatReq.messages) {
+    if (typeof msg.content === 'string') {
+      filtered.push(msg);
+      continue;
+    }
+    if (Array.isArray(msg.content)) {
+      const cleaned: Array<Record<string, unknown>> = [];
+      for (const part of msg.content) {
+        if (part.type === 'input_image' || part.type === 'image_url') {
+          if (supportsImage) {
+            cleaned.push(part);
+          } else {
+            const mime = part.media_type || part.mime_type || 'image/png';
+            cleaned.push({ type: 'text', text: `[Image received (${mime}), stripped — model does not support image input]` });
+          }
+        } else if (part.type === 'input_file') {
+          if (supportsFile) {
+            cleaned.push(part);
+          } else {
+            const name = part.filename || part.file_name || 'unknown file';
+            cleaned.push({ type: 'text', text: `[File received: ${name}, stripped — model does not support file input]` });
+          }
+        } else {
+          cleaned.push(part);
+        }
+      }
+      filtered.push({ ...msg, content: cleaned });
+    } else {
+      filtered.push(msg);
+    }
+  }
+
+  return { ...chatReq, messages: filtered };
+}
+
 export async function handleCodexRequest(
   reqBody: string,
   reqPath: string,
@@ -607,6 +711,38 @@ export async function handleCodexRequest(
       if (!upstreamRes.ok) {
         const errText = await upstreamRes.text();
         console.error(`[Codex] ❌ ${upstreamRes.status}: ${errText.slice(0, 200)}`);
+        // 400 with unknown variant — retry with filtered content (strip unsupported types)
+        if (upstreamRes.status === 400 && errText.includes('unknown variant')) {
+          console.log('[Codex] ⚠️ Upstream rejected unknown variant, retrying with filtered content...');
+          const filteredChat = filterUnsupportedTypes(chatReq, SUPPORTED_INPUT_TYPES());
+          const retryBody = JSON.stringify(filteredChat);
+          fs.writeFileSync('/tmp/codex-body-retry.json', retryBody);
+          const retryRes = await fetch(UPSTREAM(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+            body: retryBody,
+            signal: ac.signal,
+          });
+          if (!retryRes.ok) {
+            const retryErrText = await retryRes.text();
+            console.error(`[Codex] ❌ Retry also failed ${retryRes.status}: ${retryErrText.slice(0, 200)}`);
+            res.writeHead(retryRes.status, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `Upstream rejected request twice: ${retryErrText.slice(0, 500)}` }));
+            return;
+          }
+          console.log('[Codex] ✅ Retry succeeded with filtered content');
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+          const writable = new WritableStream({
+            write(chunk: Uint8Array) { res.write(Buffer.from(chunk)); },
+            close() { res.end(); },
+            abort(_err: unknown) { res.end(); },
+          });
+          const writer = writable.getWriter();
+          await streamResponse(retryRes, writer).catch((e: unknown) => {
+            console.error(`[Codex] streamResponse error: ${e?.message || e}`);
+          }).finally(() => { try { writer.close(); } catch {} });
+          return;
+        }
         res.writeHead(upstreamRes.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: errText.slice(0, 500) })); return;
       }
 
