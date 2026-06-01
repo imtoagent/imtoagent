@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-bguv2lll"> <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Agent Backends | IMtoAgent</title><link rel="canonical" href="https://docs.imtoagent.dev/architecture/agent-backends/"/><link rel="sitemap" href="/sitemap-index.xml"/><link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v5.18.2"/><meta name="generator" content="Starlight v0.32.6"/><meta property="og:title" content="Agent Backends"/><meta property="og:type" content="article"/><meta property="og:url" content="https://docs.imtoagent.dev/architecture/agent-backends/"/><meta property="og:locale" content="en"/><meta property="og:description"/><meta property="og:site_name" content="IMtoAgent"/><meta name="twitter:card" content="summary_large_image"/><script>
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-bguv2lll"> <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Agent Backends | IMtoAgent</title><link rel="canonical"/><link rel="shortcut icon" href="/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v5.18.2"/><meta name="generator" content="Starlight v0.32.6"/><meta property="og:title" content="Agent Backends"/><meta property="og:type" content="article"/><meta property="og:url"/><meta property="og:locale" content="en"/><meta property="og:description"/><meta property="og:site_name" content="IMtoAgent"/><meta name="twitter:card" content="summary_large_image"/><script>
 	window.StarlightThemeProvider = (() => {
 		const storedTheme =
 			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
@@ -93,7 +93,7 @@
 
 
 
-<table><thead><tr><th>Backend</th><th>Integration Method</th></tr></thead><tbody><tr><td><a href="/agents/claude">Claude Code</a></td><td>Claude Agent SDK (spawn subprocess)</td></tr><tr><td><a href="/agents/codex">Codex</a></td><td>App-Server v2 (HTTP streaming) + CLI fallback</td></tr><tr><td><a href="/agents/opencode">OpenCode</a></td><td>HTTP API (:4096) + client-side turn loop</td></tr></tbody></table>
+<table><thead><tr><th>Backend</th><th>Integration Method</th></tr></thead><tbody><tr><td><a href="/agents/claude">Claude Code</a></td><td>Claude Agent SDK (spawn subprocess)</td></tr><tr><td><a href="/agents/codex">Codex</a></td><td>App-Server (HTTP streaming) + CLI fallback</td></tr><tr><td><a href="/agents/opencode">OpenCode</a></td><td>HTTP API (:4096) + client-side turn loop</td></tr></tbody></table>
 <h2 id="unified-proxy-18899">Unified Proxy (:18899)</h2>
 <p>All backends route through a single Anthropic-compatible proxy port.</p>
 <ul>
