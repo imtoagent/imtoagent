@@ -192,22 +192,32 @@
 
     /* ========== Hamburger / Sidebar toggle ========== */
     .sidebar-toggle {
-      position: fixed;
-      top: 0.8em;
-      left: 0.8em;
-      z-index: 2000 !important;
-      background: rgba(26, 26, 46, 0.85);
+      position: fixed !important;
+      top: 12px !important;
+      left: 12px !important;
+      z-index: 9999 !important;
+      background: rgba(26, 26, 46, 0.9) !important;
       backdrop-filter: blur(8px);
-      border-radius: 8px;
-      padding: 0.4em;
+      border-radius: 8px !important;
+      padding: 8px !important;
+      width: 36px;
+      height: 36px;
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
       transition: background 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
     .sidebar-toggle:hover {
-      background: rgba(26, 26, 46, 0.95);
+      background: rgba(26, 26, 46, 0.98) !important;
     }
     .sidebar-toggle span {
+      display: block !important;
+      width: 20px !important;
+      height: 2px !important;
       background: #fff !important;
       border-radius: 2px;
+      margin: 4px 0 !important;
     }
 
     /* ========== Sidebar ========== */
@@ -364,7 +374,7 @@
         justify-content: center;
       }
       .markdown-section h1 { font-size: 1.8rem; }
-      .sidebar-toggle { top: 0.6em; left: 0.6em; }
+      .sidebar-toggle { top: 10px !important; left: 10px !important; }
     }
   </style>
 </head>
