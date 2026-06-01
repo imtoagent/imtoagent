@@ -10,10 +10,13 @@
   padding: 3rem 1rem;
 }
 
-.hero .hero-title {
+/* Splash page title (only on pages that have .hero, i.e. homepage) */
+main:has(.hero) h1[id="_top"] {
+  text-align: center;
   font-size: 3rem;
   font-weight: 800;
   letter-spacing: -0.02em;
+  margin-top: 3rem;
   margin-bottom: 0.5rem;
 }
 
