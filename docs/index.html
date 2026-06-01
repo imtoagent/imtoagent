@@ -147,14 +147,23 @@
       color: #e2e8f0;
       font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
       font-size: 0.95rem;
-      white-space: pre-wrap;
-      word-break: break-all;
-      line-height: 1.5;
+      white-space: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
       background: none;
       border: none;
       padding: 0;
       margin: 0;
       min-width: 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.2) transparent;
+    }
+    .cover .install-cmd .cmd-box code::-webkit-scrollbar {
+      height: 3px;
+    }
+    .cover .install-cmd .cmd-box code::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.2);
+      border-radius: 2px;
     }
     .cover .install-cmd .cmd-box .copy-btn {
       display: inline-flex;
@@ -342,10 +351,10 @@
         padding: 0.8em;
       }
       .cover .install-cmd .cmd-box code {
-        font-size: 0.8rem;
-        white-space: pre-wrap;
-        word-break: break-all;
-        text-align: left;
+        font-size: 0.82rem;
+        white-space: nowrap;
+        overflow-x: auto;
+        width: 100%;
       }
       .cover .install-cmd .cmd-box .copy-btn {
         align-self: flex-end;
