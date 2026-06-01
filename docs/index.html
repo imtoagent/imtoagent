@@ -480,18 +480,32 @@
             btn.dataset.bound = '1';
             btn.addEventListener('click', function () {
               var text = cmd.textContent.trim();
+              var originalBg = btn.style.background;
+              var originalBorder = btn.style.borderColor;
+              var originalColor = btn.style.color;
+              var originalText = btn.textContent;
               function onSuccess() {
-                btn.classList.add('copied');
+                btn.style.background = 'rgba(34,197,94,0.3)';
+                btn.style.borderColor = 'rgba(34,197,94,0.5)';
+                btn.style.color = '#4ade80';
                 btn.textContent = '✅ Copied!';
                 setTimeout(function () {
-                  btn.classList.remove('copied');
-                  btn.textContent = '📋 Copy';
+                  btn.style.background = originalBg;
+                  btn.style.borderColor = originalBorder;
+                  btn.style.color = originalColor;
+                  btn.textContent = originalText;
                 }, 2000);
               }
               function onFail() {
+                btn.style.background = 'rgba(239,68,68,0.3)';
+                btn.style.borderColor = 'rgba(239,68,68,0.5)';
+                btn.style.color = '#f87171';
                 btn.textContent = '❌ Failed';
                 setTimeout(function () {
-                  btn.textContent = '📋 Copy';
+                  btn.style.background = originalBg;
+                  btn.style.borderColor = originalBorder;
+                  btn.style.color = originalColor;
+                  btn.textContent = originalText;
                 }, 2000);
               }
               if (navigator.clipboard) {
