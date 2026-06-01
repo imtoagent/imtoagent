@@ -1,0 +1,82 @@
+/* IMtoAgent Starlight custom styles */
+:root {
+  --sl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --sl-text-accent: #4a90d9;
+}
+
+/* Hero section on index page */
+.hero {
+  text-align: center;
+  padding: 3rem 1rem;
+}
+
+.hero .hero-title {
+  font-size: 3rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.5rem;
+}
+
+.hero .hero-subtitle {
+  font-size: 1.25rem;
+  color: var(--sl-color-gray-3);
+  max-width: 42em;
+  margin: 0 auto;
+}
+
+/* Install command box */
+.install-cmd {
+  margin: 2rem auto;
+  max-width: 40em;
+}
+
+.install-cmd code {
+  font-family: var(--sl-font-mono);
+  background: var(--sl-color-gray-6);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.install-cmd .copy-btn {
+  cursor: pointer;
+  background: var(--sl-color-accent);
+  color: white;
+  border: none;
+  padding: 0.4em 0.8em;
+  border-radius: 4px;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.install-cmd .copy-btn:hover {
+  opacity: 0.9;
+}
+
+/* Feature cards on index */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin: 3rem 0;
+}
+
+.feature-card {
+  background: var(--sl-color-gray-7, #f5f5f5);
+  border-radius: 12px;
+  padding: 1.5rem;
+  border: 1px solid var(--sl-color-gray-5);
+}
+
+.feature-card h3 {
+  margin-top: 0;
+  font-size: 1.2rem;
+}
+
+/* Dark mode adjustments */
+[data-theme='dark'] .feature-card {
+  background: var(--sl-color-gray-6);
+}

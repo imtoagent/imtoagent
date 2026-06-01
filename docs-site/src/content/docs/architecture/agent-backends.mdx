@@ -1,0 +1,21 @@
+---
+title: Agent Backends
+---
+
+# Agent Backends
+
+## Supported Backends
+
+| Backend | Integration Method |
+|---------|-------------------|
+| [Claude Code](/agents/claude) | Claude Agent SDK (spawn subprocess) |
+| [Codex](/agents/codex) | App-Server v2 (HTTP streaming) + CLI fallback |
+| [OpenCode](/agents/opencode) | HTTP API (:4096) + client-side turn loop |
+
+## Unified Proxy (:18899)
+
+All backends route through a single Anthropic-compatible proxy port.
+
+- Claude requests → direct OpenAI format conversion → upstream
+- Codex requests → `handleCodexRequest()` imported into anthropic-proxy
+- `process.env.ANTHROPIC_BASE_URL = 'http://localhost:18899'`

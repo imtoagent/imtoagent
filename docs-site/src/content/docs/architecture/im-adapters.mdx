@@ -1,0 +1,33 @@
+---
+title: IM Adapters
+---
+
+# IM Adapters Architecture
+
+## IM Registry Pattern
+
+All IM adapters implement the `IMModule` interface:
+
+- `reply` — Send text response
+- `sendProgress` — Stream progress updates
+- `sendBlocks` — Send structured content
+- `sendImage` / `sendFile` — Media delivery
+- `start` / `stop` — Lifecycle management
+- `getCapabilities()` — Declare supported features
+
+## Adding a New Adapter
+
+```typescript
+registerIM("newplatform", newPlatformFactory);
+```
+
+That's it. No changes to the Bot constructor needed.
+
+## Supported Adapters
+
+| Adapter | Connection | Capabilities |
+|---------|-----------|-------------|
+| [Feishu](/adapters/feishu) | WebSocket persistent | Text, cards, files, images, audio, buttons |
+| [Telegram](/adapters/telegram) | Long polling | Text, files, images, audio |
+| [WeCom](/adapters/wecom) | WebSocket + QR binding | Text, files, images |
+| [WeChat](/adapters/wechat) | HTTP long-poll + QR auth | Text, images, files, voice (AES-128-ECB) |

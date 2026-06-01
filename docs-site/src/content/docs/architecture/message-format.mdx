@@ -1,0 +1,30 @@
+---
+title: Message Format
+---
+
+# Message Format
+
+## IM Capabilities
+
+Each adapter declares its capabilities via `IMCapabilities`:
+
+```typescript
+interface IMCapabilities {
+  text: boolean;
+  codeBlock: boolean;
+  cardMessage: boolean;
+  fileSend: boolean;
+  imageSend: boolean;
+  audioSend: boolean;
+  buttonAction: boolean;
+}
+```
+
+The Agent adapts its output format based on `getCapabilities()`.
+
+## Progress Messages
+
+All backends support streaming progress updates via `sendProgress`:
+- Tool execution status
+- Turn-by-turn progress
+- Final result delivery
