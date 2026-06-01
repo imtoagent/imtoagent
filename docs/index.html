@@ -436,14 +436,46 @@
   </style>
 </head>
 <body>
-    <nav></nav>
+    <nav class="app-nav">
+      <ul>
+        <li><a href="/">🏠 Home</a></li>
+        <li>
+          <span>Getting Started ▾</span>
+          <ul>
+            <li><a href="#/guide/quick-start">Quick Start</a></li>
+            <li><a href="#/guide/installation">Installation</a></li>
+            <li><a href="#/guide/configuration">Configuration</a></li>
+          </ul>
+        </li>
+        <li>
+          <span>Adapters ▾</span>
+          <ul>
+            <li><a href="#/adapters/README">Overview</a></li>
+            <li><a href="#/adapters/feishu">Feishu</a></li>
+            <li><a href="#/adapters/telegram">Telegram</a></li>
+            <li><a href="#/adapters/wechat">WeChat</a></li>
+            <li><a href="#/adapters/wecom">WeCom</a></li>
+          </ul>
+        </li>
+        <li>
+          <span>Agents ▾</span>
+          <ul>
+            <li><a href="#/agents/README">Overview</a></li>
+            <li><a href="#/agents/claude">Claude Code</a></li>
+            <li><a href="#/agents/codex">Codex</a></li>
+            <li><a href="#/agents/opencode">OpenCode</a></li>
+          </ul>
+        </li>
+        <li><a href="https://github.com/imtoagent/imtoagent" target="_blank">GitHub ↗</a></li>
+      </ul>
+    </nav>
   <div id="app">Loading...</div>
   <script>
     window.$docsify = {
       name: '⚡ IMtoAgent',
       repo: 'https://github.com/imtoagent/imtoagent',
       coverpage: true,
-      loadNavbar: '/_navbar.md',
+      loadNavbar: false,
       subMaxLevel: 3,
       auto2top: true,
       executeScript: true,
