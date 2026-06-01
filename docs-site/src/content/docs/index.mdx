@@ -5,7 +5,7 @@ template: splash
 
 <div class="hero">
   <h1 class="hero-title">⚡ IMtoAgent</h1>
-  <p class="hero-subtitle">IM ↔ 多品种 Agent 统一网关 — 一个网关，无限 Bot</p>
+  <p class="hero-subtitle">Unified IM ↔ Agent Gateway — One Gateway, Unlimited Bots</p>
 </div>
 
 <div class="install-cmd">
@@ -16,46 +16,46 @@ curl -fsSL https://imtoagent.pages.dev/install.sh | bash
 
 </div>
 
-Connect Feishu, Telegram, WeChat, WeCom to Claude Code, Codex, OpenCode — 统一网关，多 Bot 并行。
+Connect Feishu, Telegram, WeChat, WeCom to Claude Code, Codex, OpenCode — one gateway, multiple bots running in parallel.
 
 <div class="feature-grid">
 
-**🔌 多 IM 平台**
-内置飞书、Telegram、企业微信、个人微信适配器，Registry 工厂模式，新增 IM 只需加一行注册。
+**🔌 Multiple IM Platforms**
+Built-in adapters for Feishu, Telegram, WeCom, and personal WeChat. Registry factory pattern — adding a new IM takes just one line.
 
-**🤖 多 Agent 后端**
-支持 Claude Code、Codex (OpenAI)、OpenCode 三种编码 Agent 后端，统一 Proxy :18899 端口代理。
+**🤖 Multiple Agent Backends**
+Supports Claude Code, Codex (OpenAI), and OpenCode. Unified proxy on port :18899 for all requests.
 
-**⚙️ 多 Bot 并行**
-一个网关同时运行多个 Bot，每个 Bot 独立配置 IM + Agent + 模型 + 灵魂文件。
+**⚙️ Multi-Bot Parallel**
+Run multiple bots simultaneously — each with its own IM + Agent + model + soul configuration.
 
-**📦 开箱即用**
-一键安装 → `imtoagent setup` → `imtoagent start`，三步上线。
+**📦 Out of the Box**
+One-line install → `imtoagent setup` → `imtoagent start`, live in three steps.
 
 </div>
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 1. 一键安装（自动检测环境、安装依赖、引导配置）
+# 1. One-line install (auto-detects environment, installs dependencies, guides configuration)
 curl -fsSL https://imtoagent.pages.dev/install.sh | bash
 
-# 2. 交互式配置（支持 ↑↓ 键盘选择）
+# 2. Interactive setup (↑↓ keyboard navigation)
 imtoagent setup
 
-# 3. 启动网关（后台运行，终端立即返回）
+# 3. Start gateway (runs in background, terminal returns immediately)
 imtoagent start
 ```
 
-## 核心架构
+## Architecture
 
 ```
-IM 适配器 → IM Registry 工厂 → Bot 实例 → AgentRuntime → Agent Adapter → 统一 Proxy :18899 → 上游模型
+IM Adapter → IM Registry Factory → Bot Instance → AgentRuntime → Agent Adapter → Unified Proxy :18899 → Upstream Models
 ```
 
-| 层级 | 组件 | 说明 |
+| Layer | Component | Description |
 |------|------|------|
-| IM 层 | Feishu / Telegram / WeCom / WeChat | WebSocket / 长轮询 / Webhook 回调 |
-| 网关层 | Bot + AgentRuntime | 消息路由、会话管理、错误处理 |
-| Agent 层 | Claude / Codex / OpenCode | spawn 子进程 / HTTP API |
-| Proxy 层 | Anthropic Proxy :18899 | 统一代理，所有请求转上游 |
+| IM Layer | Feishu / Telegram / WeCom / WeChat | WebSocket / Long-poll / Webhook callback |
+| Gateway Layer | Bot + AgentRuntime | Message routing, session management, error handling |
+| Agent Layer | Claude / Codex / OpenCode | spawn subprocess / HTTP API |
+| Proxy Layer | Anthropic Proxy :18899 | Unified proxy, all requests forwarded upstream |

@@ -1,11 +1,12 @@
 # Cloudflare Pages configuration
 # https://developers.cloudflare.com/pages/configuration/
 #
-# Build settings in CF Pages dashboard:
-#   Framework preset: None
-#   Build command: (empty)
-#   Build output directory: docs/
+# Dashboard build settings:
+#   Framework preset: Astro
+#   Build command: cd docs-site && npm run build
+#   Build output directory: docs-site/dist
+#   Root directory: / (repository root)
 
 [build]
-command = ""
-destination = "docs"
+command = "cd docs-site && npm run build"
+output_directory = "docs-site/dist"
