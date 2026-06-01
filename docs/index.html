@@ -485,7 +485,7 @@
     <ul>
       <li><a href="/">⚡ Home</a></li>
       <li>
-        <span onclick="this.parentElement.classList.toggle('open')">Guide ▾</span>
+        <span onclick="toggleSubmenu(this.parentElement)">Guide ▾</span>
         <ul>
           <li><a href="#/guide/quick-start">Quick Start</a></li>
           <li><a href="#/guide/installation">Install</a></li>
@@ -493,7 +493,7 @@
         </ul>
       </li>
       <li>
-        <span onclick="this.parentElement.classList.toggle('open')">Adapters ▾</span>
+        <span onclick="toggleSubmenu(this.parentElement)">Adapters ▾</span>
         <ul>
           <li><a href="#/adapters/README">Overview</a></li>
           <li><a href="#/adapters/feishu">Feishu</a></li>
@@ -503,7 +503,7 @@
         </ul>
       </li>
       <li>
-        <span onclick="this.parentElement.classList.toggle('open')">Agents ▾</span>
+        <span onclick="toggleSubmenu(this.parentElement)">Agents ▾</span>
         <ul>
           <li><a href="#/agents/README">Overview</a></li>
           <li><a href="#/agents/claude">Claude</a></li>
@@ -515,6 +515,14 @@
   </nav>
 
   <div id="app">Loading...</div>
+
+  <script>
+    function toggleSubmenu(li) {
+      const wasOpen = li.classList.contains('open');
+      document.querySelectorAll('.app-nav > ul > li.open').forEach(el => el.classList.remove('open'));
+      if (!wasOpen) li.classList.add('open');
+    }
+  </script>
 
   <script>
     window.$docsify = {
