@@ -1,3 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <text y="48" font-size="48" fill="#4a90d9">⚡</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="imGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f4502d"/>
+      <stop offset="100%" stop-color="#d44a28"/>
+    </linearGradient>
+    <linearGradient id="bubbleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f5e6df"/>
+    </linearGradient>
+  </defs>
+  <!-- 对话气泡 -->
+  <ellipse cx="28" cy="24" rx="18" ry="16" fill="url(#bubbleGrad)" stroke="#e8d5cc" stroke-width="0.8"/>
+  <polygon points="18,38 12,48 22,40" fill="url(#bubbleGrad)" stroke="#e8d5cc" stroke-width="0.8"/>
+  <!-- IM -->
+  <text x="25" y="30" font-family="system-ui, -apple-system, sans-serif"
+        font-size="16" font-weight="800" fill="url(#imGrad)" text-anchor="middle">IM</text>
+  <!-- 信号波纹 -->
+  <g opacity="0.5" stroke="#e86a44" stroke-width="0.8" fill="none" stroke-linecap="round">
+    <path d="M 40,14 Q 43,11 42,7"/>
+    <path d="M 43,12 Q 47,8 46,4"/>
+    <path d="M 46,10 Q 51,5 49,1"/>
+  </g>
+  <!-- IA 小标签 -->
+  <text x="48" y="40" font-family="system-ui, -apple-system, sans-serif"
+        font-size="7" font-weight="700" fill="#888">IA</text>
 </svg>

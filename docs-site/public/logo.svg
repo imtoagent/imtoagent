@@ -1,3 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <text y="48" font-size="48" fill="#4a90d9">⚡</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400">
+  <defs>
+    <linearGradient id="imGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f4502d"/>
+      <stop offset="50%" stop-color="#e86a44"/>
+      <stop offset="100%" stop-color="#d44a28"/>
+    </linearGradient>
+    <linearGradient id="bubbleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f5e6df"/>
+    </linearGradient>
+    <linearGradient id="titleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#d44a28"/>
+      <stop offset="100%" stop-color="#e86a44"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 对话气泡 -->
+  <g transform="translate(220, 180)">
+    <ellipse cx="0" cy="0" rx="120" ry="100" fill="url(#bubbleGrad)" stroke="#e8d5cc" stroke-width="1.5"/>
+    <polygon points="-50,85 -80,140 -20,95" fill="url(#bubbleGrad)" stroke="#e8d5cc" stroke-width="1.5"/>
+    <text x="-5" y="18" font-family="system-ui, -apple-system, 'SF Pro Display', sans-serif"
+          font-size="100" font-weight="800" fill="url(#imGrad)" text-anchor="middle" letter-spacing="-3">IM</text>
+    <!-- 信号波纹 -->
+    <g opacity="0.45" stroke="#e86a44" stroke-width="3" fill="none" stroke-linecap="round">
+      <path d="M 50,-35 Q 65,-55 58,-80"/>
+      <path d="M 65,-28 Q 85,-55 75,-90"/>
+      <path d="M 80,-20 Q 105,-55 90,-100"/>
+    </g>
+  </g>
+
+  <!-- 标题 -->
+  <text x="600" y="210" font-family="system-ui, -apple-system, 'SF Pro Display', 'PingFang SC', sans-serif"
+        font-size="90" font-weight="700" fill="url(#titleGrad)" letter-spacing="3">IMtoAgent</text>
+
+  <!-- 副标题 -->
+  <text x="600" y="270" font-family="system-ui, -apple-system, 'Helvetica Neue', sans-serif"
+        font-size="28" font-weight="400" fill="#999" letter-spacing="5">INTELLIGENT MESSAGING → AGENT GATEWAY</text>
+
+  <!-- 装饰线 -->
+  <line x1="490" y1="295" x2="710" y2="295" stroke="#e8d5cc" stroke-width="1.5" stroke-linecap="round"/>
 </svg>
