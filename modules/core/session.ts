@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 import type { Session, SessionManager, CallStats } from './types';
+import { HEARTBEAT_ROUNDS_MAX } from './heartbeat';
 import { getSessionsDir } from '../utils/paths';
 
 const SESSIONS_BASE = getSessionsDir();
@@ -203,7 +204,17 @@ export class FileSessionManager implements SessionManager {
     // metadata 完整保存
     output.metadata = session.metadata;
 
-    const filePath = this.sessionPath(botKey, session.chatId);
+    // 心跳/定时任务新字段（L0 新增）
+    if (session.sessionType) output.sessionType = session.sessionType;
+    if (session.sessionKey) output.sessionKey = session.sessionKey;
+    if (session.lastHeartbeatText !== undefined) output.lastHeartbeatText = session.lastHeartbeatText;
+    if (session.lastHeartbeatSentAt !== undefined) output.lastHeartbeatSentAt = session.lastHeartbeatSentAt;
+    if (session.heartbeatTaskState) output.heartbeatTaskState = session.heartbeatTaskState;
+    if (session.heartbeatRounds) output.heartbeatRounds = session.heartbeatRounds;
+
+    // 文件路径：优先用 sessionKey，否则用 chatId
+    const fileKey = session.sessionKey || session.chatId;
+    const filePath = this.sessionPath(botKey, fileKey);
     try {
       fs.writeFileSync(filePath, JSON.stringify(output, null, 2));
     } catch (e: unknown) {
@@ -229,6 +240,76 @@ export class FileSessionManager implements SessionManager {
     }
   }
 
+  /**
+   * 按 sessionKey 获取或创建 Session（L0 新增，心跳/定时任务专用）
+   * 与 getOrCreate 的区别：以 sessionKey 作为文件键（而非 chatId）
+   * 支持 defaults 预设（如 sessionType: 'heartbeat'）
+   */
+  async getOrCreateByKey(botKey: string, sessionKey: string, defaults?: Partial<Session>): Promise<Session> {
+    // 先查缓存
+    const botCache = this.cache.get(botKey);
+    if (botCache) {
+      const cached = botCache.get(sessionKey);
+      if (cached) {
+        cached.lastUsed = Date.now();
+        return cached;
+      }
+    }
+
+    // 从文件加载（用 sessionKey 作为文件名）
+    const filePath = this.sessionPath(botKey, sessionKey);
+    this.ensureDir(botKey);
+
+    let session: Session;
+
+    if (fs.existsSync(filePath)) {
+      try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const data = JSON.parse(raw);
+        session = {
+          ...data,
+          startFresh: data.startFresh || false,
+          running: data.running || false,
+          recentMessages: data.recentMessages || [],
+          stats: data.stats || { ...EMPTY_STATS },
+          sessionType: data.sessionType || defaults?.sessionType || 'main',
+          sessionKey: data.sessionKey || sessionKey,
+        };
+      } catch (e: unknown) {
+        console.error(`[Session] Failed to load ${sessionKey}: ${(e as Error).message}, creating new session`);
+        session = this.createNewSessionByKey(sessionKey, defaults);
+      }
+    } else {
+      session = this.createNewSessionByKey(sessionKey, defaults);
+    }
+
+    // 缓存
+    if (!this.cache.has(botKey)) {
+      this.cache.set(botKey, new Map());
+    }
+    this.cache.get(botKey)!.set(sessionKey, session);
+
+    return session;
+  }
+
+  private createNewSessionByKey(sessionKey: string, defaults?: Partial<Session>): Session {
+    return {
+      chatId: sessionKey,
+      userId: 'system',
+      cwd: undefined,
+      startFresh: false,
+      backendSessionId: undefined,
+      metadata: {},
+      stats: { ...EMPTY_STATS },
+      lastUsed: Date.now(),
+      running: false,
+      recentMessages: [],
+      sessionType: defaults?.sessionType || 'main',
+      sessionKey: sessionKey,
+      ...defaults,
+    };
+  }
+
   cleanupIdle(botKey: string, timeoutMs: number): void {
     const botCache = this.cache.get(botKey);
     if (!botCache) return;
@@ -237,6 +318,9 @@ export class FileSessionManager implements SessionManager {
     const toRemove: string[] = [];
 
     for (const [chatId, session] of botCache) {
+      // 豁免心跳和定时任务 session（L0.5）
+      if (session.sessionKey?.includes(':heartbeat')) continue;
+      if (session.sessionKey?.includes(':cron')) continue;
       if (now - session.lastUsed > timeoutMs && !session.running) {
         toRemove.push(chatId);
       }

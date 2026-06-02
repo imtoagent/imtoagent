@@ -53,6 +53,42 @@ export interface Session {
 
   // 最近消息（向后兼容）
   recentMessages: string[];
+
+  // === 心跳/定时任务扩展字段（L0 新增，全部可选，向后兼容）===
+
+  /** Session 类型（'cron' 为 v2 预留；v1 定时任务跑在 heartbeat session 内） */
+  sessionType?: 'main' | 'heartbeat' | 'cron';
+
+  /** Session 键（替代 chatId 作为唯一标识）
+   *  - main:      = chatId (如 "oc_xxx")
+   *  - heartbeat: = chatId:heartbeat  或 global:heartbeat
+   *  - cron:      = chatId:cron:taskName
+   */
+  sessionKey?: string;
+
+  /** 心跳专用：上次心跳发送的文本（用于去重） */
+  lastHeartbeatText?: string;
+  /** 心跳专用：上次心跳发送时间戳 */
+  lastHeartbeatSentAt?: number;
+  /** 定时任务专用：任务名 → 上次执行时间戳 */
+  heartbeatTaskState?: Record<string, number>;
+  /** 心跳轮数控制：最近 N 轮（硬截断） */
+  heartbeatRounds?: HeartbeatRound[];
+}
+
+/** 心跳轮次记录 */
+export interface HeartbeatRound {
+  timestamp: number;
+  prompt: string;
+  response: string;
+  tokensUsed: number;
+}
+
+/** 定时任务定义（HEARTBEAT.md 中解析） */
+export interface ScheduledTask {
+  name: string;
+  interval: string;  // "1h", "30m", "24h" 等
+  prompt: string;
 }
 
 // ================================================================
@@ -249,6 +285,30 @@ export interface BotConfig {
   cwd?: string;
   activeModel?: string;
   modelAliases?: Record<string, string>;
+
+  /** 心跳配置（L0 新增） */
+  heartbeat?: {
+    /** 心跳间隔（如 "5m"、"300s"、"1h"）默认：无心跳 */
+    interval?: string;
+    /** 心跳输出目标 */
+    target?: {
+      /** IM 平台 */
+      channel?: 'feishu' | 'telegram' | 'wecom' | 'wechat';
+      /** 目标 chatId（不填 = 最后活跃的对话） */
+      chatId?: string;
+    };
+    /** 可见性控制 */
+    visibility?: {
+      /** 有内容时是否发送（默认 true） */
+      showAlerts?: boolean;
+      /** 一切正常时是否发送 OK 指示器（默认 false） */
+      showOk?: boolean;
+    };
+    /** 心跳 prompt（可覆盖默认值） */
+    prompt?: string;
+    /** 心跳轮数上限（默认 3） */
+    maxHeartbeatRounds?: number;
+  };
 }
 
 export interface ProviderConfig {

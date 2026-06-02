@@ -18,10 +18,8 @@ import {
 } from './modules/proxy/anthropic-proxy';
 import { parseToBlocks } from './modules/capabilities';
 import { resolveCapabilities } from './modules/prompt-builder';
-import { getDataDir } from './modules/utils/paths';
 import { WorkspaceManager, createWorkspaceManager } from './modules/utils/workspace-manager';
 import { migrateWorkspaces } from './modules/utils/migrate-workspaces';
-import { getDataDir } from './modules/utils/paths';
 import { McpManager } from './modules/utils/mcp-manager';
 import { SkillsManager } from './modules/utils/skills-manager';
 import { PromptsManager } from './modules/utils/prompts-manager';
@@ -86,6 +84,7 @@ import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath
 
 // ===== SDK 核心 =====
 import { AgentRuntime, FileSessionManager, DefaultErrorHandler, DefaultStatsTracker } from './modules/core';
+import { HeartbeatScheduler } from './modules/core/heartbeat-scheduler';
 import { ClaudeAdapter } from './modules/agent/claude-adapter';
 import { CodexAdapter } from './modules/agent/codex-adapter';
 import { OpenCodeAdapter } from './modules/agent/opencode-adapter';
@@ -103,159 +102,6 @@ let isShuttingDown = false;
 function parseMessage(content: string): string {
   try { return (JSON.parse(content).text || '').trim(); }
   catch { return content.trim(); }
-}
-
-// ================================================================
-// ChatSession — 继承 SDK Session，兼容旧命令
-// ================================================================
-interface ChatSession extends Session {
-  _raw?: any; // 保留原始加载数据
-}
-
-// ================================================================
-// 自定义 SessionManager — 桥接 Bot.sessions 和 SDK
-// ================================================================
-class CustomSessionManager {
-  sessions: Map<string, ChatSession>;
-  botKey: string;
-  sessionsDir: string;
-
-  constructor(botKey: string, workspacePath: string, sessions: Map<string, ChatSession>) {
-    this.botKey = botKey;
-    this.sessions = sessions;
-    this.sessionsDir = path.join(workspacePath, 'sessions');
-  }
-
-  private _sessionPath(chatId: string): string {
-    return path.join(this.sessionsDir, `${chatId}.memory.json`);
-  }
-
-  async getOrCreate(chatId: string, userId: string): Promise<ChatSession> {
-    const existing = this.sessions.get(chatId);
-    if (existing) {
-      existing.lastUsed = Date.now();
-      return existing;
-    }
-
-    // 从文件加载（兼容旧格式）
-    // 确保 sessions 目录存在
-    if (!fs.existsSync(this.sessionsDir)) {
-      fs.mkdirSync(this.sessionsDir, { recursive: true });
-    }
-    const fp = this._sessionPath(chatId);
-    let session: ChatSession;
-
-    if (fs.existsSync(fp)) {
-      try {
-        const raw = fs.readFileSync(fp, 'utf-8');
-        const data = JSON.parse(raw);
-        const EMPTY_STATS: CallStats = {
-          calls: 0, totalTurns: 0, totalInputTokens: 0,
-          totalOutputTokens: 0, totalCostUSD: 0, totalDurationMs: 0,
-        };
-        session = {
-          chatId: data.chatId || chatId,
-          userId: data.userId || userId,
-          cwd: data.cwd,
-          startFresh: data.startFresh || false,
-          backendSessionId: data.sdkSessionId || data.codexThreadId || data.ocSessionId || data.backendSessionId,
-          metadata: {
-            sdkSessionId: data.sdkSessionId,
-            codexThreadId: data.codexThreadId,
-            ocSessionId: data.ocSessionId,
-            ...(data.metadata || {}),
-          },
-          stats: data.stats || { ...EMPTY_STATS },
-          lastUsed: data.lastUsed || Date.now(),
-          running: false,
-          permissionMode: data.permissionMode,
-          codexMode: data.codexMode,
-          recentMessages: data.recentMessages || [],
-        };
-      } catch (e: any) {
-        console.error(`[Session] Failed to load ${chatId}: ${e.message}`);
-        session = this._newSession(chatId, userId);
-      }
-    } else {
-      session = this._newSession(chatId, userId);
-    }
-
-    this.sessions.set(chatId, session);
-    return session;
-  }
-
-  private _newSession(chatId: string, userId: string): ChatSession {
-    const EMPTY_STATS: CallStats = {
-      calls: 0, totalTurns: 0, totalInputTokens: 0,
-      totalOutputTokens: 0, totalCostUSD: 0, totalDurationMs: 0,
-    };
-    return {
-      chatId, userId, startFresh: false,
-      backendSessionId: undefined, metadata: {},
-      stats: { ...EMPTY_STATS },
-      lastUsed: Date.now(), running: false, recentMessages: [],
-    };
-  }
-
-  persist(_botName: string, session: Session): void {
-    const cs = session as ChatSession;
-    const fp = this._sessionPath(session.chatId);
-    const dir = path.dirname(fp);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    const output: Record<string, any> = {
-      chatId: session.chatId,
-      userId: session.userId,
-      cwd: session.cwd,
-      startFresh: session.startFresh,
-      stats: session.stats,
-      lastUsed: session.lastUsed,
-      recentMessages: session.recentMessages || [],
-      running: session.running,
-    };
-
-    if (session.backendSessionId) output.backendSessionId = session.backendSessionId;
-    if (session.metadata) {
-      if (session.metadata.sdkSessionId) output.sdkSessionId = session.metadata.sdkSessionId;
-      if (session.metadata.codexThreadId) output.codexThreadId = session.metadata.codexThreadId;
-      if (session.metadata.ocSessionId) output.ocSessionId = session.metadata.ocSessionId;
-      if (session.permissionMode) output.permissionMode = session.permissionMode;
-      if (session.codexMode) output.codexMode = session.codexMode;
-    }
-    output.metadata = session.metadata;
-
-    try {
-      fs.writeFileSync(fp, JSON.stringify(output, null, 2));
-    } catch (e: any) {
-      console.error(`[Session] Failed to persist ${session.chatId}: ${e.message}`);
-    }
-  }
-
-  delete(_botName: string, chatId: string): void {
-    this.sessions.delete(chatId);
-    try {
-      const fp = this._sessionPath(chatId);
-      if (fs.existsSync(fp)) fs.unlinkSync(fp);
-    } catch {}
-  }
-
-  cleanupIdle(timeoutMs: number): void {
-    const now = Date.now();
-    const toRemove: string[] = [];
-    for (const [chatId, session] of this.sessions.entries()) {
-      if (now - session.lastUsed > timeoutMs && !session.running) {
-        toRemove.push(chatId);
-      }
-    }
-    for (const chatId of toRemove) {
-      this.sessions.delete(chatId);
-      console.log(`[Session] Cleaning up idle ${chatId.slice(-8)}`);
-    }
-  }
-
-  listActive(): Session[] {
-    return Array.from(this.sessions.values());
-  }
 }
 
 // ================================================================
@@ -281,7 +127,7 @@ function findSimilarCommand(input: string, cmds: Map<string, any>): string[] {
 interface CommandCtx {
   chatId: string;
   args: string;
-  session: ChatSession | undefined;
+  session: Session | undefined;
 }
 type CommandHandler = (ctx: CommandCtx) => Promise<string> | string;
 
@@ -296,6 +142,14 @@ interface BotConfig {
   backend: 'claude' | 'codex' | 'opencode' | 'gemini';
   cwd?: string;
   isAdmin?: boolean;  // true = 可以修改网关配置，默认第一个 Bot 为 true
+  /** 心跳配置（L1 新增） */
+  heartbeat?: {
+    interval?: string;
+    target?: { channel?: string; chatId?: string };
+    visibility?: { showAlerts?: boolean; showOk?: boolean };
+    prompt?: string;
+    maxHeartbeatRounds?: number;
+  };
 }
 
 // ================================================================
@@ -316,12 +170,13 @@ class Bot {
   im: IMModule;
   isAdmin: boolean;
   config: any;
+  /** 原始 Bot 级配置（L1 新增：用于访问 heartbeat 等 Bot 级配置） */
+  botConfig: BotConfig;
   workspaceManager: WorkspaceManager;
 
   // SDK
   runtime: AgentRuntime;
-  sessionManager: CustomSessionManager;
-  sessions: Map<string, ChatSession> = new Map();
+  sessionManager: FileSessionManager;
   commands: Map<string, CommandHandler> = new Map();
   adapter: AgentAdapter;
   /** 正在执行的任务的取消信号（chatId → AbortController） */
@@ -330,6 +185,8 @@ class Bot {
   mcpManager: McpManager;
   skillsManager: SkillsManager;
   promptsManager: PromptsManager;
+  /** 心跳调度器（L1 新增） */
+  heartbeatScheduler: HeartbeatScheduler | null = null;
 
   constructor(cfg: BotConfig, globalConfig: any, workspaceManager: WorkspaceManager) {
     this.id = cfg.id || cfg.name; // 后向兼容：无 id 时用 name
@@ -339,6 +196,7 @@ class Bot {
     this.appSecret = cfg.appSecret;
     this.defaultCwd = cfg.cwd || globalConfig.system?.defaultProjectDir || path.join(os.homedir(), 'Projects');
     this.config = globalConfig;
+    this.botConfig = cfg;
     this.isAdmin = cfg.isAdmin !== undefined ? cfg.isAdmin : true; // 默认 true（后向兼容老用户）
     this.workspaceManager = workspaceManager;
 
@@ -380,7 +238,7 @@ class Bot {
 
     // ===== SDK 集成 =====
     const workspacePath = this.workspaceManager.getWorkspacePath(this.id);
-    this.sessionManager = new CustomSessionManager(this.id, workspacePath, this.sessions);
+    this.sessionManager = new FileSessionManager();
 
     // Resource managers
     this.mcpManager = new McpManager(workspacePath);
@@ -425,6 +283,9 @@ class Bot {
 
     // 注册命令
     this._registerCommands();
+
+    // L1: 初始化心跳调度器（如果配置了 interval）
+    this._initHeartbeat();
   }
 
   // ===== 灵魂管理 =====
@@ -549,7 +410,7 @@ class Bot {
         : `⏸ ${this.backend} idle | ${this.activeModel}`);
 
     cmd('/info', ({ session }) =>
-      `🤖 ${this.name} (${this.backend})${this.isAdmin ? ' ⭐' : ''}\nModel: ${this.activeModel}\nDirectory: ${session?.cwd || this.defaultCwd}\nSessions: ${this.sessions.size}`);
+      `🤖 ${this.name} (${this.backend})${this.isAdmin ? ' ⭐' : ''}\nModel: ${this.activeModel}\nDirectory: ${session?.cwd || this.defaultCwd}\nSessions: ${this.sessionManager.listActive(this.id).length}`);
 
     cmd('/stats', ({ session }) => {
       if (!session || session.stats.calls === 0) return '📊 No calls yet';
@@ -749,7 +610,37 @@ class Bot {
     });
   }
 
-  async tryHandleCommand(chatId: string, text: string, session: ChatSession | undefined): Promise<string | null> {
+  // ===== 心跳初始化（L1 新增） =====
+  _initHeartbeat(): void {
+    const hbConfig = (this as any).botConfig?.heartbeat;
+    if (!hbConfig || !hbConfig.interval) return;
+
+    const heartbeatFilePath = path.join(
+      this.workspaceManager.getWorkspacePath(this.id),
+      'HEARTBEAT.md',
+    );
+
+    console.log(`[Heartbeat] Init: bot=${this.name}, interval=${hbConfig.interval}, file=${heartbeatFilePath}`);
+
+    this.heartbeatScheduler = new HeartbeatScheduler(
+      {
+        botName: this.name,
+        botId: this.id,
+        interval: hbConfig.interval,
+        heartbeatFilePath,
+        defaultCwd: this.defaultCwd,
+        model: this.activeModel,
+        systemPrompt: this.soul,
+        showOk: hbConfig.visibility?.showOk ?? false,
+        showAlerts: hbConfig.visibility?.showAlerts ?? true,
+      },
+      this.runtime,
+      this.adapter,
+      this.sessionManager,
+    );
+  }
+
+  async tryHandleCommand(chatId: string, text: string, session: Session | undefined): Promise<string | null> {
     if (!text.startsWith('/')) return null;
     const space = text.indexOf(' ');
     const cmdName = space >= 0 ? text.slice(0, space).toLowerCase() : text.toLowerCase();
@@ -780,7 +671,7 @@ class Bot {
       }
 
       // 获取/创建会话
-      const session = await this.sessionManager.getOrCreate(chatId, userId);
+      const session = await this.sessionManager.getOrCreate(this.id, chatId, userId);
       session.lastUsed = Date.now();
 
       // 命令处理
@@ -891,7 +782,7 @@ function buildSystemPromptWithSoul(
 function cleanupIdleSessions(bots: Bot[]) {
   const IDLE = 30 * 60 * 1000;
   for (const bot of bots) {
-    bot.sessionManager.cleanupIdle(IDLE);
+    bot.sessionManager.cleanupIdle(bot.id, IDLE);
   }
 }
 
@@ -1113,6 +1004,11 @@ async function main() {
       );
     });
     console.log(`   - ${bot.name}: ${bot.backend} ✅ (appId=${bot.appId.slice(-8)}…) [SDK]`);
+
+    // L1: 启动心跳调度器（如果已初始化）
+    if (bot.heartbeatScheduler) {
+      bot.heartbeatScheduler.start();
+    }
   }
   console.log('');
 
@@ -1219,13 +1115,19 @@ async function main() {
     }
 
     // 现在关闭 IM 和代理
-    for (const bot of bots) bot.im.stop();
+    for (const bot of bots) {
+      // L1: 停止心跳调度器
+      if (bot.heartbeatScheduler) {
+        bot.heartbeatScheduler.stop();
+      }
+      bot.im.stop();
+    }
     await stopAnthropicProxy();
     await stopOpenCodeServer();
 
     console.log('[Shutdown] Persisting all sessions...');
     for (const bot of bots) {
-      for (const [chatId, session] of bot.sessions.entries()) {
+      for (const session of bot.sessionManager.listActive(bot.id)) {
         try { bot.sessionManager.persist(bot.id, session); } catch {}
       }
     }

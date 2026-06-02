@@ -21,10 +21,35 @@ export type {
   ErrorContext,
   BotConfig,
   ProviderConfig,
+  HeartbeatRound,
+  ScheduledTask,
 } from './types';
 
 // Session 管理
 export { FileSessionManager } from './session';
+
+// 心跳/定时任务
+export {
+  HEARTBEAT_ROUNDS_MAX,
+  parseHeartbeatTasks,
+  stripHeartbeatTasksBlock,
+  isHeartbeatContentEffectivelyEmpty,
+  hashCode,
+  getPhaseOffset,
+  parseInterval,
+} from './heartbeat';
+
+// Session 解析
+export { SessionResolver } from './session-resolver';
+export type { ResolveTargetResult } from './session-resolver';
+
+// 输出路由
+export {
+  isHeartbeatOk,
+  isHeartbeatDuplicate,
+  filterAndSend,
+} from './output-router';
+export type { OutputRouteResult } from './output-router';
 
 // 错误处理
 export { DefaultErrorHandler } from './error';
