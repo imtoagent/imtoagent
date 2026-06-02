@@ -18,6 +18,7 @@ import {
   parseHeartbeatTasks,
   parseInterval,
   getPhaseOffset,
+  HEARTBEAT_ROUNDS_MAX,
 } from './heartbeat';
 import { filterAndSend, isHeartbeatOk } from './output-router';
 import { SessionResolver } from './session-resolver';
@@ -41,6 +42,8 @@ export interface HeartbeatSchedulerConfig {
   showOk?: boolean;
   /** 是否有内容时发送告警 */
   showAlerts?: boolean;
+  /** 发送消息到 IM 的回调（由 Bot 构造时传入） */
+  sendMessage: (chatId: string, text: string) => Promise<void>;
 }
 
 export interface TaskRunner {
@@ -57,7 +60,9 @@ export class HeartbeatScheduler {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private lastHeartbeatText: string | undefined;
-  private resolver: SessionResolver;
+  private _resolver: SessionResolver;
+  /** 连续心跳失败计数（用于告警） */
+  private consecutiveFailures = 0;
   /** L2: 独立运行的定时任务 */
   private taskRunners: Map<string, TaskRunner> = new Map();
 
@@ -71,7 +76,12 @@ export class HeartbeatScheduler {
     this.runtime = runtime;
     this.adapter = adapter;
     this.sessionManager = sessionManager;
-    this.resolver = new SessionResolver(sessionManager, config.botId);
+    this._resolver = new SessionResolver(sessionManager, config.botId);
+  }
+
+  /** Expose SessionResolver for Bot to update lastActiveChatId */
+  get resolver(): SessionResolver {
+    return this._resolver;
   }
 
   /**
@@ -190,13 +200,13 @@ export class HeartbeatScheduler {
    * L2: 执行单个定时任务
    */
   private async runTask(task: { name: string; interval: string; prompt: string }): Promise<void> {
-    const target = this.resolver.resolveCron(task.name);
-    const session = await this.resolver.getOrCreateSession(target);
+    const target = this._resolver.resolveCron(task.name);
+    const session = await this._resolver.getOrCreateSession(target);
 
     const ctx: MessageContext = {
       chatId: target.chatId,
       text: task.prompt,
-      userId: '',
+      userId: 'system', // P1-4: 避免空字符串触发校验
       workingDir: this.config.defaultCwd,
       model: this.config.model,
       systemPrompt: this.config.systemPrompt,
@@ -248,9 +258,10 @@ export class HeartbeatScheduler {
     // 1. 读取 HEARTBEAT.md
     const heartbeatContent = this.readHeartbeatFile();
 
-    // 2. 判断内容是否为空
+    // 2. 判断内容是否为空（即使为空也同步定时任务，P1-1）
     if (isHeartbeatContentEffectivelyEmpty(heartbeatContent)) {
-      console.log(`[Heartbeat] ${this.config.botName}: HEARTBEAT.md is empty, skipping`);
+      console.log(`[Heartbeat] ${this.config.botName}: HEARTBEAT.md is empty, syncing tasks then skipping`);
+      this.syncTasks();
       return;
     }
 
@@ -265,14 +276,20 @@ export class HeartbeatScheduler {
     }
 
     // 4. 解析 session 目标
-    const target = this.resolver.resolveHeartbeat();
-    const session = await this.resolver.getOrCreateSession(target);
+    const target = this._resolver.resolveHeartbeat();
+    const session = await this._resolver.getOrCreateSession(target);
+
+    // P0-2: 心跳轮次硬截断 — 截断到最近 N 轮
+    if (session.heartbeatRounds && session.heartbeatRounds.length >= HEARTBEAT_ROUNDS_MAX) {
+      session.heartbeatRounds = session.heartbeatRounds.slice(-HEARTBEAT_ROUNDS_MAX);
+      console.log(`[Heartbeat] ${this.config.botName}: truncated heartbeat rounds to ${HEARTBEAT_ROUNDS_MAX}`);
+    }
 
     // 5. 构建 MessageContext
     const ctx: MessageContext = {
       chatId: target.chatId,
       text: prompt,
-      userId: '',
+      userId: 'system', // P1-4: 避免空字符串触发校验
       workingDir: this.config.defaultCwd,
       model: this.config.model,
       systemPrompt: this.config.systemPrompt,
@@ -284,14 +301,33 @@ export class HeartbeatScheduler {
           reply: async (filteredText: string) => {
             // 实际发送到 IM
             await this.sendToIM(filteredText, target.chatId);
+            console.log(`[Heartbeat] ${this.config.botName} → IM sent (${filteredText.length} chars)`);
+
+            // P0-2: 记录本轮心跳
+            const round = {
+              timestamp: Date.now(),
+              prompt: prompt.slice(0, 500),
+              response: text.slice(0, 500),
+              tokensUsed: 0, // 后续可从 stats 中获取
+            };
+            if (!session.heartbeatRounds) session.heartbeatRounds = [];
+            session.heartbeatRounds.push(round);
+
+            // 立即截断，防止内存泄漏
+            if (session.heartbeatRounds.length > HEARTBEAT_ROUNDS_MAX) {
+              session.heartbeatRounds = session.heartbeatRounds.slice(-HEARTBEAT_ROUNDS_MAX);
+            }
           },
         });
         if (result.shouldSend) {
           this.lastHeartbeatText = text;
+          this.consecutiveFailures = 0; // 成功，重置失败计数
         } else if (result.reason === 'heartbeat_ok_filtered') {
           console.log(`[Heartbeat] ${this.config.botName}: HEARTBEAT_OK filtered`);
+          this.consecutiveFailures = 0; // HEARTBEAT_OK 也算成功
         } else if (result.reason === 'duplicate_filtered') {
           console.log(`[Heartbeat] ${this.config.botName}: duplicate heartbeat filtered`);
+          this.consecutiveFailures = 0;
         }
       },
       sendProgress: async (text: string) => {
@@ -301,10 +337,25 @@ export class HeartbeatScheduler {
 
     // 6. 通过 AgentRuntime 发送
     console.log(`[Heartbeat] ${this.config.botName}: running heartbeat`);
-    await this.runtime.processMessage(ctx, this.adapter, this.config.botName);
+    try {
+      await this.runtime.processMessage(ctx, this.adapter, this.config.botName);
+      // 7. 持久化 session
+      this.sessionManager.persist(this.config.botId, session);
+      console.log(`[Heartbeat] ${this.config.botName}: heartbeat completed`);
+    } catch (e: any) {
+      this.consecutiveFailures++;
+      console.error(`[Heartbeat] Error for ${this.config.botName}:`, e.message);
+      console.log(`[Heartbeat] ${this.config.botName}: consecutiveFailures=${this.consecutiveFailures}`);
 
-    // 7. 持久化 session
-    this.sessionManager.persist(this.config.botId, session);
+      // P0-3: 连续失败告警
+      if (this.consecutiveFailures >= 3 && this.config.showAlerts) {
+        const alertMsg = `⚠️ 心跳连续失败 ${this.consecutiveFailures} 次，请检查配置和连接。`;
+        console.log(`[Heartbeat] ALERT: ${alertMsg}`);
+        await this.sendToIM(alertMsg, target.chatId).catch(err => {
+          console.error(`[Heartbeat] Failed to send alert:`, err.message);
+        });
+      }
+    }
   }
 
   /**
@@ -325,20 +376,6 @@ export class HeartbeatScheduler {
    * 发送到 IM（L1 简化版：直接通过 adapter 的 IM 模块）
    */
   private async sendToIM(text: string, chatId: string): Promise<void> {
-    // L1 版本：通过 adapter 内部的 imModule 发送
-    // 需要 adapter 暴露 sendText 方法或通过其他方式访问 IM
-    try {
-      // 尝试通过 adapter 访问 IM
-      const imModule = (this.adapter as any).imModule;
-      if (imModule && typeof imModule.reply === 'function') {
-        // 飞书/IM 模块的 reply 方法
-        await imModule.reply(chatId, text);
-      } else {
-        // Fallback：直接打印到控制台
-        console.log(`[Heartbeat] ${this.config.botName} → IM (${chatId.slice(-8)}): ${text.slice(0, 200)}`);
-      }
-    } catch (e: any) {
-      console.error(`[Heartbeat] Failed to send to IM:`, e.message);
-    }
+    await this.config.sendMessage(chatId, text);
   }
 }

@@ -8,9 +8,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import type { AgentAdapter, AgentInput, AgentOutput } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import type { McpManager } from '../utils/mcp-manager';
-import type { SkillsManager } from '../utils/skills-manager';
-import type { PromptsManager } from '../utils/prompts-manager';
+
 
 // ================================================================
 // GeminiAdapter 上下文
@@ -20,9 +18,6 @@ export interface GeminiAdapterContext {
   imModule?: { getCapabilities(): IMCapabilities } | null;
   botName: string;
   modelAliases: Record<string, string>;
-  mcpManager?: McpManager;
-  skillsManager?: SkillsManager;
-  promptsManager?: PromptsManager;
 }
 
 // ================================================================

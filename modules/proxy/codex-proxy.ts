@@ -676,6 +676,9 @@ export async function handleCodexRequest(
       const systemPrompt = buildSystemPrompt({
         caps: ctx?.caps || null,
         botName,
+        mcpInfo: ctx?.mcpInfo,
+        skillsInfo: ctx?.skillsInfo,
+        promptsInfo: ctx?.promptsInfo,
       });
       console.log(`[Codex] 📝 System prompt built (${systemPrompt.length} chars, bot=${botName})`);
 

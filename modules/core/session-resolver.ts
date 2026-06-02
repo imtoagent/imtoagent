@@ -20,6 +20,8 @@ export interface ResolveTargetResult {
 export class SessionResolver {
   private sessionManager: SessionManager;
   private botKey: string;
+  /** Maps botKey → last active real IM chatId, updated on each real user message */
+  private lastActiveChatIds = new Map<string, string>();
 
   constructor(sessionManager: SessionManager, botKey: string) {
     this.sessionManager = sessionManager;
@@ -27,13 +29,22 @@ export class SessionResolver {
   }
 
   /**
+   * Called by Bot.handleMessage() when a real user message arrives.
+   * Tracks the chatId so heartbeat/cron can deliver to the last active chat.
+   */
+  updateLastActiveChatId(botKey: string, chatId: string): void {
+    this.lastActiveChatIds.set(botKey, chatId);
+  }
+
+  /**
    * 解析心跳 session 的目标
-   * L0 版本：固定返回 heartbeat session
+   * L1: 优先使用追踪的真实 IM chatId
    */
   resolveHeartbeat(): ResolveTargetResult {
     const sessionKey = `${this.botKey}:heartbeat`;
+    const deliveryChatId = this.lastActiveChatIds.get(this.botKey);
     return {
-      chatId: sessionKey,  // L0 用 sessionKey 作为 chatId
+      chatId: deliveryChatId ?? sessionKey,
       userId: undefined,
       sessionKey,
       sessionType: 'heartbeat',
@@ -42,12 +53,13 @@ export class SessionResolver {
 
   /**
    * 解析定时任务 session 的目标
-   * L0 版本：用任务名作为 sessionKey
+   * L1: 优先使用追踪的真实 IM chatId
    */
   resolveCron(taskName: string): ResolveTargetResult {
     const sessionKey = `${this.botKey}:cron:${taskName}`;
+    const deliveryChatId = this.lastActiveChatIds.get(this.botKey);
     return {
-      chatId: sessionKey,
+      chatId: deliveryChatId ?? sessionKey,
       userId: undefined,
       sessionKey,
       sessionType: 'cron',
@@ -57,11 +69,11 @@ export class SessionResolver {
   /**
    * 获取或创建对应的 session
    */
-  async getOrCreateSession(target: ResolveTargetResult, defaults?: Partial<Session>): Promise<Session> {
+  async getOrCreateSession(target: ResolveTargetResult): Promise<Session> {
     return this.sessionManager.getOrCreateByKey(
       this.botKey,
       target.sessionKey,
-      defaults
+      { sessionType: target.sessionType } // P1-5: 确保新建 session 有正确的 sessionType
     );
   }
 }

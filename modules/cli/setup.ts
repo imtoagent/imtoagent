@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getDataDir, getPkgDir, getTemplatePath, getSoulDir } from '../utils/paths';
+import { getDataDir, initDataDir, getPkgDir, getTemplatePath, getSoulDir } from '../utils/paths';
 import { randomUUID } from 'crypto';
 import { checkAllBackends, formatBackendStatus } from '../utils/backend-check';
 
@@ -341,6 +341,17 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     process.exit(1);
   }
 
+  // Corrupted-state recovery: ~/.imtoagent/ exists but no config.json
+  // Bypass getDataDir() which would process.exit(1)
+  const home = process.env.HOME || process.env.USERPROFILE?.replace(/\\/g, '/') || '';
+  const dotDir = path.join(home, '.imtoagent');
+  const dotConfigPath = path.join(dotDir, 'config.json');
+  if (fs.existsSync(dotDir) && !fs.existsSync(dotConfigPath)) {
+    console.error('⚠️  ~/.imtoagent/ exists but config.json is missing');
+    console.error('   Initializing fresh config...\n');
+    initDataDir(dotDir, process.env.IMTOAGENT_HOME || '');
+  }
+
   const dataDir = getDataDir();
   const configPath = path.join(dataDir, 'config.json');
 
@@ -398,6 +409,16 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   console.log('📌 Step 3: Configure Bots\n');
 
   const bots: Array<Record<string, unknown>> = (mergeMode && existingConfig?.bots) ? [...(existingConfig.bots as Array<Record<string, unknown>>)] : [];
+
+  // Ensure existing bots have default heartbeat config
+  for (const b of bots) {
+    if (!b.heartbeat) {
+      b.heartbeat = {
+        interval: "30m",
+        visibility: { showAlerts: true, showOk: false },
+      };
+    }
+  }
 
   let addingBots = true;
   while (addingBots) {
@@ -535,6 +556,11 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     if (finalName !== botName) {
       console.log(`⚠️  "${botName}" already exists, renamed to "${finalName}"`);
     }
+    // Default heartbeat config (30min interval, out-of-the-box)
+    bot.heartbeat = {
+      interval: "30m",
+      visibility: { showAlerts: true, showOk: false },
+    };
     bots.push(bot);
     console.log(`✅ Added: ${finalName}`);
 

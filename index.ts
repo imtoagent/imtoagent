@@ -20,7 +20,7 @@ import { parseToBlocks } from './modules/capabilities';
 import { resolveCapabilities } from './modules/prompt-builder';
 import { WorkspaceManager, createWorkspaceManager } from './modules/utils/workspace-manager';
 import { migrateWorkspaces } from './modules/utils/migrate-workspaces';
-import { McpManager } from './modules/utils/mcp-manager';
+import { McpManager, McpServerConfig } from './modules/utils/mcp-manager';
 import { SkillsManager } from './modules/utils/skills-manager';
 import { PromptsManager } from './modules/utils/prompts-manager';
 import { FeishuIMModule } from './modules/im/feishu';
@@ -181,10 +181,14 @@ class Bot {
   adapter: AgentAdapter;
   /** 正在执行的任务的取消信号（chatId → AbortController） */
   activeControllers: Map<string, AbortController> = new Map();
-  /** Resource managers (MCP/Skills/Prompts) */
-  mcpManager: McpManager;
-  skillsManager: SkillsManager;
-  promptsManager: PromptsManager;
+  /** Resource managers — system-level (shared) */
+  systemMcp: McpManager;
+  systemSkills: SkillsManager;
+  systemPrompts: PromptsManager;
+  /** Resource managers — bot-level (per-bot) */
+  botMcp: McpManager;
+  botSkills: SkillsManager;
+  botPrompts: PromptsManager;
   /** 心跳调度器（L1 新增） */
   heartbeatScheduler: HeartbeatScheduler | null = null;
 
@@ -240,19 +244,20 @@ class Bot {
     const workspacePath = this.workspaceManager.getWorkspacePath(this.id);
     this.sessionManager = new FileSessionManager();
 
-    // Resource managers
-    this.mcpManager = new McpManager(workspacePath);
-    this.skillsManager = new SkillsManager(workspacePath);
-    this.promptsManager = new PromptsManager(workspacePath);
+    // Resource managers — system-level (shared across all bots)
+    this.systemMcp = new McpManager();
+    this.systemSkills = new SkillsManager();
+    this.systemPrompts = new PromptsManager();
+    // Resource managers — bot-level (isolated per bot)
+    this.botMcp = new McpManager(this.id);
+    this.botSkills = new SkillsManager(this.id);
+    this.botPrompts = new PromptsManager(this.id);
 
     const adapterCtx = {
       imModule: this.im,
       botName: this.name,
       modelAliases: this.modelAliases,
       workspacePath,
-      mcpManager: this.mcpManager,
-      skillsManager: this.skillsManager,
-      promptsManager: this.promptsManager,
     };
 
     if (this.backend === 'claude') {
@@ -612,27 +617,58 @@ class Bot {
 
   // ===== 心跳初始化（L1 新增） =====
   _initHeartbeat(): void {
-    const hbConfig = (this as any).botConfig?.heartbeat;
-    if (!hbConfig || !hbConfig.interval) return;
+    // Resolve heartbeat config: bot-level → system-level → built-in defaults
+    const botHb = (this as any).botConfig?.heartbeat;
+    const sysHb = (this as any).config?.system?.heartbeat;
+    const hbConfig = botHb || sysHb;
+    const interval = hbConfig?.interval || hbConfig?.defaultInterval || "30m";
+    const enabled = hbConfig?.enabled !== false && hbConfig?.enabled !== "false";
+    if (!enabled) return;
 
-    const heartbeatFilePath = path.join(
-      this.workspaceManager.getWorkspacePath(this.id),
-      'HEARTBEAT.md',
-    );
+    const workspacePath = this.workspaceManager.getWorkspacePath(this.id);
+    const heartbeatFilePath = path.join(workspacePath, 'HEARTBEAT.md');
 
-    console.log(`[Heartbeat] Init: bot=${this.name}, interval=${hbConfig.interval}, file=${heartbeatFilePath}`);
+    // Auto-create HEARTBEAT.md template if it doesn't exist
+    try {
+      if (!fs.existsSync(heartbeatFilePath)) {
+        const defaultTemplate = `# HEARTBEAT.md — 心跳检查清单
+# Bot 会按间隔（默认 30 分钟）自动唤醒，读取此文件并执行其中的任务。
+# 所有任务完成后，如果一切正常请回复 HEARTBEAT_OK（会被静默拦截）。
+
+## 示例任务（取消注释即可启用）
+
+# - [ ] 检查邮箱是否有未读邮件
+# - [ ] 查看今天日程安排
+# - [ ] 检查服务器磁盘使用率是否超过 80%
+
+## 规则
+# 每次心跳触发时，Bot 会：
+# 1. 读取此文件中的任务列表
+# 2. 逐项执行或检查
+# 3. 汇总结果后回复
+# 4. 如果一切正常且无任务需要报告，回复 HEARTBEAT_OK
+`;
+        fs.writeFileSync(heartbeatFilePath, defaultTemplate, 'utf-8');
+        console.log(`[Heartbeat] Created default HEARTBEAT.md: ${heartbeatFilePath}`);
+      }
+    } catch (e: any) {
+      console.error(`[Heartbeat] Failed to create HEARTBEAT.md: ${e.message}`);
+    }
+
+    console.log(`[Heartbeat] Init: bot=${this.name}, interval=${interval}, file=${heartbeatFilePath}`);
 
     this.heartbeatScheduler = new HeartbeatScheduler(
       {
         botName: this.name,
         botId: this.id,
-        interval: hbConfig.interval,
+        interval,
         heartbeatFilePath,
         defaultCwd: this.defaultCwd,
         model: this.activeModel,
         systemPrompt: this.soul,
-        showOk: hbConfig.visibility?.showOk ?? false,
-        showAlerts: hbConfig.visibility?.showAlerts ?? true,
+        showOk: hbConfig?.visibility?.showOk ?? hbConfig?.showOk ?? false,
+        showAlerts: hbConfig?.visibility?.showAlerts ?? hbConfig?.showAlerts ?? true,
+        sendMessage: async (chatId: string, text: string) => this.reply(chatId, text),
       },
       this.runtime,
       this.adapter,
@@ -662,6 +698,8 @@ class Bot {
     activeRequests++;
     const controller = new AbortController();
     this.activeControllers.set(chatId, controller);
+    // Track real IM chatId for heartbeat/cron delivery
+    this.heartbeatScheduler?.resolver.updateLastActiveChatId(this.id, chatId);
     try {
       // 限流
       const rlResult = checkRateLimit(chatId);
@@ -687,7 +725,9 @@ class Bot {
       if (session.recentMessages.length > 5) session.recentMessages = session.recentMessages.slice(-5);
 
       // 构建系统提示词（统一入口：资源 + soul + restart instruction）
-      const systemPrompt = buildSystemPromptWithSoul(this.soul || undefined, this.name, this.im, this.mcpManager, this.skillsManager, this.promptsManager);
+      const systemPrompt = buildSystemPromptWithSoul(this.soul || undefined, this.name, this.im,
+        this.systemMcp, this.systemSkills, this.systemPrompts,
+        this.botMcp, this.botSkills, this.botPrompts);
 
       // SDK Runtime 处理
       const result = await this.runtime.processMessage({
@@ -738,32 +778,46 @@ class Bot {
 // ===== 系统提示词构建（不依赖 prompt-builder 的旧接口） =====
 import { buildSystemPrompt } from './modules/prompt-builder';
 
+/**
+ * Merge system-level and bot-level MCP servers.
+ * Bot-level servers with the same name override system-level ones.
+ */
+function mergeMcpServers(
+  systemServers: Record<string, McpServerConfig>,
+  botServers: Record<string, McpServerConfig>,
+): Array<{ name: string; enabled: boolean; command: string }> {
+  const merged = new Map<string, McpServerConfig>();
+  for (const [k, v] of Object.entries(systemServers)) merged.set(k, v);
+  for (const [k, v] of Object.entries(botServers)) merged.set(k, v); // bot overrides system
+  return [...merged.entries()].map(([name, cfg]) => ({
+    name,
+    enabled: cfg.enabled ?? true,
+    command: cfg.command,
+  }));
+}
+
 function buildSystemPromptWithSoul(
   soul: string,
   botName: string,
   imModule: IMModule | null,
-  mcpManager: McpManager | null,
-  skillsManager: SkillsManager | null,
-  promptsManager: PromptsManager | null,
+  systemMcp: McpManager,
+  systemSkills: SkillsManager,
+  systemPrompts: PromptsManager,
+  botMcp: McpManager,
+  botSkills: SkillsManager,
+  botPrompts: PromptsManager,
 ): string {
+  // Merge system + bot resources
+  const mergedMcp = mergeMcpServers(systemMcp.list(), botMcp.list());
+  const mergedSkills = [...systemSkills.list(), ...botSkills.list()];
+  const mergedPrompts = [...systemPrompts.list(), ...botPrompts.list()];
+
   const base = buildSystemPrompt({
     imModule,
     botName,
-    mcpInfo: mcpManager
-      ? {
-          servers: Object.entries(mcpManager.list()).map(([k, v]) => ({
-            name: k,
-            enabled: (v as { enabled?: boolean }).enabled ?? true,
-            backends: [(v as { command?: string; url?: string }).command || (v as { command?: string; url?: string }).url || 'stdio'],
-          })),
-        }
-      : undefined,
-    skillsInfo: skillsManager
-      ? { skills: skillsManager.list().map(s => ({ name: s.name })) }
-      : undefined,
-    promptsInfo: promptsManager
-      ? { prompts: promptsManager.list().map(p => ({ name: p.name })) }
-      : undefined,
+    mcpInfo: mergedMcp.length ? { servers: mergedMcp } : undefined,
+    skillsInfo: mergedSkills.length ? { skills: mergedSkills.map(s => ({ name: s.name, description: s.description })) } : undefined,
+    promptsInfo: mergedPrompts.length ? { prompts: mergedPrompts.map(p => ({ name: p.name })) } : undefined,
   });
 
   // 注入 Agent 自主重启能力说明（信号文件路径固定）
@@ -998,7 +1052,15 @@ async function main() {
         ? ` +${attachments.length} attachments(${attachments.map(a => a.type).join(',')})`
         : '';
       console.log(`[${bot.name}] Received chat=${chatId.slice(-8)} "${text.slice(0, 80)}"${attDesc}`);
-      setCurrentBot({ botName: bot.name, caps: bot.im.getCapabilities(), modelAliases: bot.modelAliases });
+      // Merge system + bot resources for proxy path
+      setCurrentBot({
+        botName: bot.name,
+        caps: bot.im.getCapabilities(),
+        modelAliases: bot.modelAliases,
+        mcpInfo: { servers: mergeMcpServers(bot.systemMcp.list(), bot.botMcp.list()) },
+        skillsInfo: { skills: [...bot.systemSkills.list(), ...bot.botSkills.list()].map(s => ({ name: s.name, description: s.description })) },
+        promptsInfo: { prompts: [...bot.systemPrompts.list(), ...bot.botPrompts.list()].map(p => ({ name: p.name })) },
+      });
       bot.handleMessage(chatId, text, userId, attachments).catch((e: Error) =>
         console.error(`[${bot.name}] handleMessage unhandled:`, e.message)
       );

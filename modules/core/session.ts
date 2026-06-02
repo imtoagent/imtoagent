@@ -318,9 +318,9 @@ export class FileSessionManager implements SessionManager {
     const toRemove: string[] = [];
 
     for (const [chatId, session] of botCache) {
-      // 豁免心跳和定时任务 session（L0.5）
-      if (session.sessionKey?.includes(':heartbeat')) continue;
-      if (session.sessionKey?.includes(':cron')) continue;
+      // 豁免心跳和定时任务 session（P1-3：改用 sessionType 判断，更精确）
+      if (session.sessionType === 'heartbeat') continue;
+      if (session.sessionType === 'cron') continue;
       if (now - session.lastUsed > timeoutMs && !session.running) {
         toRemove.push(chatId);
       }

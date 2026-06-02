@@ -9,12 +9,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import type { McpManager } from '../utils/mcp-manager';
-import type { SkillsManager } from '../utils/skills-manager';
-import type { PromptsManager } from '../utils/prompts-manager';
-import type { McpManager } from '../utils/mcp-manager';
-import type { SkillsManager } from '../utils/skills-manager';
-import type { PromptsManager } from '../utils/prompts-manager';
+
 
 // ================================================================
 // ClaudeAdapter 上下文
@@ -25,9 +20,6 @@ export interface ClaudeAdapterContext {
   botName: string;
   modelAliases: Record<string, string>;
   workspacePath: string;
-  mcpManager?: McpManager;
-  skillsManager?: SkillsManager;
-  promptsManager?: PromptsManager;
 }
 
 // ================================================================

@@ -1,6 +1,6 @@
 # IMtoAgent Status & Maintenance
 
-> Last updated: 2026-05-31 | All Phases 1-14 complete ✅ | Current version: 0.4.1
+> Last updated: 2026-06-02 | All Phases 1-15 complete ✅ | Current version: 0.4.2
 > This document replaces the development ROADMAP. All planned phases are implemented.
 
 ---
@@ -24,8 +24,8 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | **Unified Proxy** | Port `:18899` only — Anthropic Proxy handles all routing |
 | **Resource Managers** | MCP/Skills/Prompts → injected into system prompt via adapterCtx (Phase 14) |
 | **CLI Commands** | 26 commands + subcommands |
-| **Tests** | 188 tests across 10 files, 0 failures |
-| **Code Size** | ~16,000+ lines across 50+ .ts files |
+| **Tests** | 224 tests across 11 files, 0 failures |
+| **Code Size** | ~17,000+ lines across 55+ .ts files |
 | **npm Package** | Published at `imtoagent` (npm + GitHub) |
 
 ## Completed Phases
@@ -46,6 +46,7 @@ See [ARCHITECTURE.md](../../.codex-docs/ARCHITECTURE.md) for full architecture.
 | 12: Proxy Hardening | Circuit breaker, auto-failover, health check | 0.3.26 |
 | 13: Gemini CLI | Gemini adapter + client + backend registration | 0.3.26 |
 | 14: Resource Integration | MCP/Skills/Prompts injected into system prompt (adapterCtx → buildSystemPrompt) | 0.4.1 |
+| 15: Heartbeat & Cron | HEARTBEAT.md 解析、定时任务调度、OutputRouter 过滤、session 隔离、连续失败告警 | 0.4.2 |
 
 Detailed sub-task specs archived at [archive/phase-8-13-implementation.md](archive/phase-8-13-implementation.md).
 
@@ -93,7 +94,8 @@ See [Key Decisions Archive](archive/decisions-archive.md) for the full decision 
 
 | Version | Key Changes | Status |
 |---------|-------------|--------|
-| 0.4.1 | Phase 14: MCP/Skills/Prompts injected into system prompt via adapterCtx | ✅ Current |
+| 0.4.2 | Phase 15: Heartbeat & Scheduled Tasks (HEARTBEAT.md 解析、定时任务、OutputRouter、连续失败告警) | ✅ Current |
+| 0.4.1 | Phase 14: MCP/Skills/Prompts injected into system prompt via adapterCtx | ✅ |
 | 0.3.26 | Phase 7-13: tests, observability, MCP/skills/prompts/providers, proxy hardening, Gemini | ✅ |
 | 0.3.25 | Workspace isolation, isAdmin, config protection, NLP config | ✅ |
 | 0.3.24 | autostart, version check, doctor, config CRUD | ✅ |
@@ -125,9 +127,9 @@ IMtoAgent is a **CLI gateway** for IM → AI Agent communication. Not a desktop 
 No planned phases. Future work depends on user feedback and new feature requests.
 
 Potential directions:
-- Phase 15: Testing expansion (IM adapter + Agent backend mock tests)
-- Phase 16: More IM adapters (Discord, Slack, WhatsApp)
-- Phase 17: More Agent backends
+- Phase 16: Testing expansion (IM adapter + Agent backend mock tests)
+- Phase 17: More IM adapters (Discord, Slack, WhatsApp)
+- Phase 18: More Agent backends
 - Documentation site improvements
 
 ---

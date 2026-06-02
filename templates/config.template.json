@@ -2,7 +2,13 @@
   "system": {
     "defaultProjectDir": "/path/to/your/projects",
     "idleTimeoutMinutes": 30,
-    "maxReplyLength": 140000
+    "maxReplyLength": 140000,
+    "heartbeat": {
+      "enabled": true,
+      "interval": "30m",
+      "showAlerts": true,
+      "showOk": false
+    }
   },
   "providers": {
     "deepseek": {

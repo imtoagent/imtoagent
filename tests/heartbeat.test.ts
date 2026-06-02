@@ -268,6 +268,17 @@ describe("isHeartbeatOk", () => {
   it("does not match partial", () => {
     expect(isHeartbeatOk("I said HEARTBEAT_OK already")).toBe(false);
     expect(isHeartbeatOk("HEARTBEAT_OKAY")).toBe(false);
+    expect(isHeartbeatOk("All good! HEARTBEAT_OK\nNow continuing...")).toBe(false);
+    expect(isHeartbeatOk("prefix\nHEARTBEAT_OK suffix")).toBe(false);
+  });
+
+  it("matches HEARTBEAT_OK on its own line", () => {
+    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(true);
+    expect(isHeartbeatOk("  heartbeat_ok  ")).toBe(true);
+    expect(isHeartbeatOk("HEARTBEAT_OK\n")).toBe(true);
+    expect(isHeartbeatOk("prefix\nHEARTBEAT_OK")).toBe(true);
+    expect(isHeartbeatOk("HEARTBEAT_OK\nsuffix")).toBe(true);
+    expect(isHeartbeatOk("line1\nHEARTBEAT_OK\nline3")).toBe(true);
   });
 
   it("matches when it is the only content (with whitespace)", () => {
@@ -302,14 +313,15 @@ describe("filterAndSend", () => {
     expect(sent).toBe(false);
   });
 
-  it("cron session filters HEARTBEAT_OK", () => {
+  it("cron session does NOT filter HEARTBEAT_OK (semantic isolation)", () => {
     let sent = false;
     const result = filterAndSend("heartbeat_ok", {
       sessionType: "cron",
       reply: async () => { sent = true; },
     });
-    expect(result.shouldSend).toBe(false);
-    expect(sent).toBe(false);
+    expect(result.shouldSend).toBe(true);
+    expect(result.reason).toBe("normal");
+    expect(sent).toBe(true);
   });
 
   it("heartbeat session sends normal content", () => {

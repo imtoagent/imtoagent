@@ -11,6 +11,12 @@ export interface BotContextData {
   caps: IMCapabilities | null;
   /** Bot 级别的模型别名（/model 命令修改后传入，优先级高于全局 config.json） */
   modelAliases?: ModelAliases;
+  /** Serialized MCP servers (system + bot merged) */
+  mcpInfo?: { servers: Array<{ name: string; enabled: boolean; command: string }> };
+  /** Installed skills (system + bot merged) */
+  skillsInfo?: { skills: Array<{ name: string; description?: string }> };
+  /** Custom prompts (system + bot merged) */
+  promptsInfo?: { prompts: Array<{ name: string }> };
 }
 
 let _currentBot: BotContextData | null = null;

@@ -5,14 +5,15 @@
 // L1 扩展：集成到 HeartbeatScheduler 的 reply 回调中，自动调用 filterAndSend
 // ================================================================
 
-/** HEARTBEAT_OK 匹配正则 */
-const HEARTBEAT_OK_PATTERN = /^HEARTBEAT[_\s]?OK$/i;
+/** HEARTBEAT_OK 独占一行匹配正则 */
+const HEARTBEAT_OK_LINE_PATTERN = /(^|\n)\s*HEARTBEAT[_\s]?OK\s*(\n|$)/i;
 
 /**
  * 判断回复是否为 HEARTBEAT_OK（心跳正常，无需打扰用户）
+ * 全文 ≤300 字符 且 HEARTBEAT_OK 独占一行（允许前后有其他行）
  */
 export function isHeartbeatOk(text: string): boolean {
-  return HEARTBEAT_OK_PATTERN.test(text.trim()) && text.trim().length <= 300;
+  return text.length <= 300 && HEARTBEAT_OK_LINE_PATTERN.test(text);
 }
 
 /**
@@ -53,10 +54,12 @@ export function filterAndSend(
     return { shouldSend: true, reason: 'normal' };
   }
 
-  // 心跳/定时任务：应用过滤
-  if (isHeartbeatOk(text)) {
+  // 心跳 session：应用 HEARTBEAT_OK 过滤
+  if (ctx.sessionType === 'heartbeat' && isHeartbeatOk(text)) {
     return { shouldSend: false, reason: 'heartbeat_ok_filtered' };
   }
+
+  // 定时任务 session：不检查 HEARTBEAT_OK（语义隔离）
 
   if (isHeartbeatDuplicate(text, ctx.lastHeartbeatText)) {
     return { shouldSend: false, reason: 'duplicate_filtered' };

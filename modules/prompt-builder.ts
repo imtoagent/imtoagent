@@ -68,9 +68,9 @@ export interface PromptBuilderContext {
   /** Agent 特有的额外系统提示（如工具使用指南、工作目录约束等） */
   agentInstructions?: string;
   /** Optional: Available MCP servers summary */
-  mcpInfo?: { servers: Array<{ name: string; enabled: boolean; backends: string[] }> };
+  mcpInfo?: { servers: Array<{ name: string; enabled: boolean; command: string }> };
   /** Optional: Installed skills summary */
-  skillsInfo?: { skills: Array<{ name: string }> };
+  skillsInfo?: { skills: Array<{ name: string; description?: string }> };
   /** Optional: Custom prompts summary */
   promptsInfo?: { prompts: Array<{ name: string }> };
 }
@@ -114,14 +114,16 @@ Note: Your first message after startup may have lost conversation memory (if the
 
   if (ctx.mcpInfo?.servers.length) {
     const rows = ctx.mcpInfo.servers
-      .map(s => `| ${s.name} | ${s.enabled ? '✅ enabled' : '❌ disabled'} | ${s.backends.join(', ')} |`)
+      .map(s => `| ${s.name} | ${s.enabled ? '✅ enabled' : '❌ disabled'} | ${s.command} |`)
       .join('\n');
-    resourceSections.push(`## MCP Servers\n\n| Server | Status | Backends |\n|--------|--------|----------|\n${rows}`);
+    resourceSections.push(`## MCP Servers\n\n| Server | Status | Command |\n|--------|--------|----------|\n${rows}`);
   }
 
   if (ctx.skillsInfo?.skills.length) {
-    const rows = ctx.skillsInfo.skills.map(s => `| ${s.name} |`).join('\n');
-    resourceSections.push(`## Installed Skills\n\n| Skill |\n|-------|\n${rows}`);
+    const rows = ctx.skillsInfo.skills
+      .map(s => `| ${s.name} | ${s.description?.slice(0, 80) || ''} |`)
+      .join('\n');
+    resourceSections.push(`## Installed Skills\n\n| Skill | Description |\n|-------|-------------|\n${rows}`);
   }
 
   if (ctx.promptsInfo?.prompts.length) {

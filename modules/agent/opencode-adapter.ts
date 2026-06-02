@@ -8,9 +8,7 @@
 
 import type { AgentAdapter, AgentInput, AgentOutput } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import type { McpManager } from '../utils/mcp-manager';
-import type { SkillsManager } from '../utils/skills-manager';
-import type { PromptsManager } from '../utils/prompts-manager';
+
 import { getDataDir } from '../utils/paths';
 import { getNpmGlobalBin } from '../utils/backend-check';
 import * as fs from 'fs';
@@ -24,9 +22,6 @@ import * as path from 'path';
 export interface OpenCodeAdapterContext {
   imModule?: { getCapabilities(): IMCapabilities } | null;
   botName: string;
-  mcpManager?: McpManager;
-  skillsManager?: SkillsManager;
-  promptsManager?: PromptsManager;
   /** OpenCode Server URL，默认 http://localhost:4096 */
   serverUrl?: string;
   /** 默认模型 */

@@ -1,8 +1,10 @@
 // ================================================================
-// MCP Manager — Unified MCP server management across backends
+// MCP Manager — Unified MCP server management
 // ================================================================
-// Storage: ~/.imtoagent/mcp.json
-// Sync targets: ~/.claude.json, ~/.codex/config.json, ~/.imtoagent/opencode.json
+// Storage:
+//   System-level: ~/.imtoagent/mcp.json
+//   Bot-level:    ~/.imtoagent/bots/<botId>/mcp.json
+// No sync to backend configs — MCP is injected via system prompt.
 // ================================================================
 
 import * as fs from 'fs';
@@ -18,7 +20,6 @@ export interface McpServerConfig {
   args: string[];
   env?: Record<string, string>;
   enabled: boolean;
-  backends: string[]; // which backends to sync to: claude, codex, opencode
   source: 'cli' | 'import';
 }
 
@@ -34,9 +35,19 @@ export class McpManager {
   private mcpPath: string;
   private data: McpData;
 
-  constructor(dataDir?: string) {
-    const base = dataDir || getDataDir();
-    this.mcpPath = path.join(base, 'mcp.json');
+  /**
+   * @param botId - If provided, MCP config is stored at bot-level.
+   *                If omitted, MCP config is stored at system-level.
+   */
+  constructor(botId?: string) {
+    const base = getDataDir();
+    if (botId) {
+      this.mcpPath = path.join(base, 'bots', botId, 'mcp.json');
+    } else {
+      this.mcpPath = path.join(base, 'mcp.json');
+    }
+    const dir = path.dirname(this.mcpPath);
+    fs.mkdirSync(dir, { recursive: true });
     this.data = this.load();
   }
 
@@ -57,6 +68,8 @@ export class McpManager {
   }
 
   save(): void {
+    const dir = path.dirname(this.mcpPath);
+    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(this.mcpPath, JSON.stringify(this.data, null, 2));
   }
 
@@ -64,16 +77,8 @@ export class McpManager {
   // CRUD
   // ================================================================
 
-  list(backend?: string): Record<string, McpServerConfig> {
-    if (!backend) return { ...this.data.servers };
-
-    const filtered: Record<string, McpServerConfig> = {};
-    for (const [name, cfg] of Object.entries(this.data.servers)) {
-      if (cfg.backends.includes(backend)) {
-        filtered[name] = cfg;
-      }
-    }
-    return filtered;
+  list(): Record<string, McpServerConfig> {
+    return { ...this.data.servers };
   }
 
   add(name: string, config: Omit<McpServerConfig, 'source'>): void {
@@ -107,46 +112,6 @@ export class McpManager {
 
   get(name: string): McpServerConfig | undefined {
     return this.data.servers[name];
-  }
-
-  // ================================================================
-  // Sync to backend configs
-  // ================================================================
-
-  sync(backend?: string): SyncResult {
-    const result: SyncResult = { synced: [], errors: [] };
-    const backends = backend ? [backend] : ['claude', 'codex', 'opencode'];
-
-    for (const b of backends) {
-      try {
-        const servers = this.list(b);
-        const enabledServers = Object.entries(servers)
-          .filter(([, cfg]) => cfg.enabled)
-          .reduce<Record<string, Record<string, unknown>>>((acc, [name, cfg]) => {
-            acc[name] = this.toBackendFormat(name, cfg, b);
-            return acc;
-          }, {});
-
-        switch (b) {
-          case 'claude':
-            this.syncToClaude(enabledServers);
-            result.synced.push('claude');
-            break;
-          case 'codex':
-            this.syncToCodex(enabledServers);
-            result.synced.push('codex');
-            break;
-          case 'opencode':
-            this.syncToOpenCode(enabledServers);
-            result.synced.push('opencode');
-            break;
-        }
-      } catch (err: unknown) {
-        result.errors.push({ backend: b, error: err.message });
-      }
-    }
-
-    return result;
   }
 
   // ================================================================
@@ -201,7 +166,6 @@ export class McpManager {
         args: (c.args as string[]) || [],
         env: (c.env as Record<string, string>) || {},
         enabled: c.enabled !== false,
-        backends: (c.backends as string[]) || ['claude', 'codex', 'opencode'],
       };
     }
     // OpenAI MCP format (url-based)
@@ -211,105 +175,8 @@ export class McpManager {
         args: ['-y', '@modelcontextprotocol/client', (c.url || c.baseUrl) as string],
         env: {},
         enabled: true,
-        backends: ['claude', 'codex', 'opencode'],
       };
     }
     return null;
   }
-
-  // ================================================================
-  // Backend-specific sync
-  // ================================================================
-
-  private toBackendFormat(name: string, cfg: McpServerConfig, backend: string): Record<string, unknown> {
-    switch (backend) {
-      case 'claude':
-      case 'codex':
-        // Both use the same stdio format
-        return {
-          command: cfg.command,
-          args: cfg.args,
-          env: cfg.env || {},
-        };
-      case 'opencode':
-        return {
-          command: `${cfg.command} ${cfg.args.join(' ')}`.trim(),
-          env: cfg.env || {},
-        };
-      default:
-        return { command: cfg.command, args: cfg.args, env: cfg.env || {} };
-    }
-  }
-
-  private syncToClaude(servers: Record<string, Record<string, unknown>>): void {
-    const home = process.env.HOME || '';
-    const claudeConfigPath = path.join(home, '.claude', 'settings.json');
-    const claudeJsonPath = path.join(home, '.claude.json');
-
-    // Try ~/.claude/settings.json first (Claude Code standard location)
-    let configPath = claudeConfigPath;
-    let config: Record<string, unknown> = {};
-
-    if (fs.existsSync(claudeConfigPath)) {
-      try {
-        config = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf-8'));
-      } catch {
-        config = {};
-      }
-    } else if (fs.existsSync(claudeJsonPath)) {
-      configPath = claudeJsonPath;
-      try {
-        config = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
-      } catch {
-        config = {};
-      }
-    } else {
-      // Create default
-      fs.mkdirSync(path.dirname(claudeConfigPath), { recursive: true });
-    }
-
-    config.mcpServers = servers;
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  }
-
-  private syncToCodex(servers: Record<string, Record<string, unknown>>): void {
-    const home = process.env.HOME || '';
-    const codexConfigPath = path.join(home, '.codex', 'config.json');
-
-    let config: Record<string, unknown> = {};
-    if (fs.existsSync(codexConfigPath)) {
-      try {
-        config = JSON.parse(fs.readFileSync(codexConfigPath, 'utf-8'));
-      } catch {
-        config = {};
-      }
-    } else {
-      fs.mkdirSync(path.dirname(codexConfigPath), { recursive: true });
-    }
-
-    config.mcpServers = servers;
-    fs.writeFileSync(codexConfigPath, JSON.stringify(config, null, 2));
-  }
-
-  private syncToOpenCode(servers: Record<string, Record<string, unknown>>): void {
-    const { getOpencodeConfigPath } = require('./paths');
-    const opencodeConfigPath = getOpencodeConfigPath();
-
-    let config: Record<string, unknown> = {};
-    if (fs.existsSync(opencodeConfigPath)) {
-      try {
-        config = JSON.parse(fs.readFileSync(opencodeConfigPath, 'utf-8'));
-      } catch {
-        config = {};
-      }
-    }
-
-    config.mcpServers = servers;
-    fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2));
-  }
-}
-
-export interface SyncResult {
-  synced: string[];
-  errors: { backend: string; error: string }[];
 }

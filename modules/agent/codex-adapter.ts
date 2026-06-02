@@ -9,9 +9,7 @@
 
 import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
-import type { McpManager } from '../utils/mcp-manager';
-import type { SkillsManager } from '../utils/skills-manager';
-import type { PromptsManager } from '../utils/prompts-manager';
+
 import { getAppServerManager, type AgentEvent } from './codex-exec-server';
 
 // ================================================================
@@ -21,9 +19,6 @@ import { getAppServerManager, type AgentEvent } from './codex-exec-server';
 export interface CodexAdapterContext {
   imModule?: { getCapabilities(): IMCapabilities } | null;
   botName: string;
-  mcpManager?: McpManager;
-  skillsManager?: SkillsManager;
-  promptsManager?: PromptsManager;
 }
 
 // ================================================================
