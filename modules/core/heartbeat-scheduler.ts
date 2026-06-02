@@ -127,6 +127,7 @@ export class HeartbeatScheduler {
    * 每次心跳执行时调用，同步 HEARTBEAT.md 中的 tasks 变化
    */
   private syncTasks(): void {
+    try { require('fs').appendFileSync('/tmp/cron_debug.log', `[syncTasks] called at ${new Date().toISOString()}\n`); } catch {}
     const heartbeatContent = this.readHeartbeatFile();
     const tasks = parseHeartbeatTasks(heartbeatContent);
     const currentNames = new Set(this.taskRunners.keys());
@@ -185,10 +186,18 @@ export class HeartbeatScheduler {
   ): void {
     if (!this.running) return;
 
+    // DEBUG: file log
+    try { require('fs').appendFileSync('/tmp/cron_debug.log', `[scheduleTask] name=${task.name} delay=${Math.round(delayMs/1000)}s at ${new Date().toISOString()}\n`); } catch {}
+    // DEBUG: also log target chatId
+    const _dbgTarget = this._resolver.resolveCron(task.name);
+    try { require('fs').appendFileSync('/tmp/cron_debug.log', `[scheduleTask target] chatId=${_dbgTarget.chatId} sessionKey=${_dbgTarget.sessionKey} at ${new Date().toISOString()}\n`); } catch {}
+
     runner.timer = setTimeout(async () => {
       try {
+        try { require('fs').appendFileSync('/tmp/cron_debug.log', `[runTask FIRED] name=${task.name} at ${new Date().toISOString()}\n`); } catch {}
         await this.runTask(task);
       } catch (e: any) {
+        try { require('fs').appendFileSync('/tmp/cron_debug.log', `[runTask ERROR] name=${task.name} err=${e.message}\n`); } catch {}
         console.error(`[Cron] Error for task ${task.name}:`, e.message);
       }
       // 循环执行

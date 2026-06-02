@@ -18,6 +18,7 @@ import { getCurrentBot } from '../bot-context';
 import { handleCodexRequest } from './codex-proxy';
 import { getDataDir, getSessionsDir } from '../utils/paths';
 import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
+import { logEvent } from '../utils/logger';
 import type {
   AnthropicRequestBody,
   OpenAIRequestBody,
@@ -531,7 +532,7 @@ function openAIToAnthropic(openAIBody: OpenAIRequestBody, modelName: string): An
 }
 
 /** OpenAI SSE 流 → Anthropic SSE 流 */
-function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.ServerResponse, modelName: string, _reqBody?: OpenAIRequestBody): void {
+function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.ServerResponse, modelName: string, _reqBody?: OpenAIRequestBody, providerName?: string): void {
   let buffer = '';
   const messageId = `msg_${Date.now().toString(36)}`;
   let sentMessageStart = false;
@@ -620,6 +621,7 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
       usage: { output_tokens: 0 },
     });
     sendEvent('message_stop', { type: 'message_stop' });
+    if (providerName) logEvent({ event: 'proxy_sse_end', provider: providerName });
     res.end();
   }
 
@@ -747,6 +749,12 @@ const REQUEST_TIMEOUT = 120_000; // 120 秒
 function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   const reqUrl = new URL(req.url || '/', 'http://localhost');
   const reqPath = reqUrl.pathname;
+
+  logEvent({
+    event: 'proxy_request',
+    method: req.method,
+    path: reqPath,
+  });
   if (reqPath.includes('response') || reqPath.includes('/v1/')) {
     require('fs').appendFileSync('/tmp/imtoagent-paths.log', req.method + ' ' + reqPath + '\n');
   }
@@ -878,6 +886,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     let breaker = cm.get(targetProviderName);
     if (breaker && !breaker.canRequest()) {
       console.log(`[Proxy] ⚡ Circuit breaker OPEN for ${targetProviderName}, trying failover...`);
+      logEvent({
+        event: 'proxy_circuit_open',
+        provider: targetProviderName,
+      });
       const allProviderNames = [...providers.keys()];
       const fallbackName = cm.findAvailable(allProviderNames.filter((n) => n !== targetProviderName));
       if (fallbackName) {
@@ -956,9 +968,18 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     console.log(`[Proxy] → ${targetProviderName}/${targetModelName} (${targetProvider.format}) ${req.method} ${req.url}${originalModel ? ` (original: ${originalModel})` : ''}`);
 
+    logEvent({
+      event: 'proxy_upstream_request',
+      provider: targetProviderName,
+      model: targetModelName,
+      format: targetProvider.format,
+      stream: isStream,
+    });
+
     const upstreamReq = (targetUpstreamProto === 'https' ? require('https') : http).request(options, (upstreamRes) => {
       // 流式响应
       if (isStream && upstreamRes.headers['content-type']?.includes('text/event-stream')) {
+        logEvent({ event: 'proxy_sse_start', provider: targetProviderName, model: targetModelName });
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -990,11 +1011,14 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
               }
             }
           });
-          upstreamRes.on('end', () => { if (!res.writableEnded) res.end(); });
+          upstreamRes.on('end', () => {
+            logEvent({ event: 'proxy_sse_end', provider: targetProviderName });
+            if (!res.writableEnded) res.end();
+          });
           upstreamRes.on('error', (err) => { if (!res.writableEnded) { res.writeHead(502); res.end(); } });
         } else {
           // OpenAI 供应商：转换为 Anthropic 格式
-          openAIStreamToAnthropic(upstreamRes, res, originalModel || targetModelName);
+          openAIStreamToAnthropic(upstreamRes, res, originalModel || targetModelName, targetProviderName);
         }
       } else {
         // 非流式响应
@@ -1013,6 +1037,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
           // Success — record for circuit breaker
           if (breaker) breaker.recordSuccess();
+          logEvent({ event: 'proxy_upstream_response', provider: targetProviderName, status: upstreamRes.statusCode });
 
           if (targetIsAnthropic) {
             // 重写 model 名为 CC 原始名（上游返回 mimo-v2.5-pro，CC 不认识）
@@ -1044,6 +1069,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     upstreamReq.on('timeout', () => {
       upstreamReq.destroy();
       console.error(`[Proxy] Request timeout (${REQUEST_TIMEOUT}ms)`);
+      logEvent({ event: 'proxy_upstream_error', provider: targetProviderName, error: 'timeout' });
       if (breaker) breaker.recordFailure();
       if (!res.writableEnded) {
         res.writeHead(504, { 'Content-Type': 'application/json' });
@@ -1053,6 +1079,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     upstreamReq.on('error', (err) => {
       console.error(`[Proxy] Upstream request failed: ${err.message}`);
+      logEvent({ event: 'proxy_upstream_error', provider: targetProviderName, error: err.message });
       if (breaker) breaker.recordFailure();
       if (!res.writableEnded) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -1066,6 +1093,11 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
 /** 将 Node req/res 桥接到 codex handler */
 async function handleCodexDispatch(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  logEvent({
+    event: 'proxy_codex_request',
+    method: req.method,
+    path: req.url,
+  });
   const chunks: Buffer[] = [];
   req.on('data', (chunk: Buffer) => chunks.push(chunk));
   req.on('end', async () => {

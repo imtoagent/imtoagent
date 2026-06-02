@@ -18,6 +18,7 @@ import type { IMModule, IMCapabilities, MessageHandler } from '../types';
 import type { UnifiedBlock } from '../capabilities';
 import type { MessageAttachment } from '../core/types';
 import type { WeComMessageFrame, WeComSelectedItem } from './im-types';
+import { logEvent } from '../utils/logger';
 
 // ================================================================
 // 常量
@@ -381,6 +382,14 @@ export class WeComIMModule implements IMModule {
     // 保存 frame 用于被动回复
     this.pendingFrames.set(chatId, frame);
 
+    logEvent({
+      event: 'im_message_received',
+      adapter: 'wecom',
+      chatId,
+      userId: fromUser,
+      textLength: text?.length || 0,
+      attachmentCount: attachments.length,
+    });
     if (this.handler) {
       await this.handler(chatId, text.trim(), fromUser, attachments.length ? attachments : undefined);
     }
@@ -391,6 +400,7 @@ export class WeComIMModule implements IMModule {
   async reply(chatId: string, text: string): Promise<void> {
     if (!this.ws?.isConnected) {
       console.error('[WeCom] WS not connected');
+      logEvent({ event: 'im_send_error', adapter: 'wecom', chatId, error: 'WS not connected' });
       return;
     }
     const safe = text.length > TEXT_MAX ? text.slice(0, TEXT_MAX) + '\n…truncated' : text;
@@ -404,6 +414,7 @@ export class WeComIMModule implements IMModule {
     if (frame) {
       try {
         await this.ws.reply(frame, body);
+        logEvent({ event: 'im_message_sent', adapter: 'wecom', chatId, textLength: safe.length });
         return;
       } catch (e: unknown) {
         console.warn(`[WeCom] Passive reply failed, falling back to push: ${e.message}`);
@@ -413,8 +424,10 @@ export class WeComIMModule implements IMModule {
     // fallback: 主动推送
     try {
       await this.ws.sendMessage(chatId, body);
+      logEvent({ event: 'im_message_sent', adapter: 'wecom', chatId, textLength: safe.length });
     } catch (e: unknown) {
       console.error(`[WeCom] Send failed: ${e.message}`);
+      logEvent({ event: 'im_send_error', adapter: 'wecom', chatId, error: (e as Error).message });
     }
   }
 

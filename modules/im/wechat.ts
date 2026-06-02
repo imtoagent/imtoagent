@@ -22,6 +22,7 @@ import type { IMModule, IMCapabilities, MessageHandler } from '../types';
 import type { UnifiedBlock } from '../capabilities';
 import type { MessageAttachment } from '../core/types';
 import type { ILinkResponse } from './im-types';
+import { logEvent } from '../utils/logger';
 
 // ================================================================
 // 常量
@@ -691,6 +692,14 @@ export class WeChatIMModule implements IMModule {
       if (firstKey) this.pendingFrames.delete(firstKey);
     }
 
+    logEvent({
+      event: 'im_message_received',
+      adapter: 'wechat',
+      chatId,
+      userId,
+      textLength: text?.length || 0,
+      attachmentCount: attachments.length,
+    });
     if (this.handler) {
       await this.handler(chatId, text.trim(), userId, attachments.length ? attachments : undefined);
     }
@@ -701,9 +710,15 @@ export class WeChatIMModule implements IMModule {
   async reply(chatId: string, text: string, maxLen?: number): Promise<void> {
     const max = maxLen || TEXT_MAX;
     const safe = text.length > max ? text.slice(0, max) + '\n…truncated' : text;
-    await this._sendMessage(chatId, [
-      { type: MessageItemType.TEXT, text_item: { text: safe } },
-    ]);
+    try {
+      await this._sendMessage(chatId, [
+        { type: MessageItemType.TEXT, text_item: { text: safe } },
+      ]);
+      logEvent({ event: 'im_message_sent', adapter: 'wechat', chatId, textLength: safe.length });
+    } catch (e: unknown) {
+      logEvent({ event: 'im_send_error', adapter: 'wechat', chatId, error: (e as Error).message });
+      throw e;
+    }
   }
 
   async sendProgress(chatId: string, text: string): Promise<void> {

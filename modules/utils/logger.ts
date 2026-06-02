@@ -30,7 +30,18 @@ export type LogEventType =
   | 'gateway_start'
   | 'gateway_stop'
   | 'config_change'
-  | 'log_rotate';
+  | 'log_rotate'
+  | 'proxy_request'
+  | 'proxy_upstream_request'
+  | 'proxy_upstream_response'
+  | 'proxy_upstream_error'
+  | 'proxy_sse_start'
+  | 'proxy_sse_end'
+  | 'proxy_circuit_open'
+  | 'proxy_codex_request'
+  | 'im_message_received'
+  | 'im_message_sent'
+  | 'im_send_error';
 
 export interface LogEvent {
   ts: string;
@@ -208,6 +219,24 @@ function formatEventSummary(event: LogEvent): string {
       return `[${ts}] 🛑 Gateway stopped`;
     case 'config_change':
       return `[${ts}] ⚙️  CONFIG${bot} ${event.action || 'modified'}`;
+    case 'proxy_request':
+      return `[${ts}] 🌐 PROXY${bot} ${event.method || ''} ${event.path || ''}`;
+    case 'proxy_upstream_request':
+      return `[${ts}] 📤 PROXY OUT${bot} ${event.provider || ''}/${event.model || ''} stream=${event.stream}`;
+    case 'proxy_upstream_response':
+      return `[${ts}] 📥 PROXY IN${bot} ${event.provider || ''} status=${event.status || '?'}`;
+    case 'proxy_upstream_error':
+      return `[${ts}] ❌ PROXY ERR${bot} ${event.provider || ''} ${event.error || ''}`;
+    case 'proxy_circuit_open':
+      return `[${ts}] ⚡ PROXY CB${bot} ${event.provider || ''} circuit open`;
+    case 'proxy_codex_request':
+      return `[${ts}] 🤖 CODEX${bot} ${event.path || ''}`;
+    case 'im_message_received':
+      return `[${ts}] 📥 IM IN${bot} ${event.adapter || ''} chat=${(event.chatId || '').substring(0, 12)}`;
+    case 'im_message_sent':
+      return `[${ts}] 📤 IM OUT${bot} ${event.adapter || ''} chat=${(event.chatId || '').substring(0, 12)}`;
+    case 'im_send_error':
+      return `[${ts}] ❌ IM ERR${bot} ${event.adapter || ''} ${event.error || ''}`;
     default:
       return `[${ts}] 📝 ${event.event}${bot}${chat}`;
   }

@@ -9,6 +9,7 @@ import type { IMModule, IMCapabilities, MessageHandler } from '../types';
 import type { UnifiedBlock } from '../capabilities';
 import type { MessageAttachment } from '../core/types';
 import { TelegramInboundAdapter, MediaStore, InboundMediaResolver } from '../media';
+import { logEvent } from '../utils/logger';
 
 export interface TelegramConfig {
   /** Bot Token（从 @BotFather 获取） */
@@ -232,6 +233,14 @@ export class TelegramAdapter implements IMModule {
           const chatId = String(msg.chat.id);
           const userId = String(msg.from?.id || msg.chat.id);
 
+          logEvent({
+            event: 'im_message_received',
+            adapter: 'telegram',
+            chatId,
+            userId,
+            textLength: text?.length || 0,
+            attachmentCount: attachments.length,
+          });
           if (this.handler) {
             this.handler(chatId, text, userId, attachments.length > 0 ? attachments : undefined).catch(e =>
               console.error('[Telegram] Message processing error:', e.message)
@@ -404,19 +413,23 @@ export class TelegramAdapter implements IMModule {
 
   async reply(chatId: string, text: string, maxLen = 4096): Promise<void> {
     const safe = text.length > maxLen ? text.slice(0, maxLen) + '\n\n…(truncated)' : text;
-    await this._api('sendMessage', {
-      chat_id: chatId,
-      text: safe,
-      parse_mode: 'MarkdownV2',
-      link_preview_options: { is_disabled: true },
-    }).catch(() =>
+    try {
+      await this._api('sendMessage', {
+        chat_id: chatId,
+        text: safe,
+        parse_mode: 'MarkdownV2',
+        link_preview_options: { is_disabled: true },
+      });
+      logEvent({ event: 'im_message_sent', adapter: 'telegram', chatId, textLength: safe.length });
+    } catch (e: unknown) {
+      logEvent({ event: 'im_send_error', adapter: 'telegram', chatId, error: (e as Error).message });
       // MarkdownV2 解析失败时降级为纯文本
-      this._api('sendMessage', {
+      await this._api('sendMessage', {
         chat_id: chatId,
         text: safe,
         link_preview_options: { is_disabled: true },
-      })
-    );
+      });
+    }
   }
 
   async sendProgress(chatId: string, text: string): Promise<void> {

@@ -10,6 +10,7 @@ import type { FeishuMessageEvent, FeishuCardMessage, FeishuPostParagraph, Feishu
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDataDir } from '../utils/paths';
+import { logEvent } from '../utils/logger';
 import { FeishuInboundAdapter, MediaStore, InboundMediaResolver, InboundMediaAdapter } from '../media';
 
 export interface FeishuConfig {
@@ -136,8 +137,10 @@ export class FeishuIMModule implements IMModule {
         params: { receive_id_type: 'chat_id' },
         data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: safe }) },
       });
+      logEvent({ event: 'im_message_sent', adapter: 'feishu', chatId, textLength: safe.length });
     } catch (e: unknown) {
       console.error(`[Feishu] Reply failed: ${e.message}`);
+      logEvent({ event: 'im_send_error', adapter: 'feishu', chatId, error: (e as Error).message });
     }
   }
 
@@ -750,6 +753,14 @@ ${b.content || ''}`;
           // Successful message delivery confirms connection is healthy — reset backoff
           this.reconnectAttempts = 0;
 
+          logEvent({
+            event: 'im_message_received',
+            adapter: 'feishu',
+            chatId,
+            userId,
+            textLength: text?.length || 0,
+            attachmentCount: attachments.length,
+          });
           await this.messageHandler!(chatId, text, userId, attachments.length > 0 ? attachments : undefined);
         } catch (e: unknown) {
           console.error(`[Feishu] Message processing error: ${e.message}`);
