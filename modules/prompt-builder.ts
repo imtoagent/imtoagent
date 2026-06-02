@@ -109,6 +109,21 @@ You can check logs to understand gateway status, troubleshoot issues, and detect
 
 Note: Your first message after startup may have lost conversation memory (if the gateway restarted). Check logs first to understand the context.`);
 
+  // 3.5. Heartbeat & Scheduled Tasks Protocol
+  sections.push(`# Heartbeat & Scheduled Tasks
+
+The gateway periodically sends you heartbeat prompts to check system health.
+
+## Heartbeat Protocol
+- When you receive a heartbeat prompt and everything is normal, reply with a single line: \`HEARTBEAT_OK\`
+- This reply is silently intercepted by the gateway — the user will NOT see it.
+- Only respond with content if you detect issues or have useful information.
+
+## Scheduled Tasks
+- Scheduled tasks are defined in the bot's \`HEARTBEAT.md\` file.
+- Tasks run independently and can perform periodic checks.
+- Use the \`heartbeat\` skill for full configuration documentation.`);
+
   // 4. Available Resources (MCP / Skills / Prompts)
   const resourceSections: string[] = [];
 
