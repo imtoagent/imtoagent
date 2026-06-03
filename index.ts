@@ -20,6 +20,7 @@ import { parseToBlocks } from './modules/capabilities';
 import { resolveCapabilities } from './modules/prompt-builder';
 import { WorkspaceManager, createWorkspaceManager } from './modules/utils/workspace-manager';
 import { migrateWorkspaces } from './modules/utils/migrate-workspaces';
+import { migrateConfig } from './modules/utils/config-migration';
 import { McpManager, McpServerConfig } from './modules/utils/mcp-manager';
 import { SkillsManager } from './modules/utils/skills-manager';
 import { PromptsManager } from './modules/utils/prompts-manager';
@@ -1103,6 +1104,21 @@ async function main() {
   if (botCfgs.length === 0) {
     console.log('💡 No bots configured in config.json, starting proxy only');
     return;
+  }
+
+  // ===== Config Migration =====
+  // 老用户升级：自动迁移 config.json 结构变化
+  const configMigrationResult = migrateConfig();
+  if (configMigrationResult.migrated) {
+    console.log(`   🔄 Config migration: ${configMigrationResult.fromVersion} → ${configMigrationResult.toVersion}`);
+    for (const step of configMigrationResult.steps) {
+      console.log(`      • ${step}`);
+    }
+    if (configMigrationResult.backupPath) {
+      console.log(`      Backup: ${configMigrationResult.backupPath}`);
+    }
+  } else if (configMigrationResult.error) {
+    console.error(`   ⚠️  Config migration skipped: ${configMigrationResult.error}`);
   }
 
   // ===== Workspace Migration =====
