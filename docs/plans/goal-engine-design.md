@@ -1,6 +1,7 @@
 # Goal Engine 技术方案
 
-> 状态: V2.4 — Phase 1 已完成 | 日期: 2026-06-03
+> 状态: V2.5 — Phase 2 已完成 | 日期: 2026-06-03
+> Phase 2 Tool Registry + Goal 管理协议 ✅ 完成（466 测试通过）
 > Phase 1 核心引擎 + 集成 + 精确触发 ✅ 完成（412 测试通过）
 
 ---
@@ -1071,7 +1072,7 @@ interface ConditionEvaluator {
 
 **不包含**：Tool Registry、条件直接评估、多条件组合、管理协议。
 
-### Phase 2：Tool Registry + 管理协议 🔄 进行中
+### Phase 2：Tool Registry + 管理协议 ✅ 已完成（2026-06-03）
 
 | 模块 | 文件 | 说明 |
 |------|------|------|
@@ -1145,6 +1146,21 @@ tests/goal-engine/
 - [ ] 多条件组合（AND/OR，Q6 的后续）
 - [ ] 条件直接评估（Q11 的后续，减少 Agent 调用）
 - [ ] Goal 执行历史可视化（统计面板）
+
+---
+
+## 十四、Phase 2 完成记录
+
+### 2026-06-03 Phase 2 Tool Registry + Goal 管理协议 完成
+
+| 模块 | 文件 | 状态 |
+|------|------|------|
+| Tool Registry | `modules/agent/tool-registry.ts` (181L) | ✅ |
+| 天气 Tool | `modules/tools/weather.ts` (162L) | ✅ |
+| Goal 管理协议 | `modules/core/goal-manager.ts` (254L) | ✅ |
+| Tool Registry 测试 | `tests/tool-registry.test.ts` (265L, 24 测试) | ✅ |
+| Goal Manager 测试 | `tests/goal-manager.test.ts` (424L, 30 测试) | ✅ |
+| **总计** | **466 测试全部通过** | **✅ 零回归** |
 
 ---
 
