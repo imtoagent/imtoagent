@@ -146,7 +146,7 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
   // 消息转换
   let input: ResponseItem[] = ((body as OpenAIRequestBody).input as ResponseItem[]) || [];
   if (input.length > 0) {
-    // 防护：输入历史过长时截断，防止 tool call loop 导致 OOM
+    // 防护 1：输入历史过长时截断，防止 tool call loop 导致 OOM
     const MAX_INPUT_ITEMS = 120;
     if (input.length > MAX_INPUT_ITEMS) {
       const truncated = input.length - MAX_INPUT_ITEMS;
@@ -157,6 +157,19 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
       input = [...systemItems, ...kept];
       console.log(`[Codex] ⚠️ Truncated input: ${input.length + truncated} → ${input.length} items (discarded oldest ${truncated})`);
     }
+
+    // 防护 2：主动过滤 input_image/input_file 类型，避免 DeepSeek 400 错误
+    // （即使后续转换逻辑会处理，但上游 SDK 可能在回复中注入这些类型到历史）
+    input = input.filter((m) => m.type !== 'input_image' && m.type !== 'input_file');
+    // 同时清理 content 数组中的 input_image/input_file
+    for (const m of input) {
+      if (Array.isArray(m.content)) {
+        m.content = m.content.filter((c: Record<string, unknown>) =>
+          c.type !== 'input_image' && c.type !== 'input_file' && c.type !== 'image_url'
+        );
+      }
+    }
+
     const types = input.map((m) => m.type || ('msg:' + m.role)).join(',');
     console.log(`[Codex] input types: [${types}]`);
     console.log(`[Codex] input items: ${input.length}`);
