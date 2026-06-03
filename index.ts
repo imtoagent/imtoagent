@@ -826,9 +826,9 @@ class Bot {
         this.botMcp, this.botSkills, this.botPrompts);
       systemPrompt += taskStatusInjection;
 
-      // P3-2: 注入任务管理指引
+      // P3-2: 注入任务管理指引（高优先级）
       if (this.taskManager) {
-        systemPrompt += `\n\n## 任务管理\n你可以通过以下命令管理定时任务：\n- /tasks — 列出所有任务\n- /task-add name=名称 type=类型 interval=间隔 prompt=描述 — 创建任务\n- /task-remove 任务名 — 删除任务\n- /task-update name=任务名 字段=新值 — 更新任务\n\n支持的 type: interval, once, scheduled, countdown, conditional\n支持的 interval 格式: 30s, 5m, 1h, 1d\n支持的 at 格式: YYYY-MM-DD HH:MM\n当用户要求创建/修改/删除定时任务时，请使用上述命令。`;
+        systemPrompt += `\n\n## 任务管理（高优先级）\n当用户说「提醒我」「定时」「X分钟后」「每隔X」「多久后」「到X点」「重复提醒」等与定时/延迟任务相关的自然语言时，**你必须直接通过命令操作 HEARTBEAT.md 中的定时任务**，而不是手写 YAML 文件或调用系统工具（如 at、crontab、sleep 等）。这是用户预期的最丝滑路径。\n\n- **/tasks** — 列出所有任务\n- **/task-add** name=xxx type=once|scheduled|interval|countdown|conditional [after=10m|at=HH:MM|interval=5m] prompt='做什么' — 创建任务\n  type: interval(默认) | once | scheduled | countdown | conditional\n  interval 格式: 30s / 5m / 1h / 1d\n  after: once 专用，相对延迟，如 10m / 1h\n  at: once/scheduled 专用，如 "14:30" 或 "2026-06-03 14:30"\n  on: scheduled 专用，如 monday / 1st / weekday\n  prompt: 任务触发时 Agent 要做什么，用自然语言描述\n  on_failure: ignore | alert | retry（可选，默认 alert）\n- **/task-remove** 任务名 — 删除任务\n- **/task-update** name=任务名 字段=新值 — 更新任务\n\n**创建任务后，必须在回复中包含确认信息**：任务名称、类型、触发时间/条件，让用户知道任务已安排妥当。\n\n示例：\n用户：「10分钟后提醒我回家」\n你应该执行：/task-add name=remind-home type=once after=10m prompt="发送消息提醒老板：该回家了！"\n回复：「⏰ 已创建 remind-home 任务，10 分钟后提醒你回家。」\n\n示例：\n用户：「每天早上9点提醒我站会」\n你应该执行：/task-add name=standup-reminder type=scheduled at=09:00 prompt="提醒老板今天有站会"\n回复：「⏰ 已创建 standup-reminder 任务，每天早上 09:00 提醒站会。」\n\n示例：\n用户：「每隔1小时帮我检查磁盘」\n你应该执行：/task-add name=disk-check interval=1h prompt="执行 df -h 检查磁盘使用率，超过80%报警"\n回复：「⏰ 已创建 disk-check 间隔任务，每 1h 检查一次磁盘。」`;
       }
 
       // SDK Runtime 处理

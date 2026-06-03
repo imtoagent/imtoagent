@@ -332,7 +332,7 @@ export class HeartbeatScheduler {
     // ================================================================
     try {
       // 记录当前到期 Goal，用于清理精确触发器
-      const dueGoalIdsBefore = this.goalStore.getDueGoals().map(g => g.id);
+      const dueGoalIdsBefore = this.goalStore.getDue().map(g => g.id);
 
       const goalStats = await this.goalEngine.processDueGoals();
       if (goalStats.dueCount > 0) {
