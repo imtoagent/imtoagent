@@ -70,8 +70,11 @@ export interface Session {
   lastHeartbeatText?: string;
   /** 心跳专用：上次心跳发送时间戳 */
   lastHeartbeatSentAt?: number;
-  /** 定时任务专用：任务名 → 上次执行时间戳 */
-  heartbeatTaskState?: Record<string, number>;
+  /** 定时任务专用：任务状态追踪
+   *  - v2.2: 值为 number（上次执行时间戳）
+   *  - v3: 值升级为对象，向后兼容 number 类型
+   */
+  heartbeatTaskState?: Record<string, number | TaskRunState>;
   /** 心跳轮数控制：最近 N 轮（硬截断） */
   heartbeatRounds?: HeartbeatRound[];
 }
@@ -84,11 +87,39 @@ export interface HeartbeatRound {
   tokensUsed: number;
 }
 
+/** 单个任务的运行状态（v3 新增） */
+export interface TaskRunState {
+  lastRunAt: number;       // 上次执行时间戳
+  runCount: number;        // 累计执行次数（countdown 需要）
+  createdAt: number;       // 任务创建时间戳（once/after 需要）
+}
+
+/** 任务类型 */
+export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional';
+
+/** 失败策略 */
+export type OnFailureStrategy = 'ignore' | 'alert' | 'retry';
+
 /** 定时任务定义（HEARTBEAT.md 中解析） */
 export interface ScheduledTask {
   name: string;
-  interval: string;  // "1h", "30m", "24h" 等
+  type?: TaskType;                  // 省略时默认 'interval'
+  interval?: string;                // interval, countdown, conditional 需要
   prompt: string;
+  // once / scheduled
+  at?: string;                      // once: "YYYY-MM-DD HH:MM", scheduled: "HH:MM"
+  after?: string;                   // once 专用：相对延迟
+  on?: string;                      // scheduled 专用："monday" / "1st"
+  // countdown
+  max_runs?: number;
+  deadline?: string;                // "YYYY-MM-DD HH:MM"
+  // 失败策略覆盖
+  on_failure?: OnFailureStrategy;
+  max_retries?: number;
+  timeout?: string;
+  // v3.1（预留）
+  condition?: string;               // conditional 专用
+  bot?: string;                     // bot 过滤
 }
 
 // ================================================================
@@ -308,6 +339,12 @@ export interface BotConfig {
     prompt?: string;
     /** 心跳轮数上限（默认 3） */
     maxHeartbeatRounds?: number;
+    /** 任务级默认值（v3 新增） */
+    taskDefaults?: {
+      on_failure?: OnFailureStrategy;
+      max_retries?: number;
+      timeout?: string;
+    };
   };
 }
 

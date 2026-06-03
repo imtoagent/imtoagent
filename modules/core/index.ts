@@ -23,6 +23,9 @@ export type {
   ProviderConfig,
   HeartbeatRound,
   ScheduledTask,
+  TaskRunState,
+  OnFailureStrategy,
+  TaskType,
 } from './types';
 
 // Session 管理
@@ -32,12 +35,23 @@ export { FileSessionManager } from './session';
 export {
   HEARTBEAT_ROUNDS_MAX,
   parseHeartbeatTasks,
+  parseHeartbeatDefaults,
   stripHeartbeatTasksBlock,
   isHeartbeatContentEffectivelyEmpty,
   hashCode,
   getPhaseOffset,
   parseInterval,
+  isTaskDue,
+  getTaskRunState,
+  updateTaskRunState,
+  parseDateTime,
+  parseTimeToday,
 } from './heartbeat';
+export type { HeartbeatDefaults, TaskDueResult } from './heartbeat';
+
+// TaskPoller (Phase 1)
+export { TaskPoller } from './task-poller';
+export type { TaskPollerConfig, TaskPollerEntry } from './task-poller';
 
 // Session 解析
 export { SessionResolver } from './session-resolver';

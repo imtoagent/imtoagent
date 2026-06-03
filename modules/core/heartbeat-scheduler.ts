@@ -1,16 +1,17 @@
 // ================================================================
-// HeartbeatScheduler — 心跳调度器（L1 最小可心跳）
+// HeartbeatScheduler — 心跳 + 定时任务调度器（Phase 1 重构）
 // ================================================================
 // 职责：
 //   1. 按 interval 定时触发心跳
 //   2. 读取 HEARTBEAT.md 生成 prompt
 //   3. 通过 AgentRuntime.processMessage 发送
 //   4. 使用 OutputRouter 过滤回复（拦截 HEARTBEAT_OK）
+//   5. TaskPoller 统一管理所有定时任务（Phase 1）
 // ================================================================
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AgentRuntime, SessionManager, MessageContext, Session } from './types';
+import type { AgentRuntime, SessionManager, MessageContext, Session, ScheduledTask, TaskRunState } from './types';
 import type { AgentAdapter } from './types';
 import {
   isHeartbeatContentEffectivelyEmpty,
@@ -19,9 +20,13 @@ import {
   parseInterval,
   getPhaseOffset,
   HEARTBEAT_ROUNDS_MAX,
+  removeTaskFromHeartbeatFile,
+  updateTaskRunState,
+  getTaskRunState,
 } from './heartbeat';
 import { filterAndSend, isHeartbeatOk } from './output-router';
 import { SessionResolver } from './session-resolver';
+import { TaskPoller } from './task-poller';
 
 export interface HeartbeatSchedulerConfig {
   /** Bot 名称 */
@@ -44,12 +49,12 @@ export interface HeartbeatSchedulerConfig {
   showAlerts?: boolean;
   /** 发送消息到 IM 的回调（由 Bot 构造时传入） */
   sendMessage: (chatId: string, text: string) => Promise<void>;
-}
-
-export interface TaskRunner {
-  name: string;
-  intervalMs: number;
-  timer: ReturnType<typeof setTimeout> | null;
+  /** 任务级默认值（v3，从 HEARTBEAT.md defaults: 块或 BotConfig 读取） */
+  defaults?: {
+    on_failure?: 'ignore' | 'alert' | 'retry';
+    max_retries?: number;
+    timeout?: string;
+  };
 }
 
 export class HeartbeatScheduler {
@@ -63,8 +68,10 @@ export class HeartbeatScheduler {
   private _resolver: SessionResolver;
   /** 连续心跳失败计数（用于告警） */
   private consecutiveFailures = 0;
-  /** L2: 独立运行的定时任务 */
-  private taskRunners: Map<string, TaskRunner> = new Map();
+  /** Phase 1: 统一任务轮询器 */
+  private taskPoller: TaskPoller;
+  /** Phase 1: 当前心跳 session（供 TaskPoller 读写状态） */
+  private heartbeatSession: Session | undefined;
 
   constructor(
     config: HeartbeatSchedulerConfig,
@@ -77,6 +84,25 @@ export class HeartbeatScheduler {
     this.adapter = adapter;
     this.sessionManager = sessionManager;
     this._resolver = new SessionResolver(sessionManager, config.botId);
+
+    this.taskPoller = new TaskPoller({
+      tickMs: 1000,
+      onTaskFire: (task, session) => this.runTask(task, session),
+      onTaskComplete: (task, _session) => {
+        // once/countdown 任务完成后，自动从 HEARTBEAT.md 中删除
+        removeTaskFromHeartbeatFile(this.config.heartbeatFilePath, task.name);
+      },
+      lockTimeoutMs: 120_000, // 默认 2 分钟锁超时
+      onTaskTimeout: (task, session) => {
+        // 锁超时：按 on_failure 策略处理
+        const strategy = task.on_failure ?? this.config.defaults?.on_failure ?? 'ignore';
+        console.warn(`[Cron] Task ${task.name} lock timed out, strategy=${strategy}`);
+        if (strategy === 'alert') {
+          this.sendAlert(task, 'Lock timeout after 120s', session).catch(() => {});
+        }
+      },
+      getSession: () => this.heartbeatSession,
+    });
   }
 
   /** Expose SessionResolver for Bot to update lastActiveChatId */
@@ -101,6 +127,8 @@ export class HeartbeatScheduler {
     );
 
     this.running = true;
+    // 启动任务轮询器
+    this.taskPoller.start();
     // 首次心跳延迟 phaseOffset，后续按 interval 循环
     this.scheduleNext(intervalMs, phaseOffset);
   }
@@ -108,139 +136,14 @@ export class HeartbeatScheduler {
   /**
    * 停止心跳调度器
    */
-  stop(): void {
+  async stop(): Promise<void> {
     this.running = false;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    // L2: 停止所有定时任务
-    for (const runner of this.taskRunners.values()) {
-      if (runner.timer) clearTimeout(runner.timer);
-    }
-    this.taskRunners.clear();
+    await this.taskPoller.stop();
     console.log(`[Heartbeat] Stopped for ${this.config.botName}`);
-  }
-
-  /**
-   * L2: 刷新定时任务列表
-   * 每次心跳执行时调用，同步 HEARTBEAT.md 中的 tasks 变化
-   */
-  private syncTasks(): void {
-    try { require('fs').appendFileSync('/tmp/cron_debug.log', `[syncTasks] called at ${new Date().toISOString()}\n`); } catch {}
-    const heartbeatContent = this.readHeartbeatFile();
-    const tasks = parseHeartbeatTasks(heartbeatContent);
-    const currentNames = new Set(this.taskRunners.keys());
-    const desiredNames = new Set(tasks.map(t => t.name));
-
-    // 移除不再存在的任务
-    for (const name of currentNames) {
-      if (!desiredNames.has(name)) {
-        const runner = this.taskRunners.get(name)!;
-        if (runner.timer) clearTimeout(runner.timer);
-        this.taskRunners.delete(name);
-        console.log(`[Cron] Removed task: ${name}`);
-      }
-    }
-
-    // 启动新任务或更新 interval
-    for (const task of tasks) {
-      const intervalMs = parseInterval(task.interval);
-      if (!intervalMs) {
-        console.warn(`[Cron] Invalid interval for task ${task.name}: ${task.interval}`);
-        continue;
-      }
-
-      const existing = this.taskRunners.get(task.name);
-      if (existing && existing.intervalMs === intervalMs) {
-        // 任务已存在且 interval 未变，跳过
-        continue;
-      }
-
-      // 存在但 interval 变了，或全新任务
-      if (existing && existing.timer) clearTimeout(existing.timer);
-
-      const phaseOffset = getPhaseOffset(`${this.config.botName}::${task.name}`, intervalMs);
-      const runner: TaskRunner = {
-        name: task.name,
-        intervalMs,
-        timer: null,
-      };
-      this.taskRunners.set(task.name, runner);
-
-      console.log(
-        `[Cron] Task started: ${task.name} interval=${task.interval} phaseOffset=${Math.round(phaseOffset / 1000)}s`,
-      );
-      this.scheduleTask(runner, task, intervalMs, phaseOffset);
-    }
-  }
-
-  /**
-   * L2: 调度单个定时任务
-   */
-  private scheduleTask(
-    runner: TaskRunner,
-    task: { name: string; interval: string; prompt: string },
-    intervalMs: number,
-    delayMs: number,
-  ): void {
-    if (!this.running) return;
-
-    // DEBUG: file log
-    try { require('fs').appendFileSync('/tmp/cron_debug.log', `[scheduleTask] name=${task.name} delay=${Math.round(delayMs/1000)}s at ${new Date().toISOString()}\n`); } catch {}
-    // DEBUG: also log target chatId
-    const _dbgTarget = this._resolver.resolveCron(task.name);
-    try { require('fs').appendFileSync('/tmp/cron_debug.log', `[scheduleTask target] chatId=${_dbgTarget.chatId} sessionKey=${_dbgTarget.sessionKey} at ${new Date().toISOString()}\n`); } catch {}
-
-    runner.timer = setTimeout(async () => {
-      try {
-        try { require('fs').appendFileSync('/tmp/cron_debug.log', `[runTask FIRED] name=${task.name} at ${new Date().toISOString()}\n`); } catch {}
-        await this.runTask(task);
-      } catch (e: any) {
-        try { require('fs').appendFileSync('/tmp/cron_debug.log', `[runTask ERROR] name=${task.name} err=${e.message}\n`); } catch {}
-        console.error(`[Cron] Error for task ${task.name}:`, e.message);
-      }
-      // 循环执行
-      this.scheduleTask(runner, task, intervalMs, intervalMs);
-    }, delayMs);
-  }
-
-  /**
-   * L2: 执行单个定时任务
-   */
-  private async runTask(task: { name: string; interval: string; prompt: string }): Promise<void> {
-    const target = this._resolver.resolveCron(task.name);
-    const session = await this._resolver.getOrCreateSession(target);
-
-    const ctx: MessageContext = {
-      chatId: target.chatId,
-      text: task.prompt,
-      userId: 'system', // P1-4: 避免空字符串触发校验
-      workingDir: this.config.defaultCwd,
-      model: this.config.model,
-      systemPrompt: this.config.systemPrompt,
-      reply: async (text: string) => {
-        // 任务回复也经过 OutputRouter 过滤
-        const result = filterAndSend(text, {
-          sessionType: target.sessionType,
-          lastHeartbeatText: undefined, // 任务不跟踪 lastHeartbeatText
-          reply: async (filteredText: string) => {
-            console.log(`[Cron] Task ${task.name} → IM: ${filteredText.slice(0, 200)}`);
-            await this.sendToIM(filteredText, target.chatId);
-          },
-        });
-        if (!result.shouldSend) {
-          console.log(`[Cron] Task ${task.name} reply filtered (${result.reason})`);
-        }
-      },
-      sendProgress: async (text: string) => {
-        console.log(`[Cron] Task ${task.name} progress: ${text}`);
-      },
-    };
-
-    console.log(`[Cron] Running task: ${task.name} prompt=${task.prompt.slice(0, 80)}`);
-    await this.runtime.processMessage(ctx, this.adapter, this.config.botName);
-    this.sessionManager.persist(this.config.botId, session);
   }
 
   /**
@@ -267,15 +170,15 @@ export class HeartbeatScheduler {
     // 1. 读取 HEARTBEAT.md
     const heartbeatContent = this.readHeartbeatFile();
 
-    // 2. 判断内容是否为空（即使为空也同步定时任务，P1-1）
+    // 2. 判断内容是否为空（即使为空也同步定时任务）
     if (isHeartbeatContentEffectivelyEmpty(heartbeatContent)) {
       console.log(`[Heartbeat] ${this.config.botName}: HEARTBEAT.md is empty, syncing tasks then skipping`);
-      this.syncTasks();
+      this.syncTasks(heartbeatContent);
       return;
     }
 
-    // L2: 同步定时任务列表（每次心跳都检查是否有新任务/修改）
-    this.syncTasks();
+    // Phase 1: 同步定时任务到 TaskPoller
+    this.syncTasks(heartbeatContent);
 
     // 3. 提取非 tasks 部分作为 prompt
     const prompt = stripHeartbeatTasksBlock(heartbeatContent);
@@ -288,7 +191,10 @@ export class HeartbeatScheduler {
     const target = this._resolver.resolveHeartbeat();
     const session = await this._resolver.getOrCreateSession(target);
 
-    // P0-2: 心跳轮次硬截断 — 截断到最近 N 轮
+    // 记录心跳 session 供 TaskPoller 使用
+    this.heartbeatSession = session;
+
+    // P0-2: 心跳轮次硬截断
     if (session.heartbeatRounds && session.heartbeatRounds.length >= HEARTBEAT_ROUNDS_MAX) {
       session.heartbeatRounds = session.heartbeatRounds.slice(-HEARTBEAT_ROUNDS_MAX);
       console.log(`[Heartbeat] ${this.config.botName}: truncated heartbeat rounds to ${HEARTBEAT_ROUNDS_MAX}`);
@@ -298,31 +204,27 @@ export class HeartbeatScheduler {
     const ctx: MessageContext = {
       chatId: target.chatId,
       text: prompt,
-      userId: 'system', // P1-4: 避免空字符串触发校验
+      userId: 'system',
       workingDir: this.config.defaultCwd,
       model: this.config.model,
       systemPrompt: this.config.systemPrompt,
       reply: async (text: string) => {
-        // 通过 OutputRouter 过滤
         const result = filterAndSend(text, {
           sessionType: target.sessionType,
           lastHeartbeatText: this.lastHeartbeatText,
           reply: async (filteredText: string) => {
-            // 实际发送到 IM
             await this.sendToIM(filteredText, target.chatId);
             console.log(`[Heartbeat] ${this.config.botName} → IM sent (${filteredText.length} chars)`);
 
-            // P0-2: 记录本轮心跳
             const round = {
               timestamp: Date.now(),
               prompt: prompt.slice(0, 500),
               response: text.slice(0, 500),
-              tokensUsed: 0, // 后续可从 stats 中获取
+              tokensUsed: 0,
             };
             if (!session.heartbeatRounds) session.heartbeatRounds = [];
             session.heartbeatRounds.push(round);
 
-            // 立即截断，防止内存泄漏
             if (session.heartbeatRounds.length > HEARTBEAT_ROUNDS_MAX) {
               session.heartbeatRounds = session.heartbeatRounds.slice(-HEARTBEAT_ROUNDS_MAX);
             }
@@ -330,10 +232,10 @@ export class HeartbeatScheduler {
         });
         if (result.shouldSend) {
           this.lastHeartbeatText = text;
-          this.consecutiveFailures = 0; // 成功，重置失败计数
+          this.consecutiveFailures = 0;
         } else if (result.reason === 'heartbeat_ok_filtered') {
           console.log(`[Heartbeat] ${this.config.botName}: HEARTBEAT_OK filtered`);
-          this.consecutiveFailures = 0; // HEARTBEAT_OK 也算成功
+          this.consecutiveFailures = 0;
         } else if (result.reason === 'duplicate_filtered') {
           console.log(`[Heartbeat] ${this.config.botName}: duplicate heartbeat filtered`);
           this.consecutiveFailures = 0;
@@ -368,6 +270,158 @@ export class HeartbeatScheduler {
   }
 
   /**
+   * 同步任务到 TaskPoller
+   */
+  private syncTasks(heartbeatContent: string): void {
+    this.taskPoller.syncTasks(heartbeatContent);
+  }
+
+  /**
+   * Phase 1/2: 执行单个定时任务（由 TaskPoller 回调触发）
+   * 包含超时检测 + 失败策略（ignore/alert/retry）
+   */
+  private async runTask(task: ScheduledTask, session: Session): Promise<void> {
+    const timeoutMs = this.parseTimeout(task.timeout ?? this.config.defaults?.timeout ?? '60s');
+    const maxRetries = task.max_retries ?? this.config.defaults?.max_retries ?? 3;
+    const strategy = task.on_failure ?? this.config.defaults?.on_failure ?? 'ignore';
+
+    let attempt = 0;
+    let lastError: string = '';
+
+    while (attempt <= maxRetries) {
+      attempt++;
+
+      // 重试退避：1s → 2s → 4s → ...
+      if (attempt > 1) {
+        const backoffMs = Math.pow(2, attempt - 2) * 1000;
+        console.log(`[Cron] Task ${task.name} retry attempt ${attempt}/${maxRetries}, waiting ${backoffMs}ms`);
+        await this.sleep(backoffMs);
+      }
+
+      try {
+        await this.executeTaskWithTimeout(task, session, timeoutMs);
+        // 成功
+        if (attempt > 1) {
+          console.log(`[Cron] Task ${task.name} succeeded on attempt ${attempt}`);
+        }
+        return;
+      } catch (e: any) {
+        lastError = e.message || String(e);
+        console.error(`[Cron] Task ${task.name} attempt ${attempt} failed: ${lastError}`);
+
+        if (attempt > maxRetries) {
+          // 所有重试耗尽
+          console.error(`[Cron] Task ${task.name} all ${maxRetries} retries exhausted`);
+          if (strategy === 'alert') {
+            await this.sendAlert(task, lastError, session).catch(() => {});
+          }
+          return;
+        }
+        // on_failure=ignore 时不再重试
+        if (strategy === 'ignore') {
+          console.log(`[Cron] Task ${task.name} failed, strategy=ignore, skipping`);
+          return;
+        }
+        // on_failure=alert 时，第一次失败就告警，不重试
+        if (strategy === 'alert') {
+          console.log(`[Cron] Task ${task.name} failed, strategy=alert, sending alert`);
+          await this.sendAlert(task, lastError, session).catch(() => {});
+          return;
+        }
+        // on_failure=retry 时继续循环
+      }
+    }
+  }
+
+  /**
+   * 执行任务，带超时包装
+   */
+  private async executeTaskWithTimeout(task: ScheduledTask, session: Session, timeoutMs: number): Promise<void> {
+    const target = this._resolver.resolveCron(task.name);
+    const taskSession = await this._resolver.getOrCreateSession(target);
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Task timeout after ${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`)), timeoutMs)
+    );
+
+    const ctx: MessageContext = {
+      chatId: target.chatId,
+      text: task.prompt,
+      userId: 'system',
+      workingDir: this.config.defaultCwd,
+      model: this.config.model,
+      systemPrompt: this.config.systemPrompt,
+      reply: async (text: string) => {
+        const result = filterAndSend(text, {
+          sessionType: target.sessionType,
+          lastHeartbeatText: undefined,
+          reply: async (filteredText: string) => {
+            console.log(`[Cron] Task ${task.name} → IM: ${filteredText.slice(0, 200)}`);
+            await this.sendToIM(filteredText, target.chatId);
+          },
+        });
+        if (!result.shouldSend) {
+          console.log(`[Cron] Task ${task.name} reply filtered (${result.reason})`);
+        }
+      },
+      sendProgress: async (text: string) => {
+        console.log(`[Cron] Task ${task.name} progress: ${text}`);
+      },
+    };
+
+    console.log(`[Cron] Running task: ${task.name} prompt=${task.prompt.slice(0, 80)} timeout=${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`);
+    await Promise.race([this.runtime.processMessage(ctx, this.adapter, this.config.botName), timeoutPromise]);
+    this.sessionManager.persist(this.config.botId, taskSession);
+  }
+
+  /**
+   * 发送任务失败告警
+   */
+  private async sendAlert(task: ScheduledTask, lastError: string, session: Session): Promise<void> {
+    const runState = session.heartbeatTaskState?.[task.name];
+    const state = runState ? getTaskRunState(runState) : { runCount: 0 };
+
+    const taskType = task.type ?? 'interval';
+    const maxRetries = task.max_retries ?? this.config.defaults?.max_retries ?? 3;
+
+    const alertMsg = [
+      '⚠️ 定时任务失败',
+      `任务: ${task.name}`,
+      `类型: ${taskType}${task.interval ? ` (${task.interval})` : ''}`,
+      `失败次数: ${maxRetries}/${maxRetries}`,
+      `最后错误: ${lastError}`,
+      `时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+    ].join('\n');
+
+    console.warn(`[Cron] ALERT: ${alertMsg.replace(/\n/g, ' | ')}`);
+
+    // 发送到 IM（尝试获取最后活跃的 chatId）
+    try {
+      const target = this._resolver.resolveHeartbeat();
+      if (target?.chatId) {
+        await this.sendToIM(alertMsg, target.chatId);
+      }
+    } catch (e: any) {
+      console.error(`[Cron] Failed to send alert:`, e.message);
+    }
+  }
+
+  /**
+   * 解析超时时间
+   */
+  private parseTimeout(timeout: string): number {
+    const ms = parseInterval(timeout);
+    return ms ?? 60_000; // 默认 60 秒
+  }
+
+  /**
+   * 延迟（用于重试退避）
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
    * 读取 HEARTBEAT.md 文件内容
    */
   private readHeartbeatFile(): string {
@@ -382,7 +436,7 @@ export class HeartbeatScheduler {
   }
 
   /**
-   * 发送到 IM（L1 简化版：直接通过 adapter 的 IM 模块）
+   * 发送到 IM
    */
   private async sendToIM(text: string, chatId: string): Promise<void> {
     await this.config.sendMessage(chatId, text);
