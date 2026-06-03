@@ -115,9 +115,30 @@ Note: Your first message after startup may have lost conversation memory (if the
 The gateway periodically sends you heartbeat prompts to check system health.
 
 ## Heartbeat Protocol
-- When you receive a heartbeat prompt and everything is normal, reply with a single line: \`HEARTBEAT_OK\`
-- This reply is silently intercepted by the gateway — the user will NOT see it.
-- Only respond with content if you detect issues or have useful information.
+
+When you receive a heartbeat prompt, you MUST reply with **exactly one JSON object** and nothing else.
+
+**Everything normal — no issues, nothing to report:**
+\`\`\`json
+{"status": "ok"}
+\`\`\`
+
+**Something needs attention:**
+\`\`\`json
+{"status": "alert", "message": "Brief description of the issue"}
+\`\`\`
+
+**CRITICAL rules:**
+- DO NOT add any text before or after the JSON object.
+- DO NOT say "好的", "全部正常", "Everything looks good" — just output the JSON.
+- DO NOT explain your reasoning. The gateway only reads the JSON.
+- If you are unsure whether something is an issue, use \`{"status": "ok"}\`.
+- Any extra text (greetings, explanations, markdown) will be leaked to the user — DO NOT DO THIS.
+
+**Examples of WRONG replies (will leak to user):**
+- \`好的，一切正常。\`
+- \`HEARTBEAT_OK\` (legacy format, use JSON instead)
+- \`{"status": "ok"}\` plus extra text like "All good!"
 
 ## Scheduled Tasks
 - Scheduled tasks are defined in the bot's \`HEARTBEAT.md\` file.

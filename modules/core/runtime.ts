@@ -177,13 +177,17 @@ export class AgentRuntime {
           ctx.userId
         );
 
-        // 2. 检查 startFresh → 清除旧 backendSessionId
+        // 2. 检查 startFresh → 清除旧 backendSessionId 和 adapter 线程
         if (session.startFresh) {
           session.backendSessionId = undefined;
           session.metadata = {};
           session.startFresh = false;
           session.running = false;
-          console.log(`[Runtime] startFresh: cleared old session for ${ctx.chatId}`);
+          // 清除 adapter 特定的线程 ID，确保下次走 isFresh 分支
+          const s = session as Record<string, unknown>;
+          delete s.codexThreadId;
+          delete s._appServerGen;
+          console.log(`[Runtime] startFresh: cleared session and thread for ${ctx.chatId}`);
         }
 
         // 3. 重置统计

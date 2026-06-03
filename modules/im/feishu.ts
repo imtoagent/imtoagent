@@ -417,8 +417,7 @@ ${this.escapeCardMarkdown(block.content || '')}`,
           break;
 
         case 'table':
-          const mdTable = this.renderMarkdownTable(block.headers, block.rows, block.caption);
-          cardElements.push({ tag: 'markdown', content: mdTable });
+          cardElements.push(this.renderCardTable(block.headers, block.rows, block.caption));
           break;
 
         case 'divider':
@@ -843,7 +842,42 @@ ${b.content || ''}`;
     return code.replace(/```/g, '\\`\\`\\`');
   }
 
-  // 渲染 markdown 表格
+  // 渲染飞书原生卡片 table 元素（解决 markdown 表格列宽过小问题）
+  private renderCardTable(headers: string[], rows: string[][], caption?: string): CardElement {
+    const columns = headers.map(h => ({
+      name: h,
+      width: 'weighted' as const,
+      width_weight: 1,
+    }));
+
+    const tableRows = rows.map(row => ({
+      cells: headers.map((_, i) => ({
+        tag: 'markdown' as const,
+        content: i < row.length ? row[i] : '',
+      })),
+    }));
+
+    const tableEl: CardElement = {
+      tag: 'table',
+      columns,
+      rows: tableRows,
+    };
+
+    // 如果有 caption，用 note 包裹
+    if (caption) {
+      return {
+        tag: 'note',
+        elements: [
+          { tag: 'markdown', content: `**${caption}**` },
+          tableEl,
+        ],
+      };
+    }
+
+    return tableEl;
+  }
+
+  // 渲染 markdown 表格（降级用）
   private renderMarkdownTable(headers: string[], rows: string[][], caption?: string): string {
     const lines: string[] = [];
     if (caption) lines.push(`**${this.escapeCardMarkdown(caption)}**\n`);

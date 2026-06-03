@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { isHeartbeatOk, isHeartbeatDuplicate, filterAndSend } from "../modules/core/output-router";
+import { isHeartbeatOk, isHeartbeatOkJson, isHeartbeatDuplicate, filterAndSend } from "../modules/core/output-router";
 
 // ================================================================
 // 1. isHeartbeatOk
@@ -56,6 +56,40 @@ describe("isHeartbeatOk", () => {
 
   it("should accept HEARTBEAT_OK with small prefix", () => {
     expect(isHeartbeatOk("OK\nHEARTBEAT_OK")).toBe(true);
+  });
+});
+
+// ================================================================
+// 1b. isHeartbeatOkJson
+// ================================================================
+
+describe("isHeartbeatOkJson", () => {
+  it("should match {\"status\": \"ok\"}", () => {
+    expect(isHeartbeatOkJson('{"status": "ok"}')).toBe(true);
+  });
+
+  it("should match with whitespace", () => {
+    expect(isHeartbeatOkJson('  { "status": "ok" }  ')).toBe(true);
+  });
+
+  it("should match case-insensitive", () => {
+    expect(isHeartbeatOkJson('{"STATUS": "OK"}')).toBe(true);
+  });
+
+  it("should reject status: alert", () => {
+    expect(isHeartbeatOkJson('{"status": "alert", "message": "error"}')).toBe(false);
+  });
+
+  it("should reject extra text", () => {
+    expect(isHeartbeatOkJson('{"status": "ok"}\nAll good!')).toBe(false);
+  });
+
+  it("should reject plain text", () => {
+    expect(isHeartbeatOkJson('全部正常。')).toBe(false);
+  });
+
+  it("should reject empty string", () => {
+    expect(isHeartbeatOkJson('')).toBe(false);
   });
 });
 
@@ -127,23 +161,83 @@ describe("filterAndSend heartbeat session", () => {
     expect(sent).toBe(false);
   });
 
-  it("should send normal text in heartbeat session", async () => {
+  it("should filter JSON status ok in heartbeat session", async () => {
+    let sent = false;
+    const result = filterAndSend('{"status": "ok"}', {
+      sessionType: "heartbeat",
+      reply: async () => { sent = true; },
+    });
+
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
+  });
+
+  it("should filter JSON status ok with whitespace", async () => {
+    let sent = false;
+    const result = filterAndSend('  { "status": "ok" }  ', {
+      sessionType: "heartbeat",
+      reply: async () => { sent = true; },
+    });
+
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
+  });
+
+  it("should send JSON status alert in heartbeat session", async () => {
     let sent = "";
-    const result = filterAndSend("Something is wrong", {
+    const result = filterAndSend('{"status": "alert", "message": "disk full"}', {
       sessionType: "heartbeat",
       reply: async (t: string) => { sent = t; },
     });
 
     expect(result.shouldSend).toBe(true);
     expect(result.reason).toBe("normal");
-    expect(sent).toBe("Something is wrong");
+    expect(sent).toBe('{"status": "alert", "message": "disk full"}');
+  });
+
+  it("should filter short natural language noise (全部正常)", async () => {
+    let sent = false;
+    const result = filterAndSend("全部正常。", {
+      sessionType: "heartbeat",
+      reply: async () => { sent = true; },
+    });
+
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
+  });
+
+  it("should filter short noise like OK", async () => {
+    let sent = false;
+    const result = filterAndSend("OK", {
+      sessionType: "heartbeat",
+      reply: async () => { sent = true; },
+    });
+
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
+  });
+
+  it("should send longer meaningful text in heartbeat session", async () => {
+    let sent = "";
+    const result = filterAndSend("Something is wrong with the server, need to check logs", {
+      sessionType: "heartbeat",
+      reply: async (t: string) => { sent = t; },
+    });
+
+    expect(result.shouldSend).toBe(true);
+    expect(result.reason).toBe("normal");
+    expect(sent).toBe("Something is wrong with the server, need to check logs");
   });
 
   it("should filter duplicate heartbeat replies", async () => {
     let sent = false;
-    const result = filterAndSend("All good", {
+    const result = filterAndSend("Something unusual here, checking", {
       sessionType: "heartbeat",
-      lastHeartbeatText: "All good",
+      lastHeartbeatText: "Something unusual here, checking",
       reply: async () => { sent = true; },
     });
 
@@ -152,15 +246,16 @@ describe("filterAndSend heartbeat session", () => {
     expect(sent).toBe(false);
   });
 
-  it("should not filter HEARTBEAT_OK in cron session", async () => {
+  it("should filter HEARTBEAT_OK in cron session (prevents leak)", async () => {
     let sent = "";
     const result = filterAndSend("HEARTBEAT_OK", {
       sessionType: "cron",
       reply: async (t: string) => { sent = t; },
     });
 
-    expect(result.shouldSend).toBe(true);
-    expect(sent).toBe("HEARTBEAT_OK");
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe("");
   });
 });
 

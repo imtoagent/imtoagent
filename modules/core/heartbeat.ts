@@ -184,10 +184,16 @@ export function parseHeartbeatTasks(
         const onFailMatch = nextTrimmed.match(/^on_failure:\s*(\S+)/);
         const retriesMatch = nextTrimmed.match(/^max_retries:\s*(\d+)/);
         const timeoutMatch = nextTrimmed.match(/^timeout:\s*(\S+)/);
+        const conditionMatch = nextTrimmed.match(/^condition:\s*["']?(.+?)["']?\s*$/);
+        const botMatch = nextTrimmed.match(/^bot:\s*(\S+)/);
+        const onCompleteMatch = nextTrimmed.match(/^on_complete:\s*(\S+)/);
+        const autoStopMatch = nextTrimmed.match(/^auto_stop:\s*(\S+)/);
+        const historyFileMatch = nextTrimmed.match(/^history_file:\s*(\S+)/);
+        const maxHistoryMatch = nextTrimmed.match(/^max_history:\s*(\d+)/);
 
         if (typeMatch) {
           const val = typeMatch[1] as TaskType;
-          if (['interval', 'once', 'scheduled', 'countdown', 'conditional'].includes(val)) {
+          if (['interval', 'once', 'scheduled', 'countdown', 'conditional', 'stopwatch'].includes(val)) {
             task.type = val;
           }
         }
@@ -204,6 +210,12 @@ export function parseHeartbeatTasks(
         }
         if (retriesMatch) task.max_retries = parseInt(retriesMatch[1], 10);
         if (timeoutMatch) task.timeout = timeoutMatch[1];
+        if (conditionMatch) task.condition = conditionMatch[1].trim().replace(/["']$/, '');
+        if (botMatch) task.bot = botMatch[1].trim();
+        if (onCompleteMatch) task.on_complete = onCompleteMatch[1].trim();
+        if (autoStopMatch) task.auto_stop = autoStopMatch[1].trim();
+        if (historyFileMatch) task.history_file = historyFileMatch[1].trim();
+        if (maxHistoryMatch) task.max_history = parseInt(maxHistoryMatch[1], 10);
 
         i++;
       }
@@ -306,12 +318,14 @@ export interface TaskDueResult {
  * @param lastRunAt 上次执行时间戳（undefined = 从未执行）
  * @param now 当前时间戳
  * @param createdAt 任务创建时间戳（once/after 需要）
+ * @param runCount 累计执行次数（countdown max_runs 需要，由调用方从 session 状态读取）
  */
 export function isTaskDue(
   task: ScheduledTask,
   lastRunAt: number | undefined,
   now: number,
   createdAt: number | undefined,
+  runCount: number = 0,
 ): TaskDueResult {
   const type = task.type ?? 'interval';
 
@@ -408,11 +422,9 @@ export function isTaskDue(
       const intervalMs = parseInterval(task.interval);
       if (!intervalMs) return { due: false, reason: 'invalid interval' };
 
-      // 检查 max_runs
-      if (task.max_runs !== undefined) {
-        const runCount = typeof lastRunAt === 'number' ? 0 : 0; // 需要从 TaskRunState 获取，这里简化
-        // 实际 runCount 从 session.heartbeatTaskState 中读取，调度器负责传入
-        // 这里只判断 interval
+      // P2-3: 检查 max_runs（由调用方传入 runCount）
+      if (task.max_runs !== undefined && runCount >= task.max_runs) {
+        return { due: false, reason: 'max_runs reached' };
       }
 
       // 检查 deadline
@@ -432,6 +444,18 @@ export function isTaskDue(
 
     case 'conditional': {
       // v3.1: condition 由 Agent 自行判断，调度器只按 interval 触发
+      if (!task.interval) return { due: false, reason: 'missing interval' };
+      const intervalMs = parseInterval(task.interval);
+      if (!intervalMs) return { due: false, reason: 'invalid interval' };
+      if (lastRunAt === undefined) return { due: true, reason: 'first run' };
+      return {
+        due: now - lastRunAt >= intervalMs,
+        reason: now - lastRunAt >= intervalMs ? 'interval elapsed' : 'interval not yet elapsed',
+      };
+    }
+
+    case 'stopwatch': {
+      // stopwatch 任务持续运行，按 interval 触发，auto_stop 在 executeTaskWithTimeout 中检查
       if (!task.interval) return { due: false, reason: 'missing interval' };
       const intervalMs = parseInterval(task.interval);
       if (!intervalMs) return { due: false, reason: 'invalid interval' };

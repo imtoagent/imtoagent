@@ -47,3 +47,36 @@ try {
 } catch (e) {
   // Silently fail, do not affect installation
 }
+
+// ================================================================
+// Install Agent Skills to ~/.agents/skills/imtoagent/
+// ================================================================
+
+try {
+  const SKILLS_DIR = path.join(__dirname, "..", "skills", "imtoagent");
+  const AGENTS_SKILLS = path.join(HOME, ".agents", "skills");
+  const DEST = path.join(AGENTS_SKILLS, "imtoagent");
+
+  if (fs.existsSync(SKILLS_DIR)) {
+    if (!fs.existsSync(AGENTS_SKILLS)) {
+      fs.mkdirSync(AGENTS_SKILLS, { recursive: true });
+    }
+
+    function copyRecursive(src, dest) {
+      const stat = fs.statSync(src);
+      if (stat.isDirectory()) {
+        if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+        for (const entry of fs.readdirSync(src)) {
+          copyRecursive(path.join(src, entry), path.join(dest, entry));
+        }
+      } else {
+        fs.copyFileSync(src, dest);
+      }
+    }
+
+    copyRecursive(SKILLS_DIR, DEST);
+    console.log("   Agent skills installed to: " + DEST);
+  }
+} catch (e) {
+  // Silently fail — skill install is best-effort
+}

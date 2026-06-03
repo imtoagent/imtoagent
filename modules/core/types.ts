@@ -92,10 +92,16 @@ export interface TaskRunState {
   lastRunAt: number;       // 上次执行时间戳
   runCount: number;        // 累计执行次数（countdown 需要）
   createdAt: number;       // 任务创建时间戳（once/after 需要）
+  // P4-3: stopwatch
+  elapsedMs?: number;      // 累计运行时间（毫秒）
+  startedAt?: number;      // 当前会话开始时间戳
+  // P4-4: 最近执行结果
+  lastResult?: 'success' | 'timeout' | 'error';
+  lastError?: string;      // 最近一次错误信息
 }
 
 /** 任务类型 */
-export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional';
+export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional' | 'stopwatch';
 
 /** 失败策略 */
 export type OnFailureStrategy = 'ignore' | 'alert' | 'retry';
@@ -120,6 +126,13 @@ export interface ScheduledTask {
   // v3.1（预留）
   condition?: string;               // conditional 专用
   bot?: string;                     // bot 过滤
+  // P4-1: 任务链（依赖触发）
+  on_complete?: string;             // 完成后触发的下游任务名
+  // P4-3: stopwatch
+  auto_stop?: string;               // 自动停止时间 "HH:MM" 或相对时长 "30m"
+  // P4-4: 历史持久化
+  history_file?: string;            // 历史记录文件路径（相对 workspace）
+  max_history?: number;             // 最大保留条数（默认 50）
 }
 
 // ================================================================
@@ -238,6 +251,8 @@ export interface MessageContext {
   imCaps?: IMCapabilities;
   /** 外部取消信号（用于 /stop 等中断命令） */
   cancelSignal?: AbortSignal;
+  /** Phase 2: 工具列表（OpenAI 格式，供 Agent function calling） */
+  tools?: object[];
 }
 
 /** Session 管理器 */

@@ -15,6 +15,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getCurrentBot } from '../bot-context';
+import { buildSystemPrompt } from '../prompt-builder';
 import { handleCodexRequest } from './codex-proxy';
 import { getDataDir, getSessionsDir } from '../utils/paths';
 import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
@@ -835,6 +836,28 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       parsedBody = JSON.parse(bodyStr);
       originalModel = parsedBody.model || '';
     } catch { /* 非 JSON */ }
+
+    // 🧠 动态注入 imtoagent system prompt（IM能力/心跳/Soul/MCP/Skills/Prompts）
+    const ctx = getCurrentBot();
+    if (ctx) {
+      const injected = buildSystemPrompt({
+        caps: ctx.caps || null,
+        botKey: ctx.botName || 'CodexBot',
+        mcpInfo: ctx.mcpInfo,
+        skillsInfo: ctx.skillsInfo,
+        promptsInfo: ctx.promptsInfo,
+      });
+      const existing = parsedBody.system;
+      if (typeof existing === 'string') {
+        parsedBody.system = existing + '\n\n---\n\n' + injected;
+      } else if (Array.isArray(existing)) {
+        (parsedBody as any).system = [...existing, { type: 'text', text: '\n\n---\n\n' + injected }];
+      } else {
+        parsedBody.system = injected as any;
+      }
+      bodyStr = JSON.stringify(parsedBody);
+      console.log(`[Proxy] 🧠 System prompt injected (${injected.length} chars)`);
+    }
 
     // 根据 Claude Code 传的模型名前缀，识别角色并替换为完整规格
     const resolvedSpec = resolveModelByPrefix(originalModel);

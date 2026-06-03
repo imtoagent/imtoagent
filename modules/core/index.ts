@@ -76,3 +76,7 @@ export { FileConfigManager } from './config';
 
 // 运行时
 export { AgentRuntime } from './runtime';
+
+// Phase 2: Goal 管理协议
+export { GoalManager, parseGoalManagement } from './goal-manager';
+export type { GoalManagementAction } from './goal-manager';

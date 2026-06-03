@@ -27,6 +27,11 @@ import {
 import { filterAndSend, isHeartbeatOk } from './output-router';
 import { SessionResolver } from './session-resolver';
 import { TaskPoller } from './task-poller';
+import { GoalEngine } from './goal-engine';
+import { GoalStore } from './goal-store';
+import { GoalManager } from './goal-manager';
+import { ToolRegistry } from '../agent/tool-registry';
+import { weatherTool } from '../tools/weather';
 
 export interface HeartbeatSchedulerConfig {
   /** Bot 名称 */
@@ -72,6 +77,16 @@ export class HeartbeatScheduler {
   private taskPoller: TaskPoller;
   /** Phase 1: 当前心跳 session（供 TaskPoller 读写状态） */
   private heartbeatSession: Session | undefined;
+  /** Phase 1 Goal Engine: 到期检测 + Agent 执行 + IM 发送 */
+  private goalEngine: GoalEngine;
+  private goalStore: GoalStore;
+  /** Phase 2: Goal 管理协议 */
+  private goalManager: GoalManager;
+  /** Phase 2: 工具注册中心 */
+  private toolRegistry: ToolRegistry;
+  /** Phase 1 精确触发：setTimeout 精确触发 + 心跳兜底 */
+  private preciseTimers: Map<string, NodeJS.Timeout> = new Map();
+  private readonly PRECISE_WINDOW_MS = 30 * 60 * 1000; // 30 分钟内注册 setTimeout
 
   constructor(
     config: HeartbeatSchedulerConfig,
@@ -102,12 +117,49 @@ export class HeartbeatScheduler {
         }
       },
       getSession: () => this.heartbeatSession,
+      workspaceDir: this.config.defaultCwd, // P4-4: 历史文件路径基准
+    });
+
+    // Phase 1: 初始化 Goal Engine
+    this.goalStore = new GoalStore();
+    // Phase 2: 初始化工具注册中心
+    this.toolRegistry = new ToolRegistry();
+    this.toolRegistry.register(weatherTool);
+    // Phase 2: 初始化 Goal 管理协议
+    this.goalManager = new GoalManager(this.goalStore);
+    this.goalEngine = new GoalEngine(this.goalStore, {
+      executeAgent: async (prompt, options) => {
+        return this.executeGoalAgent(prompt, options);
+      },
+      sendIM: async (chatId, text) => {
+        await this.config.sendMessage(chatId, text);
+      },
+      workspaceDir: this.config.defaultCwd,
+      timeoutMs: this.config.defaults?.timeout
+        ? this.parseTimeout(this.config.defaults.timeout)
+        : 60_000,
+      toolRegistry: this.toolRegistry,
     });
   }
 
   /** Expose SessionResolver for Bot to update lastActiveChatId */
   get resolver(): SessionResolver {
     return this._resolver;
+  }
+
+  /** P2-4: 暴露任务状态查询 */
+  getTaskStatus() {
+    return this.taskPoller.getTaskStatus();
+  }
+
+  /** Phase 2: 暴露 Goal 管理器（供外部调用） */
+  getGoalManager() {
+    return this.goalManager;
+  }
+
+  /** Phase 2: 暴露工具注册中心 */
+  getToolRegistry() {
+    return this.toolRegistry;
   }
 
   /**
@@ -143,6 +195,8 @@ export class HeartbeatScheduler {
       this.timer = null;
     }
     await this.taskPoller.stop();
+    // Phase 1: 取消所有精确触发
+    this.cancelAllPreciseTriggers();
     console.log(`[Heartbeat] Stopped for ${this.config.botName}`);
   }
 
@@ -267,13 +321,152 @@ export class HeartbeatScheduler {
         });
       }
     }
+
+    // ================================================================
+    // Phase 1: Goal Engine — 检查并执行到期 Goal
+    // ================================================================
+    try {
+      // 记录当前到期 Goal，用于清理精确触发器
+      const dueGoalIdsBefore = this.goalStore.getDueGoals().map(g => g.id);
+
+      const goalStats = await this.goalEngine.processDueGoals();
+      if (goalStats.dueCount > 0) {
+        console.log(
+          `[Heartbeat] ${this.config.botName}: Goal Engine done=${goalStats.doneCount} ` +
+          `skip=${goalStats.skipCount} fail=${goalStats.failedCount} unknown=${goalStats.unknownCount}` +
+          ` (${goalStats.totalDurationMs}ms)`,
+        );
+      }
+
+      // 清理已处理 Goal 的精确触发器（已完成/已重新调度）
+      for (const goalId of dueGoalIdsBefore) {
+        this.cancelPreciseTrigger(goalId);
+      }
+
+      // 精确触发：为 30 分钟内的活跃 Goal 注册 setTimeout
+      this.schedulePreciseTriggers();
+    } catch (e: any) {
+      console.error(`[Heartbeat] ${this.config.botName}: Goal Engine error:`, e.message);
+    }
+  }
+
+  /**
+   * Phase 1 Goal Engine: 用 Agent 执行 Goal prompt
+   * 复用现有 runtime.processMessage 流程
+   */
+  private async executeGoalAgent(
+    prompt: string,
+    options?: { systemPrompt?: string; model?: string; timeoutMs?: number; tools?: object[] },
+  ): Promise<string> {
+    const target = this._resolver.resolveHeartbeat();
+    const session = await this._resolver.getOrCreateSession(target);
+
+    let reply = '';
+    const ctx: MessageContext = {
+      chatId: target.chatId,
+      text: prompt,
+      userId: 'system',
+      workingDir: this.config.defaultCwd,
+      model: options?.model ?? this.config.model,
+      systemPrompt: options?.systemPrompt ?? this.config.systemPrompt,
+      reply: async (text: string) => {
+        reply = text;
+      },
+      sendProgress: async (text: string) => {
+        console.log(`[GoalEngine] progress: ${text}`);
+      },
+      // Phase 2: 传递工具列表
+      tools: options?.tools,
+    };
+
+    try {
+      await this.runtime.processMessage(ctx, this.adapter, this.config.botName);
+      this.sessionManager.persist(this.config.botId, session);
+    } catch (e: any) {
+      throw new Error(`Goal agent execution failed: ${e.message}`);
+    }
+
+    return reply;
+  }
+
+  /**
+   * Phase 1 精确触发：为 30 分钟内的活跃 Goal 注册 setTimeout
+   * 心跳作为兜底：即使 setTimeout 丢失（进程重启），心跳也会检查 getDue() 并执行
+   */
+  private schedulePreciseTriggers(): void {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() + this.PRECISE_WINDOW_MS);
+    const activeGoals = this.goalStore.getActive();
+
+    for (const goal of activeGoals) {
+      if (!goal.lifecycle.nextRunAt) continue;
+      const nextRun = new Date(goal.lifecycle.nextRunAt);
+
+      // 跳过已过期的
+      if (nextRun <= now) continue;
+      // 只注册 30 分钟内的
+      if (nextRun > cutoff) continue;
+      // 已经注册过的跳过
+      if (this.preciseTimers.has(goal.id)) continue;
+
+      const delayMs = nextRun.getTime() - now.getTime();
+      const scheduledTime = nextRun.getTime();
+      const leadMinutes = goal.trigger.leadMinutes ?? 10;
+
+      console.log(
+        `[GoalEngine] Scheduling precise trigger for ${goal.id} ` +
+        `in ${Math.round(delayMs / 1000)}s (at ${nextRun.toLocaleTimeString('zh-CN')})`,
+      );
+
+      const timer = setTimeout(() => {
+        // macOS 休眠处理：如果过期超过 leadMinutes，跳过，等心跳兜底
+        if (Date.now() > scheduledTime + leadMinutes * 60 * 1000) {
+          console.log(
+            `[GoalEngine] Precise trigger for ${goal.id} expired (macOS sleep?), ` +
+            `skipping, heartbeat will handle`,
+          );
+          this.preciseTimers.delete(goal.id);
+          return;
+        }
+
+        console.log(`[GoalEngine] Precise trigger firing for ${goal.id}`);
+        this.goalEngine.processDueGoals(now).catch(e => {
+          console.error(`[GoalEngine] Precise trigger error for ${goal.id}:`, e.message);
+        }).finally(() => {
+          this.preciseTimers.delete(goal.id);
+        });
+      }, delayMs);
+
+      this.preciseTimers.set(goal.id, timer);
+    }
+  }
+
+  /**
+   * 取消指定 Goal 的精确触发
+   */
+  cancelPreciseTrigger(goalId: string): void {
+    const timer = this.preciseTimers.get(goalId);
+    if (timer) {
+      clearTimeout(timer);
+      this.preciseTimers.delete(goalId);
+    }
+  }
+
+  /**
+   * 取消所有精确触发
+   */
+  private cancelAllPreciseTriggers(): void {
+    for (const [goalId, timer] of this.preciseTimers) {
+      clearTimeout(timer);
+    }
+    this.preciseTimers.clear();
   }
 
   /**
    * 同步任务到 TaskPoller
    */
   private syncTasks(heartbeatContent: string): void {
-    this.taskPoller.syncTasks(heartbeatContent);
+    this.taskPoller.syncTasks(heartbeatContent, this.config.botName);
   }
 
   /**
@@ -336,22 +529,52 @@ export class HeartbeatScheduler {
   /**
    * 执行任务，带超时包装
    */
-  private async executeTaskWithTimeout(task: ScheduledTask, session: Session, timeoutMs: number): Promise<void> {
+  private async executeTaskWithTimeout(task: ScheduledTask, session: Session, timeoutMs: number): Promise<'success' | 'timeout'> {
     const target = this._resolver.resolveCron(task.name);
     const taskSession = await this._resolver.getOrCreateSession(target);
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Task timeout after ${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`)), timeoutMs)
+    // P4-2: 超时取消 — 使用 AbortController 真正取消底层 Agent 调用
+    const abortController = new AbortController();
+    const timeoutPromise = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => {
+        abortController.abort();
+        console.log(`[Cron] Task ${task.name} timed out, cancelled`);
+        resolve('timeout');
+      }, timeoutMs)
     );
+
+    // P4-3: stopwatch auto_stop — 检查是否超过自动停止时间
+    if (task.type === 'stopwatch' && task.auto_stop) {
+      const state = session.heartbeatTaskState?.[task.name];
+      if (state?.startedAt && state.elapsedMs !== undefined) {
+        const autoStopMs = this.parseDuration(task.auto_stop);
+        if (autoStopMs > 0 && state.elapsedMs >= autoStopMs) {
+          console.log(`[Cron] Task ${task.name} auto_stop reached (elapsed ${state.elapsedMs}ms >= ${autoStopMs}ms), stopping`);
+          return 'success'; // 正常结束，不触发错误
+        }
+      }
+    }
+
+    // P2-1: conditional 真条件 — 在 prompt 前注入条件检查指令
+    let taskText = task.prompt;
+    if (task.type === 'conditional' && task.condition) {
+      taskText = `[条件检查] 如果当前不满足以下条件，请只回复 "SKIP_TASK"，否则正常执行任务：\n条件：${task.condition}\n\n---\n\n${task.prompt}`;
+    }
 
     const ctx: MessageContext = {
       chatId: target.chatId,
-      text: task.prompt,
+      text: taskText,
       userId: 'system',
       workingDir: this.config.defaultCwd,
       model: this.config.model,
       systemPrompt: this.config.systemPrompt,
+      cancelSignal: abortController.signal,  // P4-2
       reply: async (text: string) => {
+        // P2-1: 识别 SKIP_TASK，不发送到 IM
+        if (text.trim() === 'SKIP_TASK') {
+          console.log(`[Cron] Task ${task.name} condition not met, skipped`);
+          return;
+        }
         const result = filterAndSend(text, {
           sessionType: target.sessionType,
           lastHeartbeatText: undefined,
@@ -370,8 +593,10 @@ export class HeartbeatScheduler {
     };
 
     console.log(`[Cron] Running task: ${task.name} prompt=${task.prompt.slice(0, 80)} timeout=${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`);
-    await Promise.race([this.runtime.processMessage(ctx, this.adapter, this.config.botName), timeoutPromise]);
+    const result = await Promise.race([this.runtime.processMessage(ctx, this.adapter, this.config.botName), timeoutPromise]);
     this.sessionManager.persist(this.config.botId, taskSession);
+
+    return result === 'timeout' ? 'timeout' : 'success';
   }
 
   /**
@@ -440,5 +665,22 @@ export class HeartbeatScheduler {
    */
   private async sendToIM(text: string, chatId: string): Promise<void> {
     await this.config.sendMessage(chatId, text);
+  }
+
+  /**
+   * P4-3: 解析时长字符串 → 毫秒
+   * 支持格式："30m" / "2h" / "1h30m" / "3600"（秒）
+   */
+  private parseDuration(str: string): number {
+    const match = str.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+    if (!match) {
+      // 纯数字视为秒
+      const secs = parseInt(str, 10);
+      return isNaN(secs) ? 0 : secs * 1000;
+    }
+    const h = parseInt(match[1] || '0', 10);
+    const m = parseInt(match[2] || '0', 10);
+    const s = parseInt(match[3] || '0', 10);
+    return (h * 3600 + m * 60 + s) * 1000;
   }
 }

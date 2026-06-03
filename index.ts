@@ -85,6 +85,7 @@ import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath
 // ===== SDK 核心 =====
 import { AgentRuntime, FileSessionManager, DefaultErrorHandler, DefaultStatsTracker } from './modules/core';
 import { HeartbeatScheduler } from './modules/core/heartbeat-scheduler';
+import { TaskManager } from './modules/core/task-manager';
 import { ClaudeAdapter } from './modules/agent/claude-adapter';
 import { CodexAdapter } from './modules/agent/codex-adapter';
 import { OpenCodeAdapter } from './modules/agent/opencode-adapter';
@@ -107,6 +108,19 @@ function parseMessage(content: string): string {
 // ================================================================
 // 工具函数
 // ================================================================
+/**
+ * 解析任务命令参数: name=xxx type=interval interval=5m prompt='任务描述'
+ */
+function parseTaskArgs(args: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  const regex = /(\w+)=('[^']*'|"[^"]*"|\S+)/g;
+  let match;
+  while ((match = regex.exec(args)) !== null) {
+    params[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+  }
+  return params;
+}
+
 function levenshteinDistance(a: string, b: string): number {
   const m = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
   for (let i = 0; i <= a.length; i++) m[0][i] = i;
@@ -191,6 +205,8 @@ class Bot {
   botPrompts: PromptsManager;
   /** 心跳调度器（L1 新增） */
   heartbeatScheduler: HeartbeatScheduler | null = null;
+  /** 任务管理器（Phase 3） */
+  taskManager: TaskManager | null = null;
 
   constructor(cfg: BotConfig, globalConfig: any, workspaceManager: WorkspaceManager) {
     this.id = cfg.id || cfg.name; // 后向兼容：无 id 时用 name
@@ -405,7 +421,8 @@ class Bot {
       out += '/dir — Directory\n/clear — Clear\n/stop — Stop current task\n';
       if (this.backend === 'claude') out += '/mode — Permission\n';
       else if (this.backend === 'codex') out += '/mode — Mode(auto/plan)\n';
-      out += '/memory — Overview\n/soul — Soul\n/reload — Reload';
+      out += '/memory — Overview\n/soul — Soul\n/reload — Reload\n';
+      out += '/tasks — List tasks\n/task-add — Add task\n/task-remove — Remove task\n/task-update — Update task';
       return out;
     });
 
@@ -613,6 +630,68 @@ class Bot {
       await gracefulReload('/reload');
       return '🔄 Reloading...';
     });
+
+    // === P3: 任务管理命令 ===
+    cmd('/tasks', ({ args }) => {
+      if (!this.taskManager) return '⚠️ 任务系统未初始化';
+      const tasks = this.taskManager.listTasks();
+      if (tasks.length === 0) return '📋 暂无定时任务';
+      const lines = tasks.map(t => {
+        const type = t.type ?? 'interval';
+        const interval = t.interval ? ` (${t.interval})` : '';
+        const prompt = t.prompt ? ` — ${t.prompt.slice(0, 40)}${t.prompt.length > 40 ? '...' : ''}` : '';
+        return `• **${t.name}** | ${type}${interval}${prompt}`;
+      });
+      return `📋 定时任务列表（${tasks.length}个）\n\n${lines.join('\n')}`;
+    });
+
+    cmd('/task-add', ({ args }) => {
+      if (!this.taskManager) return '⚠️ 任务系统未初始化';
+      // 解析参数: /task-add name=xxx type=interval interval=5m prompt='任务描述'
+      const params = parseTaskArgs(args);
+      if (!params.name || !params.prompt) {
+        return '❌ 用法: /task-add name=名称 type=类型 interval=间隔 prompt=描述\n例: /task-add name=disk-check interval=1h prompt="检查磁盘使用率"';
+      }
+      const task: any = { name: params.name, prompt: params.prompt };
+      if (params.type) task.type = params.type;
+      if (params.interval) task.interval = params.interval;
+      if (params.at) task.at = params.at;
+      if (params.after) task.after = params.after;
+      if (params.on) task.on = params.on;
+      if (params.max_runs) task.max_runs = parseInt(params.max_runs);
+      if (params.deadline) task.deadline = params.deadline;
+      if (params.on_failure) task.on_failure = params.on_failure;
+      if (params.condition) task.condition = params.condition;
+      if (params.bot) task.bot = params.bot;
+
+      const result = this.taskManager.addTask(task);
+      return result.success ? `✅ 任务 "${params.name}" 已创建` : `❌ ${result.error}`;
+    });
+
+    cmd('/task-remove', ({ args }) => {
+      if (!this.taskManager) return '⚠️ 任务系统未初始化';
+      const name = args.trim();
+      if (!name) return '❌ 用法: /task-remove 任务名';
+      const result = this.taskManager.removeTask(name);
+      return result.success ? `✅ 任务 "${name}" 已删除` : `❌ ${result.error}`;
+    });
+
+    cmd('/task-update', ({ args }) => {
+      if (!this.taskManager) return '⚠️ 任务系统未初始化';
+      // 解析参数: /task-update name=xxx field=value ...
+      const params = parseTaskArgs(args);
+      if (!params.name) return '❌ 用法: /task-update name=任务名 字段=新值';
+      const updates: any = {};
+      const allowedFields = ['type', 'interval', 'prompt', 'at', 'after', 'on', 'max_runs', 'deadline', 'on_failure', 'max_retries', 'timeout', 'condition', 'bot'];
+      for (const key of Object.keys(params)) {
+        if (key !== 'name' && allowedFields.includes(key)) {
+          updates[key] = key === 'max_runs' || key === 'max_retries' ? parseInt(params[key]) : params[key];
+        }
+      }
+      if (Object.keys(updates).length === 0) return '❌ 没有要更新的字段';
+      const result = this.taskManager.updateTask(params.name, updates);
+      return result.success ? `✅ 任务 "${params.name}" 已更新` : `❌ ${result.error}`;
+    });
   }
 
   // ===== 心跳初始化（L1 新增） =====
@@ -656,6 +735,9 @@ class Bot {
     }
 
     console.log(`[Heartbeat] Init: bot=${this.name}, interval=${interval}, file=${heartbeatFilePath}`);
+
+    // P3: 初始化任务管理器
+    this.taskManager = new TaskManager(heartbeatFilePath);
 
     this.heartbeatScheduler = new HeartbeatScheduler(
       {
@@ -724,10 +806,29 @@ class Bot {
       session.recentMessages.push(text);
       if (session.recentMessages.length > 5) session.recentMessages = session.recentMessages.slice(-5);
 
+      // P2-4: 动态注入任务状态到系统提示词
+      let taskStatusInjection = '';
+      const taskStatus = this.heartbeatScheduler?.getTaskStatus();
+      if (taskStatus && taskStatus.length > 0) {
+        const lines = taskStatus.map(t => {
+          const lastRun = t.lastRunAt > 0 ? new Date(t.lastRunAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '未执行';
+          const locked = t.locked ? '🔒运行中' : '';
+          const next = t.nextTriggerEstimate ? ` 下次: ${t.nextTriggerEstimate}` : '';
+          return `  ${t.name} | ${t.type} | 运行${t.runCount}次 | 上次: ${lastRun}${locked}${next}`;
+        });
+        taskStatusInjection = `\n\n## 当前定时任务状态\n${lines.join('\n')}\n如果用户询问任务/任务列表/任务状态，请直接引用上方数据回答，不要调用工具。`;
+      }
+
       // 构建系统提示词（统一入口：资源 + soul + restart instruction）
-      const systemPrompt = buildSystemPromptWithSoul(this.soul || undefined, this.name, this.im,
+      let systemPrompt = buildSystemPromptWithSoul(this.soul || undefined, this.name, this.im,
         this.systemMcp, this.systemSkills, this.systemPrompts,
         this.botMcp, this.botSkills, this.botPrompts);
+      systemPrompt += taskStatusInjection;
+
+      // P3-2: 注入任务管理指引
+      if (this.taskManager) {
+        systemPrompt += `\n\n## 任务管理\n你可以通过以下命令管理定时任务：\n- /tasks — 列出所有任务\n- /task-add name=名称 type=类型 interval=间隔 prompt=描述 — 创建任务\n- /task-remove 任务名 — 删除任务\n- /task-update name=任务名 字段=新值 — 更新任务\n\n支持的 type: interval, once, scheduled, countdown, conditional\n支持的 interval 格式: 30s, 5m, 1h, 1d\n支持的 at 格式: YYYY-MM-DD HH:MM\n当用户要求创建/修改/删除定时任务时，请使用上述命令。`;
+      }
 
       // SDK Runtime 处理
       const result = await this.runtime.processMessage({
@@ -1082,8 +1183,8 @@ async function main() {
       const cwd = bot.defaultCwd;
       let gitBranch = '', gitStatus = '';
       try {
-        gitBranch = require('child_process').execSync('git branch --show-current', { cwd, timeout: 3000 }).toString().trim();
-        gitStatus = require('child_process').execSync('git status --short', { cwd, timeout: 3000 }).toString().trim();
+        gitBranch = require('child_process').execSync('git branch --show-current', { cwd, timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim();
+        gitStatus = require('child_process').execSync('git status --short', { cwd, timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim();
       } catch {}
       const content = [
         '# Project Environment', '', `- Working Directory: ${cwd}`,

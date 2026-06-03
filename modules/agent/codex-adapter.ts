@@ -56,11 +56,18 @@ function processCodexStream(stdout: string): { threadId: string; response: strin
   return { threadId, response };
 }
 
-async function spawnCodexExec(cwd: string, prompt: string): Promise<{ threadId: string; response: string }> {
+async function spawnCodexExec(cwd: string, prompt: string, cancelSignal?: AbortSignal): Promise<{ threadId: string; response: string }> {
   const child = Bun.spawn(['codex', 'exec', '-p', 'imtoagent', '-s', 'danger-full-access',
     '--skip-git-repo-check', '--json', prompt], {
     cwd, stdout: 'pipe', stderr: 'pipe',
   });
+
+  // P4-2: 超时取消
+  if (cancelSignal) {
+    cancelSignal.addEventListener('abort', () => {
+      try { child.kill('SIGKILL'); } catch {}
+    }, { once: true });
+  }
 
   let stdout = '', stderr = '';
   try {
@@ -79,11 +86,18 @@ async function spawnCodexExec(cwd: string, prompt: string): Promise<{ threadId: 
   return { threadId, response };
 }
 
-async function spawnCodexResume(cwd: string, threadId: string, prompt: string): Promise<{ response: string }> {
+async function spawnCodexResume(cwd: string, threadId: string, prompt: string, cancelSignal?: AbortSignal): Promise<{ response: string }> {
   const child = Bun.spawn(['codex', 'exec', 'resume', threadId,
     '--dangerously-bypass-approvals-and-sandbox', '-c', 'model_provider=imtoagent', '-c', 'model=gpt-5.5', '--json', '--skip-git-repo-check', prompt], {
     cwd, stdout: 'pipe', stderr: 'pipe',
   });
+
+  // P4-2: 超时取消
+  if (cancelSignal) {
+    cancelSignal.addEventListener('abort', () => {
+      try { child.kill('SIGKILL'); } catch {}
+    }, { once: true });
+  }
 
   let stdout = '', stderr = '';
   try {
@@ -107,7 +121,8 @@ async function spawnCodexResume(cwd: string, threadId: string, prompt: string): 
 
 async function runViaAppServer(
   cwd: string, prompt: string, chatId: string, session: Session,
-  isFresh: boolean, systemPrompt?: string, onProgress?: (text: string) => Promise<void>
+  isFresh: boolean, systemPrompt?: string, onProgress?: (text: string) => Promise<void>,
+  cancelSignal?: AbortSignal
 ): Promise<{ threadId: string; response: string; usage: { inputTokens: number; outputTokens: number } }> {
   let turnCount = 0;
   const manager = getAppServerManager();
@@ -131,6 +146,10 @@ async function runViaAppServer(
   const MAX_DURATION = 600_000; // 10 分钟
 
   for await (const event of client.receiveEvents()) {
+    if (cancelSignal?.aborted) {
+      console.log('[CodexAdapter] Task cancelled via abort signal');
+      throw new Error('Task cancelled');
+    }
     if (Date.now() - startTime > MAX_DURATION) {
       console.error('[CodexAdapter] app-server task timed out (10min)');
       break;
@@ -200,7 +219,7 @@ export class CodexAdapter implements AgentAdapter {
 
     try {
       const r = await runViaAppServer(cwd, effectiveText, input.chatId, session, isFresh, overrideSystemPrompt,
-      async (t: string) => { try { await input.sendProgress?.(t); } catch {} });
+        async (t: string) => { try { await input.sendProgress?.(t); } catch {} }, input.cancelSignal);
       response = r.response;
       execServerUsage = r.usage;
     } catch (appErr: unknown) {
@@ -211,7 +230,7 @@ export class CodexAdapter implements AgentAdapter {
         try {
           sessionAny.codexThreadId = undefined;
           const r2 = await runViaAppServer(cwd, effectiveText, input.chatId, session, true, overrideSystemPrompt,
-            async (t: string) => { try { await input.sendProgress?.(t); } catch {} });
+            async (t: string) => { try { await input.sendProgress?.(t); } catch {} }, input.cancelSignal);
           response = r2.response;
           execServerUsage = r2.usage;
           console.error(`[CodexAdapter] app-server thread rebuilt successfully`);
@@ -227,12 +246,12 @@ export class CodexAdapter implements AgentAdapter {
       getAppServerManager().removeClient(input.chatId);
       input.sendProgress?.('⚙️ Processing... (CLI mode, no streaming progress)').catch(() => {});
       if (isFresh || !sessionAny.codexThreadId) {
-        const r = await spawnCodexExec(cwd, effectiveText);
+        const r = await spawnCodexExec(cwd, effectiveText, input.cancelSignal);
         sessionAny.codexThreadId = r.threadId;
         session.metadata.codexThreadId = r.threadId;
         response = r.response;
       } else {
-        const r = await spawnCodexResume(cwd, sessionAny.codexThreadId, effectiveText);
+        const r = await spawnCodexResume(cwd, sessionAny.codexThreadId, effectiveText, input.cancelSignal);
         response = r.response;
       }
     }

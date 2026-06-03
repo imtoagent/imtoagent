@@ -313,15 +313,15 @@ describe("filterAndSend", () => {
     expect(sent).toBe(false);
   });
 
-  it("cron session does NOT filter HEARTBEAT_OK (semantic isolation)", () => {
+  it("cron session filters HEARTBEAT_OK (prevents leak)", () => {
     let sent = false;
     const result = filterAndSend("heartbeat_ok", {
       sessionType: "cron",
       reply: async () => { sent = true; },
     });
-    expect(result.shouldSend).toBe(true);
-    expect(result.reason).toBe("normal");
-    expect(sent).toBe(true);
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
   });
 
   it("heartbeat session sends normal content", () => {

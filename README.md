@@ -404,6 +404,17 @@ bun run bin/imtoagent setup
 bun run bin/imtoagent status
 ```
 
+## Agent Skill
+
+imtoagent 自带系统级 Skill（`skills/imtoagent/`），安装后自动注册到 `~/.agents/skills/imtoagent/`。Agent 加载后可直接操作网关能力，无需阅读源码。
+
+| 子模块 | 用途 |
+|--------|------|
+| `references/cron.md` | 定时任务管理（CRUD via `scripts/task.sh`） |
+| `references/goal.md` | Goal 系统（创建/追踪/管理自动化任务） |
+| `references/health.md` | 健康检查 & 调试（端口/进程/日志/排查） |
+| `references/im-capabilities.md` | IM 消息能力速查（文本/图片/文件/按钮/卡片） |
+
 ## License
 
 MIT

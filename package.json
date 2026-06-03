@@ -12,6 +12,7 @@
     "bin/",
     "templates/",
     "scripts/",
+    "skills/",
     "README.md",
     "bin/imtoagent.ts",
     "bin/imtoagent.cjs",
