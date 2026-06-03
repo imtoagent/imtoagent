@@ -1,7 +1,7 @@
 {
   "name": "imtoagent",
-  "version": "0.4.4",
-  "description": "IM \u2194 Agent \u7edf\u4e00\u7f51\u5173 \u2014 \u98de\u4e66/Telegram/\u5fae\u4fe1/\u4f01\u4e1a\u5fae\u4fe1\u5bf9\u63a5 Claude Code/Codex/OpenCode",
+  "version": "0.4.5",
+  "description": "IM ↔ Agent 统一网关 — 飞书/Telegram/微信/企业微信对接 Claude Code/Codex/OpenCode",
   "type": "module",
   "bin": {
     "imtoagent": "./bin/imtoagent.cjs"
