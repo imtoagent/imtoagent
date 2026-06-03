@@ -1,6 +1,7 @@
 # Goal Engine 技术方案
 
-> 状态: V2.3 — 评审修订版 | 日期: 2026-06-03
+> 状态: V2.4 — Phase 1 已完成 | 日期: 2026-06-03
+> Phase 1 核心引擎 + 集成 + 精确触发 ✅ 完成（412 测试通过）
 
 ---
 
@@ -1055,7 +1056,7 @@ interface ConditionEvaluator {
 
 > 当前文档改动量 ~900 行，建议拆分为两个 Phase，每步可独立验证。
 
-### Phase 1：核心引擎（可独立验证的最小可用版本）
+### Phase 1：核心引擎 ✅ 已完成（2026-06-03）
 
 | 模块 | 文件 | 说明 |
 |------|------|------|
@@ -1070,7 +1071,7 @@ interface ConditionEvaluator {
 
 **不包含**：Tool Registry、条件直接评估、多条件组合、管理协议。
 
-### Phase 2：Tool Registry + 管理协议
+### Phase 2：Tool Registry + 管理协议 🔄 进行中
 
 | 模块 | 文件 | 说明 |
 |------|------|------|
@@ -1088,7 +1089,7 @@ interface ConditionEvaluator {
 
 > 每个 Phase 完成后需要对应测试，不裸上线。
 
-### Phase 1 测试（集成测试为主）
+### Phase 1 测试 ✅ 完成（11 个场景全部通过）
 
 | # | 测试场景 | 验证点 | 类型 |
 |---|---------|-------|------|
@@ -1144,6 +1145,26 @@ tests/goal-engine/
 - [ ] 多条件组合（AND/OR，Q6 的后续）
 - [ ] 条件直接评估（Q11 的后续，减少 Agent 调用）
 - [ ] Goal 执行历史可视化（统计面板）
+
+---
+
+## 十三、Phase 1 完成记录
+
+### 2026-06-03 Phase 1 核心引擎 + 集成 + 精确触发 完成
+
+| 模块 | 文件 | 状态 |
+|------|------|------|
+| Goal 类型定义 | `modules/core/goal-types.ts` (165L) | ✅ |
+| Goal Store | `modules/core/goal-store.ts` (380L) | ✅ |
+| Goal Engine | `modules/core/goal-engine.ts` (441L) | ✅ |
+| 心跳集成 | `modules/core/heartbeat-scheduler.ts` (扩展) | ✅ |
+| 精确触发 | setTimeout + 心跳兜底 | ✅ |
+| 单元测试 | `tests/goal-engine.test.ts` (29 测试) | ✅ |
+| Store 测试 | `tests/goal-store.test.ts` (269L) | ✅ |
+| 集成测试 | `tests/goal-integration.test.ts` (11 测试) | ✅ |
+| **总计** | **412 测试全部通过** | **✅ 零回归** |
+
+**验证场景**：用户说"1点下雨提醒我带伞"→ 自动创建 Goal → 到期检查天气 → 发消息 ✅
 
 ---
 
