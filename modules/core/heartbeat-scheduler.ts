@@ -244,6 +244,8 @@ export class HeartbeatScheduler {
     // 4. 解析 session 目标
     const target = this._resolver.resolveHeartbeat();
     const session = await this._resolver.getOrCreateSession(target);
+    // 获取真实 IM chatId（用于告警和回复投递到用户 IM，与 session 隔离无关）
+    const deliveryChatId = this._resolver.getLastActiveChatId();
 
     // 记录心跳 session 供 TaskPoller 使用
     this.heartbeatSession = session;
@@ -267,7 +269,9 @@ export class HeartbeatScheduler {
           sessionType: target.sessionType,
           lastHeartbeatText: this.lastHeartbeatText,
           reply: async (filteredText: string) => {
-            await this.sendToIM(filteredText, target.chatId);
+            // 回复投递到真实 IM chatId，而不是隔离的 sessionKey
+            const sendTarget = deliveryChatId ?? target.chatId;
+            await this.sendToIM(filteredText, sendTarget);
             console.log(`[Heartbeat] ${this.config.botName} → IM sent (${filteredText.length} chars)`);
 
             const round = {
@@ -316,7 +320,8 @@ export class HeartbeatScheduler {
       if (this.consecutiveFailures >= 3 && this.config.showAlerts) {
         const alertMsg = `⚠️ 心跳连续失败 ${this.consecutiveFailures} 次，请检查配置和连接。`;
         console.log(`[Heartbeat] ALERT: ${alertMsg}`);
-        await this.sendToIM(alertMsg, target.chatId).catch(err => {
+        const sendTarget = deliveryChatId ?? target.chatId;
+        await this.sendToIM(alertMsg, sendTarget).catch(err => {
           console.error(`[Heartbeat] Failed to send alert:`, err.message);
         });
       }
@@ -532,6 +537,8 @@ export class HeartbeatScheduler {
   private async executeTaskWithTimeout(task: ScheduledTask, session: Session, timeoutMs: number): Promise<'success' | 'timeout'> {
     const target = this._resolver.resolveCron(task.name);
     const taskSession = await this._resolver.getOrCreateSession(target);
+    // 获取真实 IM chatId 用于告警和回复投递
+    const deliveryChatId = this._resolver.getLastActiveChatId();
 
     // P4-2: 超时取消 — 使用 AbortController 真正取消底层 Agent 调用
     const abortController = new AbortController();
@@ -580,7 +587,8 @@ export class HeartbeatScheduler {
           lastHeartbeatText: undefined,
           reply: async (filteredText: string) => {
             console.log(`[Cron] Task ${task.name} → IM: ${filteredText.slice(0, 200)}`);
-            await this.sendToIM(filteredText, target.chatId);
+            const sendTarget = deliveryChatId ?? target.chatId;
+            await this.sendToIM(filteredText, sendTarget);
           },
         });
         if (!result.shouldSend) {
@@ -620,11 +628,13 @@ export class HeartbeatScheduler {
 
     console.warn(`[Cron] ALERT: ${alertMsg.replace(/\n/g, ' | ')}`);
 
-    // 发送到 IM（尝试获取最后活跃的 chatId）
+    // 发送到 IM（使用最后活跃的真实 IM chatId）
     try {
-      const target = this._resolver.resolveHeartbeat();
-      if (target?.chatId) {
-        await this.sendToIM(alertMsg, target.chatId);
+      const deliveryChatId = this._resolver.getLastActiveChatId();
+      if (deliveryChatId) {
+        await this.sendToIM(alertMsg, deliveryChatId);
+      } else {
+        console.warn(`[Cron] No active IM chatId for alert, skipping delivery`);
       }
     } catch (e: any) {
       console.error(`[Cron] Failed to send alert:`, e.message);

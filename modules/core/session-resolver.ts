@@ -38,13 +38,17 @@ export class SessionResolver {
 
   /**
    * 解析心跳 session 的目标
-   * L1: 优先使用追踪的真实 IM chatId
+   *
+   * 心跳 session 始终使用独立的 sessionKey 作为 chatId，
+   * 不与主 session 共享 chatId 命名空间，防止 Codex goal continuation
+   * 跨 session 泄漏上下文。
+   *
+   * 需要投递告警到真实 IM 时，使用 getLastActiveChatId()。
    */
   resolveHeartbeat(): ResolveTargetResult {
     const sessionKey = `${this.botKey}:heartbeat`;
-    const deliveryChatId = this.lastActiveChatIds.get(this.botKey);
     return {
-      chatId: deliveryChatId ?? sessionKey,
+      chatId: sessionKey,
       userId: undefined,
       sessionKey,
       sessionType: 'heartbeat',
@@ -53,17 +57,25 @@ export class SessionResolver {
 
   /**
    * 解析定时任务 session 的目标
-   * L1: 优先使用追踪的真实 IM chatId
+   *
+   * 与心跳 session 同理，使用独立的 sessionKey，不 fallback。
    */
   resolveCron(taskName: string): ResolveTargetResult {
     const sessionKey = `${this.botKey}:cron:${taskName}`;
-    const deliveryChatId = this.lastActiveChatIds.get(this.botKey);
     return {
-      chatId: deliveryChatId ?? sessionKey,
+      chatId: sessionKey,
       userId: undefined,
       sessionKey,
       sessionType: 'cron',
     };
+  }
+
+  /**
+   * 获取最后活跃的真实 IM chatId，用于告警投递。
+   * 无活跃记录时返回 null。
+   */
+  getLastActiveChatId(): string | null {
+    return this.lastActiveChatIds.get(this.botKey) ?? null;
   }
 
   /**
@@ -73,7 +85,7 @@ export class SessionResolver {
     return this.sessionManager.getOrCreateByKey(
       this.botKey,
       target.sessionKey,
-      { sessionType: target.sessionType } // P1-5: 确保新建 session 有正确的 sessionType
+      { sessionType: target.sessionType },
     );
   }
 }
