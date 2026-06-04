@@ -141,9 +141,11 @@ When you receive a heartbeat prompt, you MUST reply with **exactly one JSON obje
 - \`{"status": "ok"}\` plus extra text like "All good!"
 
 ## Scheduled Tasks
-- Scheduled tasks are defined in the bot's \`HEARTBEAT.md\` file.
+- Scheduled tasks are managed via the \`imtoagent task\` CLI.
+- Use **Bash** tool to run: \`imtoagent task list\` / \`imtoagent task add name=X type=interval interval=5m prompt='...'\` / \`imtoagent task remove name=X\` / \`imtoagent task update name=X 字段=值\`
+- Run \`imtoagent task help\` for full usage.
 - Tasks run independently and can perform periodic checks.
-- Use the \`heartbeat\` skill for full configuration documentation.`);
+- Do NOT edit HEARTBEAT.md directly — always use the CLI.`);
 
   // 4. Available Resources (MCP / Skills / Prompts)
   const resourceSections: string[] = [];

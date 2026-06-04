@@ -14,6 +14,8 @@ import type { ScheduledTask, TaskRunState } from './types';
 import { isTaskDue, parseHeartbeatTasks, parseInterval } from './heartbeat';
 import { TaskState } from './task-state';
 import { appendHistory as appendHistoryUtil } from './scheduling-utils';
+import { parseShanghaiTime } from './timezone';
+import { TaskLogger } from './task-logger';
 
 export interface TaskPollerConfig {
   /** 轮询间隔（毫秒），默认 1000 */
@@ -60,6 +62,8 @@ export class TaskPoller {
   private taskState: TaskState;
   // === Phase 2: 任务级互斥锁 ===
   private taskLocks: Map<string, { acquiredAt: number }> = new Map();
+  // === 治本：最近一次解析错误 ===
+  private lastParseErrors: { taskName: string; reason: string }[] = [];
 
   constructor(config: TaskPollerConfig) {
     this.config = config;
@@ -72,6 +76,9 @@ export class TaskPoller {
   start(): void {
     if (this.running) return;
     this.running = true;
+
+    // Task Observability: 初始化日志
+    TaskLogger.init();
 
     // P1-3: 检测进程重启前正在执行的任务
     this.detectInterruptedTasks();
@@ -94,6 +101,11 @@ export class TaskPoller {
         runState.interrupted = true;
         this.taskState.set(name, runState);
         console.warn(`[TaskPoller] Detected interrupted task: ${name} (started at ${new Date(runState.startedAt).toISOString()}, no result recorded)`);
+        TaskLogger.log({
+          event: 'task.interrupted',
+          name,
+          startedAt: runState.startedAt,
+        });
       }
     }
   }
@@ -121,6 +133,11 @@ export class TaskPoller {
    */
   getLockStatus(): ReadonlyMap<string, { acquiredAt: number }> {
     return this.taskLocks;
+  }
+
+  /** 治本：获取最近一次 HEARTBEAT.md 解析错误 */
+  getLastParseErrors(): { taskName: string; reason: string }[] {
+    return this.lastParseErrors;
   }
 
   /** P2-4: 暴露任务状态供调试 */
@@ -202,7 +219,16 @@ export class TaskPoller {
       return;
     }
 
-    let parsed = parseHeartbeatTasks(content);
+    let result = parseHeartbeatTasks(content);
+    // 治本：保存解析错误供外部查询
+    this.lastParseErrors = result.errors;
+    // 上报解析错误（治本：不再静默丢弃）
+    if (result.errors.length > 0) {
+      for (const err of result.errors) {
+        console.error(`[TaskPoller] ⚠️ HEARTBEAT.md 任务解析失败: ${err.reason}`);
+      }
+    }
+    let parsed = result.tasks;
     // bot 字段过滤
     if (botName) {
       parsed = parsed.filter(t => !t.bot || t.bot === botName);
@@ -233,6 +259,12 @@ export class TaskPoller {
           createdAt,
         });
         console.log(`[TaskPoller] Added task: ${task.name} (${task.type || 'interval'}, createdAt=${createdAt})`);
+        TaskLogger.log({
+          event: 'task.created',
+          name: task.name,
+          type: task.type || 'interval',
+          source: 'heartbeat',
+        });
       } else {
         // 更新任务定义（保留 createdAt）
         const entry = this.tasks.get(task.name)!;
@@ -279,6 +311,13 @@ export class TaskPoller {
         // 获取锁
         this.taskLocks.set(name, { acquiredAt: now });
 
+        // Task Observability: 任务被调度
+        TaskLogger.log({
+          event: 'task.scheduled',
+          name,
+          type: task.type || 'interval',
+        });
+
         // 跟踪 in-flight 任务
         const promise = this.fireTask(entry, name, runState).finally(() => {
           this.inFlight.delete(promise);
@@ -319,6 +358,14 @@ export class TaskPoller {
     let result: 'success' | 'timeout' | 'error' = 'success';
     let lastError: string | undefined;
 
+    // Task Observability: 任务开始执行
+    TaskLogger.log({
+      event: 'task.started',
+      name,
+      type: task.type || 'interval',
+      attempt: newState.runCount,
+    });
+
     try {
       // 执行回调
       await this.config.onTaskFire(task);
@@ -342,8 +389,25 @@ export class TaskPoller {
       newState.lastError = lastError;
       this.taskState.set(name, newState);
 
+      // Task Observability: 任务完成/失败
+      TaskLogger.log({
+        event: result === 'success' ? 'task.completed' : 'task.failed',
+        name,
+        type: task.type || 'interval',
+        durationMs: fireDuration,
+        ...(lastError ? { error: lastError } : {}),
+      });
+
       // 执行完成后，检查是否需要自动删除
       this.handleTaskCompletion(entry, name, newState, result);
+
+      // Task Observability: 追加到 task_state history
+      this.taskState.appendHistory(name, {
+        runAt: new Date(now).toISOString(),
+        durationMs: fireDuration,
+        result,
+        ...(lastError ? { error: lastError } : {}),
+      });
 
       // P4-4: 持久化历史记录
       if (task.history_file) {
@@ -370,6 +434,11 @@ export class TaskPoller {
       if (this.config.onTaskComplete) {
         this.config.onTaskComplete(task);
       }
+      TaskLogger.log({
+        event: 'task.deleted',
+        name: task.name,
+        reason: 'once_done',
+      });
       console.log(`[TaskPoller] once task completed, removed from poller: ${task.name}`);
       return;
     }
@@ -387,6 +456,12 @@ export class TaskPoller {
         if (this.config.onTaskComplete) {
           this.config.onTaskComplete(task);
         }
+        TaskLogger.log({
+          event: 'task.deleted',
+          name: task.name,
+          reason: 'countdown_limit',
+          runCount: runState.runCount,
+        });
         console.log(`[TaskPoller] countdown task reached max_runs (${task.max_runs}), removed: ${task.name}`);
         return;
       }
@@ -401,6 +476,11 @@ export class TaskPoller {
         if (this.config.onTaskComplete) {
           this.config.onTaskComplete(task);
         }
+        TaskLogger.log({
+          event: 'task.deleted',
+          name: task.name,
+          reason: 'deadline',
+        });
         console.log(`[TaskPoller] countdown task passed deadline, removed: ${task.name}`);
         return;
       }
@@ -462,16 +542,11 @@ export class TaskPoller {
   }
 
   /**
-   * 解析 YYYY-MM-DD HH:MM 为时间戳（显式使用 Asia/Shanghai 时区）
+   * 解析 YYYY-MM-DD HH:MM 为时间戳（显式 Asia/Shanghai 时区）
    * P2-6: 避免依赖本地时区，确保跨环境一致性
    */
   private parseDateTime(str: string): number {
-    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
-    if (!match) return NaN;
-    const [, y, mo, d, h, mi] = match.map(Number);
-    // 构造 ISO 字符串并显式指定 Asia/Shanghai 时区
-    const isoStr = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}:00+08:00`;
-    return new Date(isoStr).getTime();
+    return parseShanghaiTime(str);
   }
 
   /**

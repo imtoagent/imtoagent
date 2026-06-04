@@ -88,6 +88,15 @@ export interface HeartbeatRound {
 }
 
 /** 单个任务的运行状态（v3 新增） */
+export interface HistoryEntry {
+  runAt: string;
+  durationMs?: number;
+  result?: string;
+  error?: string;
+  deliveryChatId?: string;
+  [key: string]: unknown;
+}
+
 export interface TaskRunState {
   lastRunAt: number;       // 上次执行时间戳
   runCount: number;        // 累计执行次数（countdown 需要）
@@ -98,6 +107,8 @@ export interface TaskRunState {
   // P4-4: 最近执行结果
   lastResult?: 'success' | 'timeout' | 'error';
   lastError?: string;      // 最近一次错误信息
+  // Task Observability: 最近 N 条执行历史
+  history?: HistoryEntry[];
 }
 
 /** 任务类型 */

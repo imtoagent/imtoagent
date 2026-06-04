@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import { PromptsManager } from '../utils/prompts-manager';
+import { formatShanghaiTimeShort } from '../core/timezone';
 
 export async function cmdPrompts(...args: string[]): Promise<void> {
   const subCmd = args[0] || 'list';
@@ -47,7 +48,7 @@ async function cmdPromptsList(): Promise<void> {
   console.log('─'.repeat(60));
 
   for (const p of prompts) {
-    const mtime = p.mtime.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const mtime = p.mtime.getTime() > 0 ? formatShanghaiTimeShort(p.mtime.getTime()) : '—';
     console.log(pad(p.name, 24) + pad(formatSize(p.size), 10) + mtime);
   }
   console.log();

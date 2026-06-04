@@ -21,6 +21,15 @@ export interface TaskStateEntry {
   lastError?: string;
   /** P1-3: 进程重启时标记，表示任务可能在重启前正在执行 */
   interrupted?: boolean;
+  /** Task Observability: 最近 N 条执行历史 */
+  history?: Array<{
+    runAt: string;
+    durationMs?: number;
+    result?: string;
+    error?: string;
+    deliveryChatId?: string;
+    [key: string]: unknown;
+  }>;
 }
 
 export class TaskState {
@@ -74,6 +83,28 @@ export class TaskState {
     return { ...entry, createdAt: entry.createdAt || Date.now() };
   }
 
+  /**
+   * Task Observability: 追加执行历史（最多保留 20 条）
+   */
+  appendHistory(name: string, entry: {
+    runAt: string;
+    durationMs?: number;
+    result?: string;
+    error?: string;
+    deliveryChatId?: string;
+    [key: string]: unknown;
+  }): void {
+    const state = this.states.get(name);
+    if (!state) return;
+    if (!state.history) state.history = [];
+    state.history.push(entry);
+    // 保留最近 20 条
+    if (state.history.length > 20) {
+      state.history = state.history.slice(-20);
+    }
+    this.persist();
+  }
+
   // ================================================================
   // 私有方法
   // ================================================================
@@ -102,7 +133,7 @@ export class TaskState {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
       const data = {
-        version: 1,
+        version: 2,
         updatedAt: new Date().toISOString(),
         states: Object.fromEntries(this.states),
       };

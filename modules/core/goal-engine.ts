@@ -22,6 +22,7 @@ import { isGoalDue } from './goal-types';
 import { GoalStore } from './goal-store';
 import type { ToolRegistry } from '../agent/tool-registry';
 import { appendHistory as appendHistoryUtil } from './scheduling-utils';
+import { formatShanghaiTimeShort } from './timezone';
 
 // ================================================================
 // Prompt 构造
@@ -187,6 +188,9 @@ export interface GoalExecuteContext {
   /** 发送 IM 消息 */
   sendIM: (chatId: string, text: string) => Promise<void>;
 
+  /** 获取真实会话 chatId（兜底 target/sourceChatId 为空时使用） */
+  resolveChatId?: () => string | undefined;
+
   /** 工作目录（历史文件路径） */
   workspaceDir?: string;
 
@@ -247,9 +251,19 @@ export class GoalEngine {
       totalDurationMs: 0,
     };
 
+    // Scan summary — always log (even zero-due)
+    const activeCount = this.store.getActive().length;
+    const totalGoalCount = this.store.list().length;
+    const nextDue = this.store.getNextDue(now);
+    const nextDueStr = nextDue
+      ? `next ${nextDue.goal.id} at ${formatShanghaiTimeShort(nextDue.nextRun.getTime())}`
+      : 'no upcoming';
     if (dueGoals.length === 0) {
+      console.log(`[GoalEngine] Scan: ${totalGoalCount} total, ${activeCount} active, 0 due (${nextDueStr})`);
       return stats;
     }
+    console.log(`[GoalEngine] Scan: ${totalGoalCount} total, ${activeCount} active, ${dueGoals.length} due → ${nextDueStr}`);
+
 
     const overallStart = Date.now();
 
@@ -292,7 +306,8 @@ export class GoalEngine {
     for (const result of results) {
       if (result.status === 'fulfilled') {
         const { action } = result.value;
-        stats.executedCount++;
+        // executedCount 在有效执行时才计入
+        if (action !== "skipped") stats.executedCount++;
         switch (action) {
           case 'done': stats.doneCount++; break;
           case 'skip': stats.skipCount++; break;
@@ -412,95 +427,6 @@ export class GoalEngine {
   private async executeGoal(goal: Goal, _stats: GoalEngineStats): Promise<void> {
     await this.executeGoalWithResult(goal);
   }
-    const timeoutMs = this.ctx.timeoutMs || 60_000;
-    const startMs = Date.now();
-    const abortController = new AbortController();
-
-    // 获取执行锁
-    const lock = this.store.acquireLock(goal.id);
-    if (!lock) {
-      abortController.abort();
-      console.log(`[GoalEngine] Goal ${goal.id} lock acquire failed`);
-      return;
-    }
-
-    // Phase 2: 按需注入工具
-    const injectedTools: string[] = [];
-    try {
-      // 标记执行中
-      this.store.markActive(goal.id);
-
-      // Phase 2: 根据 Goal 条件注入所需工具
-      if (this.ctx.toolRegistry) {
-        const needed = this.resolveNeededTools(goal);
-        if (needed.length > 0) {
-          const actuallyInjected = this.ctx.toolRegistry.injectNeeded(needed);
-          injectedTools.push(...actuallyInjected);
-        }
-      }
-
-      // 构造 Prompt
-      const prompt = buildGoalPrompt(goal);
-      console.log(`[GoalEngine] Executing ${goal.id} (${goal.type}): ${goal.metadata.rawInput}`);
-
-      // Phase 2: 获取已注入的工具列表（OpenAI 格式）
-      const tools = this.ctx.toolRegistry?.getOpenAIFormat();
-
-      // 调 Agent（带超时保护 + 真正取消）
-      let reply: string;
-      try {
-        const agentPromise = this.ctx.executeAgent(prompt, {
-          timeoutMs,
-          cancelSignal: abortController.signal,
-          ...(tools && tools.length > 0 ? { tools } : {}),
-        });
-        reply = await Promise.race([
-          agentPromise,
-          new Promise<string>((_, reject) =>
-            setTimeout(() => {
-              abortController.abort();
-              reject(new Error('execution_timeout'));
-            }, timeoutMs),
-          ),
-        ]);
-      } catch (e: any) {
-        const duration = Date.now() - startMs;
-        console.error(`[GoalEngine] Agent execution failed for ${goal.id}:`, e.message);
-        this.store.markFailed(goal.id, e.message);
-        writeGoalHistory(goal.id, 'failed', duration, e.message, this.ctx.workspaceDir);
-        stats.failedCount++;
-        stats.executedCount++;
-        return;
-      }
-
-      // 解析结果
-      const result = parseGoalResult(reply, goal.id);
-      const duration = Date.now() - startMs;
-      stats.executedCount++;
-
-      // 处理结果
-      await this.handleGoalResult(goal, result, reply, duration);
-
-      // 统计
-      switch (result.action) {
-        case 'done': stats.doneCount++; break;
-        case 'skip': stats.skipCount++; break;
-        case 'failed': stats.failedCount++; break;
-        case 'unknown': stats.unknownCount++; break;
-      }
-    } finally {
-      // Phase 2: 清理注入的工具
-      if (this.ctx.toolRegistry && injectedTools.length > 0) {
-        this.ctx.toolRegistry.removeInjected(injectedTools);
-      }
-      // 确保清理 AbortController（防止孤儿进程）
-      if (!abortController.signal.aborted) {
-        abortController.abort();
-      }
-      // finally 确保释放锁
-      this.store.releaseLock(goal.id);
-    }
-  }
 
   /**
    * 处理 Goal 执行结果
@@ -589,7 +515,14 @@ export class GoalEngine {
     // 如果 action 是 send_message，需要将消息发送到 IM
     // Agent 可能已经在回复中包含了消息内容，也可能没有
     if (goal.action.type === 'send_message' && action === 'done') {
-      const targetChatId = goal.action.target || goal.metadata.sourceChatId;
+      const targetChatId =
+        goal.action.target ||
+        goal.metadata.sourceChatId ||
+        this.ctx.resolveChatId?.() ||
+        '';
+      if (!targetChatId) {
+        console.error(`[GoalEngine] No valid chatId for send_message (goal ${goal.id}), skipping IM`);
+      }
       const content = goal.action.content || '';
       if (content) {
         try {

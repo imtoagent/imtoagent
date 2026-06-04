@@ -12,6 +12,7 @@ import type {
   GoalPersisted,
 } from './goal-types';
 import { generateGoalId } from './goal-types';
+import { getShanghaiDateParts } from './timezone';
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟
 
@@ -119,6 +120,23 @@ export class GoalStore {
       if (!g.lifecycle.nextRunAt) return false;
       return new Date(g.lifecycle.nextRunAt) <= ref;
     });
+  }
+
+  /**
+   * 获取下一个到期的 Goal（最早 nextRunAt 的活跃 Goal）
+   */
+  getNextDue(now?: Date): { goal: Goal; nextRun: Date } | null {
+    const ref = now ?? new Date();
+    let earliest: { goal: Goal; nextRun: Date } | null = null;
+    for (const g of this.getActive()) {
+      if (!g.lifecycle.nextRunAt) continue;
+      const nextRun = new Date(g.lifecycle.nextRunAt);
+      if (nextRun <= ref) continue;
+      if (!earliest || nextRun < earliest.nextRun) {
+        earliest = { goal: g, nextRun };
+      }
+    }
+    return earliest;
   }
 
   /**
@@ -244,15 +262,32 @@ export class GoalStore {
 
   /**
    * 清理过期/已完成的 Goal
+   * - 有 expiresAt 的：过期即清理
+   * - 无 expiresAt 的：done/cancelled 超过 24 小时后清理，防止无限积累
    */
   cleanup(): number {
     const now = new Date();
+    const DONE_TTL_MS = 24 * 60 * 60 * 1000; // 24 小时
     let removed = 0;
     for (const [id, goal] of this.goals) {
       if (goal.lifecycle.status === 'done' || goal.lifecycle.status === 'cancelled') {
-        if (goal.lifecycle.expiresAt && new Date(goal.lifecycle.expiresAt) <= now) {
-          this.goals.delete(id);
-          removed++;
+        // 有 expiresAt：按 expiresAt 判断
+        if (goal.lifecycle.expiresAt) {
+          if (new Date(goal.lifecycle.expiresAt) <= now) {
+            this.goals.delete(id);
+            removed++;
+          }
+        } else {
+          // 无 expiresAt：done/cancelled 超过 24 小时后清理
+          if (goal.lifecycle.lastRunAt) {
+            const completedAt = new Date(goal.lifecycle.lastRunAt).getTime();
+            if (now.getTime() - completedAt > DONE_TTL_MS) {
+              this.goals.delete(id);
+              removed++;
+            }
+          } else {
+            // lastRunAt 也没有（手动创建的初始状态），保守保留
+          }
         }
       }
     }
@@ -283,7 +318,7 @@ export class GoalStore {
   }
 
   /**
-   * 计算下次执行时间
+   * 计算下次执行时间（显式 Asia/Shanghai 时区）
    */
   private computeNextRun(goal: Goal, from: Date): Date | null {
     const repeat = goal.lifecycle.repeat;
@@ -295,23 +330,26 @@ export class GoalStore {
     }
 
     if (repeat === 'daily') {
-      const next = new Date(from);
-      next.setDate(next.getDate() + 1);
       if (goal.trigger.time) {
         const [h, m] = goal.trigger.time.split(':').map(Number);
-        next.setHours(h, m, 0, 0);
+        // 明天上海时间
+        const tomorrowMs = from.getTime() + 24 * 60 * 60 * 1000;
+        const tParts = getShanghaiDateParts(tomorrowMs);
+        const iso = `${tParts.year}-${String(tParts.month).padStart(2, '0')}-${String(tParts.day).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+08:00`;
+        return new Date(iso);
       }
-      return next;
+      return new Date(from.getTime() + 24 * 60 * 60 * 1000);
     }
 
     if (repeat === 'weekly') {
-      const next = new Date(from);
-      next.setDate(next.getDate() + 7);
+      const weekLaterMs = from.getTime() + 7 * 24 * 60 * 60 * 1000;
       if (goal.trigger.time) {
         const [h, m] = goal.trigger.time.split(':').map(Number);
-        next.setHours(h, m, 0, 0);
+        const wParts = getShanghaiDateParts(weekLaterMs);
+        const iso = `${wParts.year}-${String(wParts.month).padStart(2, '0')}-${String(wParts.day).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+08:00`;
+        return new Date(iso);
       }
-      return next;
+      return new Date(weekLaterMs);
     }
 
     if (repeat === 'custom' && goal.lifecycle.customCron) {
@@ -322,25 +360,30 @@ export class GoalStore {
   }
 
   /**
-   * 简单 cron 解析（支持分 时 * * *）
-   * 完整版建议用 cron-parser 库，v1 用简化实现
+   * 简单 cron 解析（支持分 时 * * *，显式 Asia/Shanghai 时区）
    */
   private parseCustomCron(cron: string, from: Date): Date | null {
-    // v1 简化：只支持 "分 时 * * *" 格式
     const parts = cron.trim().split(/\s+/);
     if (parts.length !== 5) return null;
 
     const [minute, hour] = parts;
-    const next = new Date(from);
     const m = parseInt(minute, 10);
     const h = parseInt(hour, 10);
 
     if (isNaN(m) || isNaN(h)) return null;
 
-    next.setHours(h, m, 0, 0);
+    const fromParts = getShanghaiDateParts(from.getTime());
+    const isoToday = `${fromParts.year}-${String(fromParts.month).padStart(2, '0')}-${String(fromParts.day).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+08:00`;
+    let next = new Date(isoToday);
+
     if (next <= from) {
-      next.setDate(next.getDate() + 1);
+      // 今天已过，推到明天
+      const tomorrowMs = from.getTime() + 24 * 60 * 60 * 1000;
+      const tParts = getShanghaiDateParts(tomorrowMs);
+      const isoTomorrow = `${tParts.year}-${String(tParts.month).padStart(2, '0')}-${String(tParts.day).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+08:00`;
+      next = new Date(isoTomorrow);
     }
+
     return next;
   }
 
@@ -365,6 +408,16 @@ export class GoalStore {
       console.error('[GoalStore] Failed to load goals.json, starting fresh:', err);
       this.goals = new Map();
     }
+  }
+
+  /**
+   * 运行时重新加载 goals.json（不丢失执行锁）
+   */
+  reload(): void {
+    const previousCount = this.goals.size;
+    this.goals.clear();
+    this.load();
+    console.log(`[GoalStore] Reloaded: ${previousCount} → ${this.goals.size} goals`);
   }
 
   /**

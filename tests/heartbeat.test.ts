@@ -244,45 +244,18 @@ describe("HEARTBEAT_ROUNDS_MAX", () => {
 });
 
 // ================================================================
-// isHeartbeatOk (output-router)
+// isHeartbeatOk (output-router) - Phase 1 重构后始终返回 false
 // ================================================================
 
 describe("isHeartbeatOk", () => {
-  it("matches exact HEARTBEAT_OK", () => {
-    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(true);
-  });
-
-  it("matches case variations", () => {
-    expect(isHeartbeatOk("heartbeat_ok")).toBe(true);
-    expect(isHeartbeatOk("Heartbeat_OK")).toBe(true);
-    expect(isHeartbeatOk("heartbeat ok")).toBe(true);
-    expect(isHeartbeatOk("HEARTBEAT OK")).toBe(true);
-  });
-
-  it("matches with underscore or space", () => {
-    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(true);
-    expect(isHeartbeatOk("HEARTBEAT OK")).toBe(true);
-    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(true);
-  });
-
-  it("does not match partial", () => {
-    expect(isHeartbeatOk("I said HEARTBEAT_OK already")).toBe(false);
-    expect(isHeartbeatOk("HEARTBEAT_OKAY")).toBe(false);
-    expect(isHeartbeatOk("All good! HEARTBEAT_OK\nNow continuing...")).toBe(false);
-    expect(isHeartbeatOk("prefix\nHEARTBEAT_OK suffix")).toBe(false);
-  });
-
-  it("matches HEARTBEAT_OK on its own line", () => {
-    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(true);
-    expect(isHeartbeatOk("  heartbeat_ok  ")).toBe(true);
-    expect(isHeartbeatOk("HEARTBEAT_OK\n")).toBe(true);
-    expect(isHeartbeatOk("prefix\nHEARTBEAT_OK")).toBe(true);
-    expect(isHeartbeatOk("HEARTBEAT_OK\nsuffix")).toBe(true);
-    expect(isHeartbeatOk("line1\nHEARTBEAT_OK\nline3")).toBe(true);
-  });
-
-  it("matches when it is the only content (with whitespace)", () => {
-    expect(isHeartbeatOk("  HEARTBEAT_OK  \n")).toBe(true);
+  it("always returns false after Phase 1 refactoring", () => {
+    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(false);
+    expect(isHeartbeatOk("heartbeat_ok")).toBe(false);
+    expect(isHeartbeatOk("Heartbeat_OK")).toBe(false);
+    expect(isHeartbeatOk("heartbeat ok")).toBe(false);
+    expect(isHeartbeatOk("HEARTBEAT OK")).toBe(false);
+    expect(isHeartbeatOk("")).toBe(false);
+    expect(isHeartbeatOk("some text")).toBe(false);
   });
 });
 
@@ -302,26 +275,26 @@ describe("filterAndSend", () => {
     expect(sent).toBe(true);
   });
 
-  it("heartbeat session filters HEARTBEAT_OK", () => {
-    let sent = false;
+  it("heartbeat session sends HEARTBEAT_OK (no longer filtered)", () => {
+    let sentText = "";
     const result = filterAndSend("HEARTBEAT_OK", {
       sessionType: "heartbeat",
-      reply: async () => { sent = true; },
+      reply: async (t: string) => { sentText = t; },
     });
-    expect(result.shouldSend).toBe(false);
-    expect(result.reason).toBe("heartbeat_ok_filtered");
-    expect(sent).toBe(false);
+    expect(result.shouldSend).toBe(true);
+    expect(result.reason).toBe("normal");
+    expect(sentText).toBe("HEARTBEAT_OK");
   });
 
-  it("cron session filters HEARTBEAT_OK (prevents leak)", () => {
-    let sent = false;
+  it("cron session sends heartbeat_ok (no longer filtered)", () => {
+    let sentText = "";
     const result = filterAndSend("heartbeat_ok", {
       sessionType: "cron",
-      reply: async () => { sent = true; },
+      reply: async (t: string) => { sentText = t; },
     });
-    expect(result.shouldSend).toBe(false);
-    expect(result.reason).toBe("heartbeat_ok_filtered");
-    expect(sent).toBe(false);
+    expect(result.shouldSend).toBe(true);
+    expect(result.reason).toBe("normal");
+    expect(sentText).toBe("heartbeat_ok");
   });
 
   it("heartbeat session sends normal content", () => {

@@ -17,6 +17,7 @@ import * as os from 'os';
 import type { AgentRuntime, SessionManager, MessageContext, Session, ScheduledTask } from './types';
 import type { AgentAdapter } from './types';
 import { parseInterval, getPhaseOffset, removeTaskFromHeartbeatFile } from './heartbeat';
+import { formatShanghaiTimeShort } from './timezone';
 import { SessionResolver } from './session-resolver';
 import { TaskPoller } from './task-poller';
 import { GoalEngine } from './goal-engine';
@@ -24,6 +25,7 @@ import { GoalStore } from './goal-store';
 import { GoalManager } from './goal-manager';
 import { ToolRegistry } from '../agent/tool-registry';
 import { weatherTool } from '../tools/weather';
+import { TaskLogger } from './task-logger';
 
 /** Cron/heartbeat session 会话轮次上限，超过后自动新建 thread 防止上下文爆炸 */
 const MAX_CRON_ROUNDS = 10;
@@ -127,6 +129,7 @@ export class HeartbeatScheduler {
       sendIM: async (chatId, text) => {
         await this.config.sendMessage(chatId, text);
       },
+      resolveChatId: () => this._resolver.getLastActiveChatId(),
       workspaceDir: this.config.defaultCwd,
       timeoutMs: this.config.defaults?.timeout
         ? this.parseTimeout(this.config.defaults.timeout)
@@ -219,8 +222,13 @@ export class HeartbeatScheduler {
     // 1. 同步 HEARTBEAT.md 任务（文件变更驱动，心跳作为兜底定期检查）
     this.syncTasks();
 
-    // 2. Goal 系统：检查并执行到期 Goal
+    // 2. Goal 系统：清理过期 + 重新加载 + 检查并执行到期 Goal
     try {
+      const cleaned = this.goalStore.cleanup(); // 清理过期/已完成的 Goal
+      if (cleaned > 0) {
+        console.log(`[Heartbeat] ${this.config.botName}: cleaned up ${cleaned} expired goal(s)`);
+      }
+      this.goalStore.reload(); // P3: 每次 tick 前同步文件变更
       const now = new Date();
       const goalStats = await this.goalEngine.processDueGoals(now);
       if (goalStats.dueCount > 0) {
@@ -229,6 +237,8 @@ export class HeartbeatScheduler {
           `skip=${goalStats.skipCount} fail=${goalStats.failedCount} unknown=${goalStats.unknownCount}` +
           ` (${goalStats.totalDurationMs}ms)`,
         );
+      } else {
+        console.log(`[Heartbeat] ${this.config.botName}: Goal Engine 0 due, ${goalStats.totalDurationMs}ms`);
       }
 
       // 精确触发：为 30 分钟内的活跃 Goal 注册 setTimeout
@@ -246,6 +256,12 @@ export class HeartbeatScheduler {
       const content = this.readHeartbeatFile();
       if (content) {
         this.taskPoller.syncTasks(content, this.config.botName);
+        // 治本：检查解析错误并告警
+        const parseErrors = this.taskPoller.getLastParseErrors();
+        if (parseErrors.length > 0) {
+          const errorMsg = parseErrors.map(e => `• ${e.reason}`).join('\n');
+          console.error(`[Heartbeat] ${this.config.botName}: HEARTBEAT.md 解析失败 (${parseErrors.length} 个任务被丢弃):\n${errorMsg}`);
+        }
       }
     } catch (e: any) {
       console.error(`[Heartbeat] Failed to sync tasks:`, e.message);
@@ -278,7 +294,7 @@ export class HeartbeatScheduler {
 
       console.log(
         `[GoalEngine] Scheduling precise trigger for ${goal.id} ` +
-        `in ${Math.round(delayMs / 1000)}s (at ${nextRun.toLocaleTimeString('zh-CN')})`,
+        `in ${Math.round(delayMs / 1000)}s (at ${formatShanghaiTimeShort(nextRun.getTime())})`,
       );
 
       const timer = setTimeout(() => {
@@ -387,6 +403,15 @@ export class HeartbeatScheduler {
       if (attempt > 1) {
         const backoffMs = Math.pow(2, attempt - 2) * 1000;
         console.log(`[Cron] Task ${task.name} retry attempt ${attempt}/${maxRetries}, waiting ${backoffMs}ms`);
+        TaskLogger.log({
+          event: 'task.retry',
+          taskName: task.name,
+          taskType: task.type,
+          attempt,
+          maxRetries,
+          backoffMs,
+          error: lastError,
+        });
         await this.sleep(backoffMs);
       }
 
@@ -452,10 +477,19 @@ export class HeartbeatScheduler {
 
     // P4-2: 超时取消 — 使用 AbortController 真正取消底层 Agent 调用
     const abortController = new AbortController();
+    let settled = false;
     const timeoutPromise = new Promise<'timeout'>((resolve) =>
       setTimeout(() => {
+        if (settled) return; // processMessage already won the race
+        settled = true;
         abortController.abort();
         console.log(`[Cron] Task ${task.name} timed out, cancelled`);
+        TaskLogger.log({
+          event: 'task.timeout',
+          taskName: task.name,
+          taskType: task.type,
+          timeoutMs,
+        });
         resolve('timeout');
       }, timeoutMs)
     );
@@ -497,11 +531,24 @@ export class HeartbeatScheduler {
         // P2-1: 识别 SKIP_TASK，不发送到 IM
         if (text.trim() === 'SKIP_TASK') {
           console.log(`[Cron] Task ${task.name} condition not met, skipped`);
+          TaskLogger.log({
+            event: 'task.skipped',
+            taskName: task.name,
+            taskType: task.type,
+            reason: 'condition_not_met',
+          });
           return;
         }
         console.log(`[Cron] Task ${task.name} → IM: ${text.slice(0, 200)}`);
         const sendTarget = deliveryChatId ?? target.chatId;
         await this.sendToIM(text, sendTarget);
+        TaskLogger.log({
+          event: 'task.delivered',
+          taskName: task.name,
+          taskType: task.type,
+          deliveryChatId: sendTarget,
+          replyLength: text.length,
+        });
       },
       sendProgress: async (text: string) => {
         console.log(`[Cron] Task ${task.name} progress: ${text}`);
@@ -510,6 +557,7 @@ export class HeartbeatScheduler {
 
     console.log(`[Cron] Running task: ${task.name} prompt=${task.prompt.slice(0, 80)} timeout=${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`);
     const result = await Promise.race([this.runtime.processMessage(ctx, this.adapter, this.config.botName), timeoutPromise]);
+    settled = true; // prevent late timeout callback from firing
     this.sessionManager.persist(this.config.botId, taskSession);
 
     return result === 'timeout' ? 'timeout' : 'success';

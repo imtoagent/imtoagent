@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getSessionsDir } from '../utils/paths';
+import { formatShanghaiTimeShort, formatShanghaiTime } from '../core/timezone';
 
 // ================================================================
 // Main entry
@@ -121,7 +122,7 @@ async function cmdSessionList(args: string[], sessionsDir: string): Promise<void
 
   for (const s of filtered) {
     const lastUsed = s.lastUsed
-      ? s.lastUsed.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      ? formatShanghaiTimeShort(s.lastUsed.getTime())
       : 'never';
     const totalTokens = s.inputTokens + s.outputTokens;
     console.log(
@@ -188,7 +189,7 @@ function printSessionDetail(bot: string, data: Record<string, unknown>): void {
   console.log(`  Running:      ${data.running ? 'Yes' : 'No'}`);
   console.log(`  Start Fresh:  ${data.startFresh ? 'Yes' : 'No'}`);
 
-  const lastUsed = data.lastUsed ? new Date(data.lastUsed).toLocaleString('zh-CN') : 'never';
+  const lastUsed = data.lastUsed ? formatShanghaiTime(Number(data.lastUsed)) : 'never';
   console.log(`  Last Used:    ${lastUsed}`);
 
   if (data.backendSessionId || data.metadata?.sdkSessionId || data.metadata?.codexThreadId) {

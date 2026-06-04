@@ -203,7 +203,7 @@ describe('GoalStore - 状态迁移', () => {
     const g = store.get(goal.id)!;
     expect(g.lifecycle.runCount).toBe(1);
     expect(g.lifecycle.status).toBe('pending');
-    expect(g.lifecycle.nextRunAt).toContain('2026-06-04');
+    expect(g.lifecycle.nextRunAt).toContain('2026-06-05');
   });
 });
 

@@ -22,7 +22,17 @@ export class TaskManager {
    */
   listTasks(): ScheduledTask[] {
     const md = this.read();
-    return parseHeartbeatTasks(md);
+    const result = parseHeartbeatTasks(md);
+    return result.tasks;
+  }
+
+  /**
+   * 获取 HEARTBEAT.md 解析错误（治本：让调用方知道哪些任务被静默丢弃了）
+   */
+  getParseErrors(): { taskName: string; reason: string }[] {
+    const md = this.read();
+    const result = parseHeartbeatTasks(md);
+    return result.errors;
   }
 
   /**

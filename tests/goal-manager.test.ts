@@ -207,7 +207,7 @@ describe('GoalManager - cancelGoal', () => {
     expect(result.message).toContain('已取消');
 
     const updated = store.get('cancel_me')!;
-    expect(updated.lifecycle.status).toBe('cancelled');
+    expect(updated.lifecycle.status).toBe("cancelled");
   });
 
   test('取消不存在的 Goal', () => {
@@ -256,8 +256,7 @@ describe('GoalManager - pauseGoal / resumeGoal', () => {
     expect(result.message).toContain('已暂停');
 
     const updated = store.get('pause_me')!;
-    expect(updated.lifecycle.status).toBe('cancelled');
-    expect(updated.lifecycle.lastError).toBe('_paused');
+    expect(updated.lifecycle.status).toBe("paused");
   });
 
   test('恢复暂停的 Goal', () => {

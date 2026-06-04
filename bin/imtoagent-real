@@ -100,6 +100,9 @@ switch (command) {
   case 'prompts':
     await cmdPrompts(...process.argv.slice(3));
     break;
+  case 'task':
+    await cmdTask(...process.argv.slice(3));
+    break;
   case undefined: {
     const dataDir = getDataDir();
     const configPath = path.join(dataDir, 'config.json');
@@ -192,6 +195,11 @@ Usage:
   imtoagent skills install <source>           Install from GitHub/ZIP/local
   imtoagent prompts list                      List saved prompts
   imtoagent prompts sync                      Sync to backend configs
+  imtoagent task list                         List scheduled tasks
+  imtoagent task add name=X prompt=P          Create scheduled task
+  imtoagent task remove name=X                Delete scheduled task
+  imtoagent task update name=X 字段=值         Update task fields
+  imtoagent task help                         Show task command usage
 
 Data directory: ${getDataDir()}
 `);
@@ -1775,4 +1783,9 @@ async function cmdSkills(...args: string[]) {
 async function cmdPrompts(...args: string[]) {
   const { cmdPrompts } = await import('../modules/cli/prompts');
   await cmdPrompts(...args);
+}
+
+async function cmdTask(...args: string[]) {
+  const { cmdTask } = await import('../modules/cli/task-cli');
+  await cmdTask(...args);
 }

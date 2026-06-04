@@ -9,6 +9,50 @@ import * as path from 'path';
 // ===== 重启信号文件路径（统一固定，不依赖 getDataDir） =====
 const RESTART_SIGNAL_PATH = path.join(process.env.HOME!, '.imtoagent', '.restart_requested');
 
+// ===== 启动时日志轮转 =====
+function rotateStartupLogs(): void {
+  const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
+  const MAX_ROTATED = 5;
+  const logsDir = path.join(process.env.HOME!, '.imtoagent', 'logs');
+  const candidates = [
+    path.join(logsDir, 'stdout.log'),
+    path.join(logsDir, 'imtoagent.log'),
+    path.join(process.cwd(), 'logs', 'stdout.log'),
+  ];
+  // 也清理 /tmp/imtoagent.log（nohup 输出）
+  const tmpLog = '/tmp/imtoagent.log';
+  if (fs.existsSync(tmpLog)) {
+    try {
+      const stats = fs.statSync(tmpLog);
+      if (stats.size > MAX_LOG_SIZE) {
+        // 轮转: .5 删除, .4→.5, ..., 无后缀→.1
+        for (let i = MAX_ROTATED - 1; i >= 1; i--) {
+          const src = `${tmpLog}.${i}`;
+          const dst = `${tmpLog}.${i + 1}`;
+          if (fs.existsSync(src)) {
+            if (i + 1 > MAX_ROTATED) fs.unlinkSync(src);
+            else fs.renameSync(src, dst);
+          }
+        }
+        fs.renameSync(tmpLog, `${tmpLog}.1`);
+        console.error(`[Startup] Rotated /tmp/imtoagent.log (${(stats.size / 1024).toFixed(0)}KB)`);
+      }
+    } catch {}
+  }
+  // 清理超过 24 小时未更新的死 stdout.log
+  for (const logPath of candidates) {
+    try {
+      if (!fs.existsSync(logPath)) continue;
+      const stats = fs.statSync(logPath);
+      const ageHours = (Date.now() - stats.mtimeMs) / 3600000;
+      if (ageHours > 24) {
+        fs.unlinkSync(logPath);
+        console.error(`[Startup] Deleted stale log: ${logPath} (${Math.round(ageHours)}h old)`);
+      }
+    } catch {}
+  }
+}
+
 import * as Lark from '@larksuiteoapi/node-sdk';
 import {
   sharedState, loadProviders, getProviderConfig, saveActiveModel,
@@ -82,6 +126,7 @@ import { initCodexProxyConfig, resolveSupportedInputTypes } from './modules/prox
 import { checkRateLimit, setRateLimitConfig } from './modules/rate-limiter';
 import { setCurrentBot } from './modules/bot-context';
 import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath } from './modules/utils/paths';
+import { TimezoneManager } from './modules/core/timezone';
 
 // ===== SDK 核心 =====
 import { AgentRuntime, FileSessionManager, DefaultErrorHandler, DefaultStatsTracker } from './modules/core';
@@ -828,8 +873,26 @@ class Bot {
 
       // P3-2: 注入任务管理指引（高优先级）
       if (this.taskManager) {
-        systemPrompt += `\n\n## 任务管理（高优先级）\n当用户说「提醒我」「定时」「X分钟后」「每隔X」「多久后」「到X点」「重复提醒」等与定时/延迟任务相关的自然语言时，**你必须直接通过命令操作 HEARTBEAT.md 中的定时任务**，而不是手写 YAML 文件或调用系统工具（如 at、crontab、sleep 等）。这是用户预期的最丝滑路径。\n\n- **/tasks** — 列出所有任务\n- **/task-add** name=xxx type=once|scheduled|interval|countdown|conditional [after=10m|at=HH:MM|interval=5m] prompt='做什么' — 创建任务\n  type: interval(默认) | once | scheduled | countdown | conditional\n  interval 格式: 30s / 5m / 1h / 1d\n  after: once 专用，相对延迟，如 10m / 1h\n  at: once/scheduled 专用，如 "14:30" 或 "2026-06-03 14:30"\n  on: scheduled 专用，如 monday / 1st / weekday\n  prompt: 任务触发时 Agent 要做什么，用自然语言描述\n  on_failure: ignore | alert | retry（可选，默认 alert）\n- **/task-remove** 任务名 — 删除任务\n- **/task-update** name=任务名 字段=新值 — 更新任务\n\n**创建任务后，必须在回复中包含确认信息**：任务名称、类型、触发时间/条件，让用户知道任务已安排妥当。\n\n示例：\n用户：「10分钟后提醒我回家」\n你应该执行：/task-add name=remind-home type=once after=10m prompt="发送消息提醒老板：该回家了！"\n回复：「⏰ 已创建 remind-home 任务，10 分钟后提醒你回家。」\n\n示例：\n用户：「每天早上9点提醒我站会」\n你应该执行：/task-add name=standup-reminder type=scheduled at=09:00 prompt="提醒老板今天有站会"\n回复：「⏰ 已创建 standup-reminder 任务，每天早上 09:00 提醒站会。」\n\n示例：\n用户：「每隔1小时帮我检查磁盘」\n你应该执行：/task-add name=disk-check interval=1h prompt="执行 df -h 检查磁盘使用率，超过80%报警"\n回复：「⏰ 已创建 disk-check 间隔任务，每 1h 检查一次磁盘。」`;
+        systemPrompt += `\n\n## 任务管理（高优先级）\n当用户说「提醒我」「定时」「X分钟后」「每隔X」「多久后」「到X点」「重复提醒」等与定时/延迟任务相关的自然语言时，**你必须通过 \`imtoagent task\` CLI 操作定时任务**，而不是手写 YAML 文件或调用系统工具（如 at、crontab、sleep 等）。\n\n可用命令（通过 Bash 工具执行）：\n- \`imtoagent task list\` — 列出所有任务\n- \`imtoagent task add name=X type=T prompt=P [interval=5m|at=HH:MM|after=10m|cron=\"...\"]\` — 创建任务\n- \`imtoagent task remove name=X\` — 删除任务\n- \`imtoagent task update name=X 字段=新值\` — 更新任务\n- \`imtoagent task help\` — 查看完整用法\n\ntype 可选值: interval(默认) | once | scheduled | countdown | conditional | cron\n- interval: 如 30s / 5m / 1h / 1d\n- after: once 专用，相对延迟，如 10m / 1h\n- at: once/scheduled 专用，如 "14:30" 或 "2026-06-03 14:30"\n- on: scheduled 专用，如 monday / weekday\n- cron: cron 表达式\n- on_failure: ignore | alert | retry\n\n**创建任务后，必须在回复中包含确认信息**：任务名称、类型、触发时间/条件，让用户知道任务已安排妥当。\n\n示例：\n用户：「10分钟后提醒我回家」\n执行：\`imtoagent task add name=remind-home type=once after=10m prompt="发送消息提醒：该回家了！"\`\n回复：「⏰ 已创建 remind-home 任务，10 分钟后提醒你回家。」\n\n示例：\n用户：「每天早上9点提醒我站会」\n执行：\`imtoagent task add name=standup-reminder type=scheduled at=09:00 prompt="提醒今天有站会"\`\n回复：「⏰ 已创建 standup-reminder 任务，每天早上 09:00 提醒站会。」\n\n示例：\n用户：「每隔1小时帮我检查磁盘」\n执行：\`imtoagent task add name=disk-check type=interval interval=1h prompt="执行 df -h 检查磁盘使用率，超过80%报警"\`\n回复：「⏰ 已创建 disk-check 间隔任务，每 1h 检查一次磁盘。」`;
       }
+
+      // P2: Goal 协议拦截 — 在 Agent 回复发送到用户之前，检查是否包含 GOAL_* 管理指令
+      const goalReplyInterceptor = async (t: string) => {
+        if (this.heartbeatScheduler) {
+          const gm = this.heartbeatScheduler.getGoalManager();
+          if (gm) {
+            const processed = gm.processManagementCommand(t, chatId);
+            if (processed) {
+              // Agent 回复中包含 GOAL_* 协议，拦截并发送处理结果
+              console.log(`[${this.name}] Goal protocol intercepted: ${t.slice(0, 80)}`);
+              await this.reply(chatId, processed);
+              return;
+            }
+          }
+        }
+        // 无 Goal 协议，正常发送
+        await this.reply(chatId, t);
+      };
 
       // SDK Runtime 处理
       const result = await this.runtime.processMessage({
@@ -837,7 +900,7 @@ class Bot {
         workingDir: session.cwd || this.defaultCwd,
         model: this.activeModel,
         systemPrompt,
-        reply: async (t: string) => this.reply(chatId, t),
+        reply: goalReplyInterceptor,
         sendProgress: async (t: string) => this.sendProgress(chatId, t),
         sendBlocks: async (blocks) => this.sendFormattedReplyDirect(chatId, blocks),
         imCaps: this.im.getCapabilities(),
@@ -996,6 +1059,9 @@ process.on('SIGHUP', () => gracefulReload('SIGHUP'));
 // 主入口
 // ================================================================
 async function main() {
+  // 启动时清理旧日志（防无限增长）
+  rotateStartupLogs();
+
   const CONFIG_PATH = path.join(getDataDir(), 'config.json');
 
   // 首次部署：配置文件不存在或未初始化
@@ -1015,6 +1081,9 @@ async function main() {
 
   const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
   const config = JSON.parse(raw);
+
+  // 初始化时区（默认 Asia/Shanghai，可从 config.system.timeZone 覆盖）
+  TimezoneManager.init(config.system?.timeZone);
 
   // 检测是否是未编辑的模板（凭证还是占位符）
   const hasPlaceholder = Object.values(config.providers || {}).some((p: any) =>

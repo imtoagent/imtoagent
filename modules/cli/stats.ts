@@ -8,6 +8,7 @@
 import * as path from 'path';
 import { StatsPersist } from '../core/stats-persist';
 import { getDataDir } from '../utils/paths';
+import { getShanghaiDateParts } from '../core/timezone';
 
 // ================================================================
 // Main entry
@@ -39,15 +40,21 @@ export async function cmdStats(...args: string[]): Promise<void> {
 
   switch (mode) {
     case 'today': {
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const parts = getShanghaiDateParts();
+      const iso = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}T00:00:00+08:00`;
+      const startOfDay = new Date(iso);
       const records = stats.query({ since: startOfDay, until: now, bot: botFilter });
       printAggregate('Today', records, botFilter);
       break;
     }
     case 'week': {
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
-      startOfWeek.setHours(0, 0, 0, 0);
+      const parts = getShanghaiDateParts();
+      const dayOfWeek = parts.weekday; // 0=Sun, 1=Mon, ...
+      const daysSinceSunday = dayOfWeek;
+      const startOfWeekMs = new Date(
+        `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}T00:00:00+08:00`
+      ).getTime() - daysSinceSunday * 24 * 60 * 60 * 1000;
+      const startOfWeek = new Date(startOfWeekMs);
       const records = stats.query({ since: startOfWeek, until: now, bot: botFilter });
       printAggregate('This Week', records, botFilter);
       break;

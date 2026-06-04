@@ -13,6 +13,8 @@ import { getDataDir, getSessionsDir } from '../utils/paths';
 /** 全局 config.json 结构 */
 interface RawConfig {
   system?: {
+    /** IANA timezone, e.g. Asia/Shanghai, America/New_York (default: Asia/Shanghai) */
+    timeZone?: string;
     defaultProjectDir?: string;
     idleTimeoutMinutes?: number;
     maxReplyLength?: number;

@@ -41,6 +41,9 @@ export {
   hashCode,
   getPhaseOffset,
   parseInterval,
+  // 新增：解析错误类型（治本）
+  type ParseTaskError,
+  type ParseHeartbeatTasksResult,
   isTaskDue,
   getTaskRunState,
   updateTaskRunState,
@@ -80,3 +83,7 @@ export { AgentRuntime } from './runtime';
 // Phase 2: Goal 管理协议
 export { GoalManager, parseGoalManagement } from './goal-manager';
 export type { GoalManagementAction } from './goal-manager';
+
+// 时区管理
+export { TimezoneManager } from './timezone';
+export { parseShanghaiTime, parseTimeTodayShanghai, getShanghaiDateParts, formatShanghaiTime, formatShanghaiTimeShort, formatShanghaiTimeOnly } from './timezone';

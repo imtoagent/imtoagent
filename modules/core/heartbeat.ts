@@ -3,6 +3,7 @@
 // ================================================================
 
 import type { ScheduledTask, TaskRunState, OnFailureStrategy, TaskType } from './types';
+import { parseShanghaiTime, parseTimeTodayShanghai, getShanghaiDateParts } from './timezone';
 
 /** 心跳轮次硬上限 */
 export const HEARTBEAT_ROUNDS_MAX = 5;
@@ -129,14 +130,32 @@ export function stripHeartbeatTasksBlock(md: string): string {
  * 解析 HEARTBEAT.md 中的定时任务列表（v3 升级）
  * 支持所有 v3 任务类型和字段
  */
+export interface ParseTaskError {
+  taskName: string;
+  reason: string;
+}
+
+export interface ParseHeartbeatTasksResult {
+  tasks: ScheduledTask[];
+  errors: ParseTaskError[];
+}
+
+/**
+ * 解析 HEARTBEAT.md 中的定时任务列表（v3 升级）
+ * 支持所有 v3 任务类型和字段
+ * @param md HEARTBEAT.md 内容
+ * @param defaults 默认值配置
+ * @returns 解析结果，包含有效任务列表和解析错误
+ */
 export function parseHeartbeatTasks(
   md: string,
   defaults?: HeartbeatDefaults,
-): ScheduledTask[] {
+): ParseHeartbeatTasksResult {
   const resolvedDefaults = defaults ?? parseHeartbeatDefaults(md);
   const stripped = stripCodeBlocks(md);
   const lines = stripped.split('\n');
   const tasks: ScheduledTask[] = [];
+  const errors: ParseTaskError[] = [];
 
   let taskStartIndex = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -147,7 +166,7 @@ export function parseHeartbeatTasks(
     }
   }
 
-  if (taskStartIndex === -1) return [];
+  if (taskStartIndex === -1) return { tasks: [], errors: [] };
 
   let i = taskStartIndex + 1;
   while (i < lines.length) {
@@ -229,31 +248,43 @@ export function parseHeartbeatTasks(
 
       // 校验
       if ((task.type === 'interval' || task.type === 'countdown') && !task.interval) {
-        console.warn(`[parseHeartbeatTasks] Task "${task.name}" (${task.type}) missing interval, skipping`);
+        const msg = `Task "${task.name}" (${task.type}) missing interval, skipping`;
+        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        errors.push({ taskName: task.name, reason: msg });
         continue;
       }
       if (task.type === 'once' && !task.at && !task.after) {
-        console.warn(`[parseHeartbeatTasks] Task "${task.name}" (once) missing at/after, skipping`);
+        const msg = `Task "${task.name}" (once) missing at/after, skipping`;
+        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        errors.push({ taskName: task.name, reason: msg });
         continue;
       }
       if (task.type === 'scheduled' && !task.at) {
-        console.warn(`[parseHeartbeatTasks] Task "${task.name}" (scheduled) missing at, skipping`);
+        const msg = `Task "${task.name}" (scheduled) missing at, skipping`;
+        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        errors.push({ taskName: task.name, reason: msg });
         continue;
       }
       if (task.type === 'cron' && !task.cron) {
-        console.warn(`[parseHeartbeatTasks] Task "${task.name}" (cron) missing cron expression, skipping`);
+        const msg = `Task "${task.name}" (cron) missing cron expression, skipping`;
+        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        errors.push({ taskName: task.name, reason: msg });
         continue;
       }
 
       if (task.name && task.prompt) {
         tasks.push(task);
+      } else if (!task.prompt) {
+        const msg = `Task "${task.name}" missing prompt, skipping`;
+        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        errors.push({ taskName: task.name, reason: msg });
       }
     } else {
       i++;
     }
   }
 
-  return tasks;
+  return { tasks, errors };
 }
 
 // ================================================================
@@ -294,23 +325,14 @@ export function parseInterval(interval: string): number | null {
 // L0.8: 到期判断（v3 新增 — isTaskDue）
 // ================================================================
 
-/** 解析 YYYY-MM-DD HH:MM 为本地时间戳 */
+/** 解析 YYYY-MM-DD HH:MM 为 UTC 毫秒时间戳（显式 Asia/Shanghai） */
 export function parseDateTime(str: string): number {
-  // 假设本地时区（Asia/Shanghai）
-  const match = str.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
-  if (!match) return NaN;
-  const [, y, mo, d, h, mi] = match.map(Number);
-  return new Date(y, mo - 1, d, h, mi).getTime();
+  return parseShanghaiTime(str);
 }
 
-/** 解析 HH:MM 为今天的时间戳 */
+/** 解析 HH:MM 为今天（上海时间）的 UTC 毫秒时间戳 */
 export function parseTimeToday(timeStr: string): number {
-  const match = timeStr.match(/^(\d{2}):(\d{2})$/);
-  if (!match) return NaN;
-  const [, h, m] = match.map(Number);
-  const now = new Date();
-  now.setHours(h, m, 0, 0);
-  return now.getTime();
+  return parseTimeTodayShanghai(timeStr);
 }
 
 export interface TaskDueResult {
@@ -377,18 +399,18 @@ export function isTaskDue(
       if (task.on) {
         const onLower = task.on.toLowerCase();
         const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-        const nowDate = new Date(now);
+        const parts = getShanghaiDateParts(now);
         if (weekdays.includes(onLower)) {
           const targetDay = weekdays.indexOf(onLower);
-          if (nowDate.getDay() !== targetDay) {
-            return { due: false, reason: `not ${onLower} (today is ${weekdays[nowDate.getDay()]})` };
+          if (parts.weekday !== targetDay) {
+            return { due: false, reason: `not ${onLower} (today is ${weekdays[parts.weekday]})` };
           }
         } else {
           const dayMatch = onLower.match(/^(\d{1,2})(st|nd|rd|th)?$/);
           if (dayMatch) {
             const targetDay = parseInt(dayMatch[1], 10);
-            if (nowDate.getDate() !== targetDay) {
-              return { due: false, reason: `not day ${targetDay} (today is ${nowDate.getDate()})` };
+            if (parts.day !== targetDay) {
+              return { due: false, reason: `not day ${targetDay} (today is ${parts.day})` };
             }
           }
         }
@@ -402,16 +424,11 @@ export function isTaskDue(
           reason: now >= targetToday ? 'first run, time reached' : 'waiting for first trigger',
         };
       }
-      // 非首次：检查本周期是否已执行过
-      const lastDate = new Date(lastRunAt);
-      const nowDate = new Date(now);
+      // 非首次：检查本周期是否已执行过（上海时间同一天）
+      const lastParts = getShanghaiDateParts(lastRunAt);
+      const nowParts = getShanghaiDateParts(now);
 
-      // 检查是否同一天已执行
-      if (
-        lastDate.getFullYear() === nowDate.getFullYear() &&
-        lastDate.getMonth() === nowDate.getMonth() &&
-        lastDate.getDate() === nowDate.getDate()
-      ) {
+      if (lastParts.year === nowParts.year && lastParts.month === nowParts.month && lastParts.day === nowParts.day) {
         return { due: false, reason: 'already executed today' };
       }
 
@@ -484,9 +501,9 @@ export function isTaskDue(
 
       if (isNaN(minute) || isNaN(hour)) return { due: false, reason: 'invalid cron minute/hour' };
 
-      const nowDate = new Date(now);
-      const currentMinute = nowDate.getMinutes();
-      const currentHour = nowDate.getHours();
+      const shParts = getShanghaiDateParts(now);
+      const currentMinute = shParts.minute;
+      const currentHour = shParts.hour;
 
       // 检查是否匹配当前时间（精确到分钟）
       const matchesTime = (minute === -1 || minute === currentHour) && (hour === -1 || hour === currentHour);
@@ -494,14 +511,14 @@ export function isTaskDue(
         return { due: false, reason: `cron time not matched (current: ${currentHour}:${currentMinute}, need: ${hour}:${minute})` };
       }
 
-      // 检查是否本周期已执行（同一天同一小时已执行）
+      // 检查是否本周期已执行（上海时间同一天同一小时已执行）
       if (lastRunAt !== undefined) {
-        const lastDate = new Date(lastRunAt);
+        const lastParts = getShanghaiDateParts(lastRunAt);
         if (
-          lastDate.getFullYear() === nowDate.getFullYear() &&
-          lastDate.getMonth() === nowDate.getMonth() &&
-          lastDate.getDate() === nowDate.getDate() &&
-          lastDate.getHours() === nowDate.getHours()
+          lastParts.year === shParts.year &&
+          lastParts.month === shParts.month &&
+          lastParts.day === shParts.day &&
+          lastParts.hour === shParts.hour
         ) {
           return { due: false, reason: 'already executed this hour' };
         }
