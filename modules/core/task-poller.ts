@@ -1,31 +1,37 @@
 // ================================================================
-// TaskPoller — 统一调度层（Phase 1）
+// TaskPoller — 统一调度层（Phase 1 重构）
 // ================================================================
 // 用 isTaskDue() 驱动所有任务类型，替代 setTimeout 单任务计时器。
 // - 单一 setInterval 轮询（默认 1s）
 // - 到期判断统一走 isTaskDue()
-// - 任务状态持久化在 session.heartbeatTaskState
+// - 任务状态持久化到独立 JSON 文件（task_state.json）
 // - 支持 interval / once / scheduled / countdown / conditional
 // ================================================================
 
-import type { ScheduledTask, TaskRunState, Session } from './types';
+import * as fs from 'fs';
+import * as path from 'path';
+import type { ScheduledTask, TaskRunState } from './types';
 import { isTaskDue, parseHeartbeatTasks, parseInterval } from './heartbeat';
+import { TaskState } from './task-state';
+import { appendHistory as appendHistoryUtil } from './scheduling-utils';
 
 export interface TaskPollerConfig {
   /** 轮询间隔（毫秒），默认 1000 */
   tickMs?: number;
   /** 任务执行回调 */
-  onTaskFire: (task: ScheduledTask, session: Session) => Promise<void>;
+  onTaskFire: (task: ScheduledTask) => Promise<void>;
   /** 任务完成回调（once 执行完毕 / countdown 达限后，由调度器触发文件删除） */
-  onTaskComplete?: (task: ScheduledTask, session: Session) => void;
-  /** 获取当前 session（用于读写 heartbeatTaskState） */
-  getSession: () => Session | undefined;
+  onTaskComplete?: (task: ScheduledTask) => void;
+  /** 任务错误回调（fireTask catch 分支调用） */
+  onTaskError?: (task: ScheduledTask, error: Error) => void;
   /** 锁超时时间（毫秒），默认 120000（2 分钟） */
   lockTimeoutMs?: number;
   /** 锁超时回调（任务持有锁超过 lockTimeoutMs 时触发） */
-  onTaskTimeout?: (task: ScheduledTask, session: Session) => void;
+  onTaskTimeout?: (task: ScheduledTask) => void;
   /** 工作目录（用于 history_file 路径） */
   workspaceDir?: string;
+  /** 任务状态文件路径（可选，默认 ~/.imtoagent/task_state.json） */
+  stateFilePath?: string;
 }
 
 export interface TaskPollerEntry {
@@ -50,12 +56,14 @@ export class TaskPoller {
   private running = false;
   /** 等待完成的异步任务，stop() 时等待 */
   private inFlight = new Set<Promise<void>>();
-
+  // === Phase 1 重构：独立任务状态持久化 ===
+  private taskState: TaskState;
   // === Phase 2: 任务级互斥锁 ===
   private taskLocks: Map<string, { acquiredAt: number }> = new Map();
 
   constructor(config: TaskPollerConfig) {
     this.config = config;
+    this.taskState = new TaskState(config.stateFilePath);
   }
 
   /**
@@ -65,10 +73,29 @@ export class TaskPoller {
     if (this.running) return;
     this.running = true;
 
+    // P1-3: 检测进程重启前正在执行的任务
+    this.detectInterruptedTasks();
+
     const tickMs = this.config.tickMs ?? 1000;
     console.log(`[TaskPoller] Started (tick=${tickMs}ms)`);
 
     this.timer = setInterval(() => this.tick(), tickMs);
+  }
+
+  /**
+   * P1-3: 检测进程重启前可能正在执行的任务
+   * 判断条件：lastResult === undefined && startedAt 存在（任务曾开始但未记录结果）
+   */
+  private detectInterruptedTasks(): void {
+    for (const [name, entry] of this.tasks) {
+      const runState = this.taskState.get(name);
+      if (runState && runState.startedAt && !runState.lastResult) {
+        // 任务曾开始执行但没有最终结果，标记为 interrupted
+        runState.interrupted = true;
+        this.taskState.set(name, runState);
+        console.warn(`[TaskPoller] Detected interrupted task: ${name} (started at ${new Date(runState.startedAt).toISOString()}, no result recorded)`);
+      }
+    }
   }
 
   /**
@@ -96,18 +123,19 @@ export class TaskPoller {
     return this.taskLocks;
   }
 
-  /**
-   * P2-4: 获取所有任务状态
-   */
+  /** P2-4: 暴露任务状态供调试 */
+  getTaskState(): ReadonlyMap<string, TaskRunState> {
+    return this.taskState.getAll();
+  }
+
+  /** P2-4: 获取所有任务状态 */
   getTaskStatus(): TaskStatus[] {
-    const session = this.config.getSession();
     const now = Date.now();
     const results: TaskStatus[] = [];
 
     for (const [name, entry] of this.tasks) {
       const task = entry.task;
-      const state = session?.heartbeatTaskState?.[name];
-      const runState = this.normalizeState(state, entry.createdAt);
+      const runState = this.taskState.getCompatible(name);
 
       const status: TaskStatus = {
         name,
@@ -163,11 +191,19 @@ export class TaskPoller {
    * - 新增任务加入
    * - 消失任务移除
    * - 已存在任务跳过（保留 createdAt）
+   * P2-2: 原子读取防御（先复制再解析，避免读到不完整内容）
    * @param botName 当前 Bot 名称，用于 bot 字段过滤
    */
   syncTasks(heartbeatMd: string, botName?: string): void {
-    let parsed = parseHeartbeatTasks(heartbeatMd);
-    // P2-2: bot 字段过滤
+    // P2-2: 防御性编码 - 如果内容过长或包含不完整的 YAML 标记，跳过
+    const content = heartbeatMd.trim();
+    if (!content || content.length < 10) {
+      // 空文件或内容过短，跳过
+      return;
+    }
+
+    let parsed = parseHeartbeatTasks(content);
+    // bot 字段过滤
     if (botName) {
       parsed = parsed.filter(t => !t.bot || t.bot === botName);
     }
@@ -178,20 +214,19 @@ export class TaskPoller {
     for (const name of currentNames) {
       if (!desiredNames.has(name)) {
         this.tasks.delete(name);
+        this.taskState.delete(name);
         console.log(`[TaskPoller] Removed task: ${name}`);
       }
     }
 
     // 加入新任务
-    const session = this.config.getSession();
     for (const task of parsed) {
       if (!this.tasks.has(task.name)) {
-        // 先从 session 恢复 createdAt（如果存在），否则用当前时间
+        // 从独立状态文件恢复 createdAt（如果存在），否则用当前时间
         let createdAt = Date.now();
-        if (session?.heartbeatTaskState?.[task.name]) {
-          const existing = session.heartbeatTaskState[task.name];
-          const runState = this.normalizeState(existing, createdAt);
-          if (runState.createdAt > 0) createdAt = runState.createdAt;
+        const existingState = this.taskState.get(task.name);
+        if (existingState && existingState.createdAt > 0) {
+          createdAt = existingState.createdAt;
         }
         this.tasks.set(task.name, {
           task,
@@ -204,23 +239,6 @@ export class TaskPoller {
         entry.task = task;
       }
     }
-
-    // 将新任务的 createdAt 持久化到 session
-    if (session?.heartbeatTaskState) {
-      for (const task of parsed) {
-        const entry = this.tasks.get(task.name);
-        if (entry) {
-          const existing = session.heartbeatTaskState[task.name];
-          if (!existing) {
-            session.heartbeatTaskState[task.name] = {
-              lastRunAt: 0,
-              runCount: 0,
-              createdAt: entry.createdAt,
-            };
-          }
-        }
-      }
-    }
   }
 
   /**
@@ -229,21 +247,11 @@ export class TaskPoller {
   private tick(): void {
     if (!this.running || this.tasks.size === 0) return;
 
-    const session = this.config.getSession();
-    if (!session) return;
-
-    // 确保 heartbeatTaskState 存在
-    if (!session.heartbeatTaskState) {
-      session.heartbeatTaskState = {};
-    }
-
     const now = Date.now();
 
     for (const [name, entry] of this.tasks) {
       const task = entry.task;
-      const stateKey = name;
-      const existingState = session.heartbeatTaskState![stateKey];
-      const runState = this.normalizeState(existingState, entry.createdAt);
+      const runState = this.taskState.getCompatible(name);
       const lastRunAt = runState.lastRunAt > 0 ? runState.lastRunAt : undefined;
 
       // Phase 2: 检查任务锁 + 超时
@@ -256,10 +264,10 @@ export class TaskPoller {
           console.warn(`[TaskPoller] Task ${name} lock timed out (${Math.round(lockDuration / 1000)}s > ${Math.round(lockTimeoutMs / 1000)}s), force-releasing`);
           this.taskLocks.delete(name);
           // 更新 lastRunAt 防止下次 tick 立即重复触发
-          session.heartbeatTaskState![stateKey] = { ...runState, lastRunAt: now };
+          this.taskState.set(name, { ...runState, lastRunAt: now });
           // 通知调度器处理超时
           if (this.config.onTaskTimeout) {
-            this.config.onTaskTimeout(task, session);
+            this.config.onTaskTimeout(task);
           }
         }
         continue;
@@ -272,7 +280,7 @@ export class TaskPoller {
         this.taskLocks.set(name, { acquiredAt: now });
 
         // 跟踪 in-flight 任务
-        const promise = this.fireTask(entry, session, stateKey, runState).finally(() => {
+        const promise = this.fireTask(entry, name, runState).finally(() => {
           this.inFlight.delete(promise);
           this.taskLocks.delete(name); // 释放锁
         });
@@ -290,8 +298,7 @@ export class TaskPoller {
    */
   private async fireTask(
     entry: TaskPollerEntry,
-    session: Session,
-    stateKey: string,
+    name: string,
     runState: TaskRunState,
   ): Promise<void> {
     const task = entry.task;
@@ -306,7 +313,7 @@ export class TaskPoller {
       startedAt: isStopwatch ? now : runState.startedAt,
       elapsedMs: isStopwatch ? (runState.elapsedMs || 0) : runState.elapsedMs,
     };
-    session.heartbeatTaskState![stateKey] = newState;
+    this.taskState.set(name, newState);
 
     const fireStart = Date.now();
     let result: 'success' | 'timeout' | 'error' = 'success';
@@ -314,25 +321,29 @@ export class TaskPoller {
 
     try {
       // 执行回调
-      await this.config.onTaskFire(task, session);
+      await this.config.onTaskFire(task);
     } catch (err: unknown) {
       result = 'error';
-      lastError = err.message || String(err);
-      throw err;
+      lastError = err instanceof Error ? err.message : String(err);
+      // P1-2: 调用错误回调，不再静默失败
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (this.config.onTaskError) {
+        this.config.onTaskError(task, error);
+      }
     } finally {
       const fireDuration = Date.now() - fireStart;
       // P4-3: 累加 stopwatch 时间
       if (isStopwatch) {
         newState.elapsedMs = (newState.elapsedMs || 0) + fireDuration;
-        session.heartbeatTaskState![stateKey] = newState;
+        this.taskState.set(name, newState);
       }
       // P4-4: 记录执行结果
       newState.lastResult = result;
       newState.lastError = lastError;
-      session.heartbeatTaskState![stateKey] = newState;
+      this.taskState.set(name, newState);
 
       // 执行完成后，检查是否需要自动删除
-      this.handleTaskCompletion(entry, session, stateKey, newState);
+      this.handleTaskCompletion(entry, name, newState, result);
 
       // P4-4: 持久化历史记录
       if (task.history_file) {
@@ -346,28 +357,35 @@ export class TaskPoller {
    */
   private handleTaskCompletion(
     entry: TaskPollerEntry,
-    session: Session,
-    stateKey: string,
+    name: string,
     runState: TaskRunState,
+    result: 'success' | 'timeout' | 'error',
   ): void {
     const task = entry.task;
 
-    // once 任务：执行一次后标记为待删除
-    if (task.type === 'once') {
+    // once 任务：仅在执行成功时删除，失败保留以便下次重试
+    if (task.type === 'once' && result === 'success') {
       this.tasks.delete(entry.task.name);
+      this.taskState.delete(name);
       if (this.config.onTaskComplete) {
-        this.config.onTaskComplete(task, session);
+        this.config.onTaskComplete(task);
       }
       console.log(`[TaskPoller] once task completed, removed from poller: ${task.name}`);
       return;
+    }
+
+    // once 任务失败：保留，下次心跳重试
+    if (task.type === 'once' && result === 'error') {
+      console.warn(`[TaskPoller] once task ${task.name} failed (${runState.lastError}), kept for retry`);
     }
 
     // countdown 任务：达到 max_runs 后标记为待删除
     if (task.type === 'countdown' && task.max_runs !== undefined) {
       if (runState.runCount >= task.max_runs) {
         this.tasks.delete(entry.task.name);
+        this.taskState.delete(name);
         if (this.config.onTaskComplete) {
-          this.config.onTaskComplete(task, session);
+          this.config.onTaskComplete(task);
         }
         console.log(`[TaskPoller] countdown task reached max_runs (${task.max_runs}), removed: ${task.name}`);
         return;
@@ -379,8 +397,9 @@ export class TaskPoller {
       const deadlineTime = this.parseDateTime(task.deadline);
       if (!isNaN(deadlineTime) && Date.now() >= deadlineTime) {
         this.tasks.delete(entry.task.name);
+        this.taskState.delete(name);
         if (this.config.onTaskComplete) {
-          this.config.onTaskComplete(task, session);
+          this.config.onTaskComplete(task);
         }
         console.log(`[TaskPoller] countdown task passed deadline, removed: ${task.name}`);
         return;
@@ -389,34 +408,8 @@ export class TaskPoller {
 
     // P4-1: 任务链 — 完成后触发下游任务
     if (task.on_complete) {
-      this.triggerDownstream(task.on_complete, session, new Set([task.name]), 1);
+      this.triggerDownstream(task.on_complete, new Set([task.name]), 1);
     }
-  }
-
-  /**
-   * 规范化状态（兼容 number 类型和 undefined）
-   */
-  private normalizeState(
-    state: number | TaskRunState | undefined,
-    createdAt: number,
-  ): TaskRunState {
-    if (state === undefined) {
-      return { lastRunAt: 0, runCount: 0, createdAt };
-    }
-    if (typeof state === 'number') {
-      return { lastRunAt: state, runCount: 1, createdAt: state || createdAt };
-    }
-    return { ...state, createdAt: state.createdAt || createdAt };
-  }
-
-  /**
-   * 解析 YYYY-MM-DD HH:MM 为本地时间戳
-   */
-  private parseDateTime(str: string): number {
-    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
-    if (!match) return NaN;
-    const [, y, mo, d, h, mi] = match.map(Number);
-    return new Date(y, mo - 1, d, h, mi).getTime();
   }
 
   /**
@@ -425,7 +418,6 @@ export class TaskPoller {
    */
   private triggerDownstream(
     downstreamName: string,
-    session: Session,
     chain: Set<string>,
     depth: number,
   ): void {
@@ -449,22 +441,20 @@ export class TaskPoller {
     console.log(`[TaskPoller] Chain trigger: ${[...chain].join(' → ')} → ${downstreamName} (depth ${depth})`);
 
     const now = Date.now();
-    const stateKey = downstreamName;
-    const existingState = session.heartbeatTaskState?.[stateKey];
-    const runState = this.normalizeState(existingState, entry.createdAt);
+    const runState = this.taskState.getCompatible(downstreamName);
     const newState: TaskRunState = {
       lastRunAt: now,
       runCount: runState.runCount + 1,
       createdAt: runState.createdAt || now,
     };
-    if (session.heartbeatTaskState) session.heartbeatTaskState[stateKey] = newState;
+    this.taskState.set(downstreamName, newState);
 
     // 异步触发，不阻塞当前 tick
-    this.fireTask(entry, session, stateKey, runState).finally(() => {
+    this.fireTask(entry, downstreamName, runState).finally(() => {
       this.taskLocks.delete(downstreamName);
       // 递归触发下游
       if (entry.task.on_complete) {
-        this.triggerDownstream(entry.task.on_complete, session, newChain, depth + 1);
+        this.triggerDownstream(entry.task.on_complete, newChain, depth + 1);
       }
     }).catch(err => {
       console.error(`[TaskPoller] Chain trigger error for ${downstreamName}:`, err.message);
@@ -472,7 +462,21 @@ export class TaskPoller {
   }
 
   /**
+   * 解析 YYYY-MM-DD HH:MM 为时间戳（显式使用 Asia/Shanghai 时区）
+   * P2-6: 避免依赖本地时区，确保跨环境一致性
+   */
+  private parseDateTime(str: string): number {
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+    if (!match) return NaN;
+    const [, y, mo, d, h, mi] = match.map(Number);
+    // 构造 ISO 字符串并显式指定 Asia/Shanghai 时区
+    const isoStr = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}:00+08:00`;
+    return new Date(isoStr).getTime();
+  }
+
+  /**
    * P4-4: 持久化任务执行历史到 JSON 文件
+   * P2-1/P2-5: 使用共享工具函数 + fs 模块
    */
   private appendHistory(
     task: ScheduledTask,
@@ -482,39 +486,16 @@ export class TaskPoller {
     error?: string,
   ): void {
     const workspaceDir = this.config.workspaceDir || '.';
-    const historyPath = `${workspaceDir}/${task.history_file}`;
+    const historyPath = path.resolve(workspaceDir, task.history_file || '');
     const maxHistory = task.max_history || 50;
 
-    let entries: Array<{
-      runAt: string;
-      durationMs: number;
-      result: string;
-      error?: string;
-    }> = [];
-
-    try {
-      const existing = Bun.file(historyPath);
-      if (existing.size > 0) {
-        entries = JSON.parse(Bun.readFileSync(existing, 'utf8'));
-      }
-    } catch {}
-
-    entries.push({
+    const entry = {
       runAt: new Date(runAt).toISOString(),
       durationMs,
       result,
       ...(error ? { error } : {}),
-    });
+    };
 
-    // 保留最近 N 条
-    if (entries.length > maxHistory) {
-      entries = entries.slice(-maxHistory);
-    }
-
-    try {
-      Bun.write(historyPath, JSON.stringify(entries, null, 2));
-    } catch (err) {
-      console.error(`[TaskPoller] Failed to write history for ${task.name}:`, err.message);
-    }
+    appendHistoryUtil(historyPath, entry, maxHistory);
   }
 }

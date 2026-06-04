@@ -190,10 +190,11 @@ export function parseHeartbeatTasks(
         const autoStopMatch = nextTrimmed.match(/^auto_stop:\s*(\S+)/);
         const historyFileMatch = nextTrimmed.match(/^history_file:\s*(\S+)/);
         const maxHistoryMatch = nextTrimmed.match(/^max_history:\s*(\d+)/);
+        const cronMatch = nextTrimmed.match(/^cron:\s*(.+?)\s*$/);
 
         if (typeMatch) {
           const val = typeMatch[1] as TaskType;
-          if (['interval', 'once', 'scheduled', 'countdown', 'conditional', 'stopwatch'].includes(val)) {
+          if (['interval', 'once', 'scheduled', 'countdown', 'conditional', 'stopwatch', 'cron'].includes(val)) {
             task.type = val;
           }
         }
@@ -216,6 +217,7 @@ export function parseHeartbeatTasks(
         if (autoStopMatch) task.auto_stop = autoStopMatch[1].trim();
         if (historyFileMatch) task.history_file = historyFileMatch[1].trim();
         if (maxHistoryMatch) task.max_history = parseInt(maxHistoryMatch[1], 10);
+        if (cronMatch) task.cron = cronMatch[1].trim();
 
         i++;
       }
@@ -236,6 +238,10 @@ export function parseHeartbeatTasks(
       }
       if (task.type === 'scheduled' && !task.at) {
         console.warn(`[parseHeartbeatTasks] Task "${task.name}" (scheduled) missing at, skipping`);
+        continue;
+      }
+      if (task.type === 'cron' && !task.cron) {
+        console.warn(`[parseHeartbeatTasks] Task "${task.name}" (cron) missing cron expression, skipping`);
         continue;
       }
 
@@ -464,6 +470,44 @@ export function isTaskDue(
         due: now - lastRunAt >= intervalMs,
         reason: now - lastRunAt >= intervalMs ? 'interval elapsed' : 'interval not yet elapsed',
       };
+    }
+
+    case 'cron': {
+      // P2-7: cron 表达式支持（简化版：只支持 "分 时 * * *" 格式）
+      if (!task.cron) return { due: false, reason: 'missing cron expression' };
+      const parts = task.cron.trim().split(/\s+/);
+      if (parts.length !== 5) return { due: false, reason: 'invalid cron format (need 5 fields)' };
+
+      const [minuteStr, hourStr] = parts;
+      const minute = parseInt(minuteStr, 10);
+      const hour = parseInt(hourStr, 10);
+
+      if (isNaN(minute) || isNaN(hour)) return { due: false, reason: 'invalid cron minute/hour' };
+
+      const nowDate = new Date(now);
+      const currentMinute = nowDate.getMinutes();
+      const currentHour = nowDate.getHours();
+
+      // 检查是否匹配当前时间（精确到分钟）
+      const matchesTime = (minute === -1 || minute === currentHour) && (hour === -1 || hour === currentHour);
+      if (!matchesTime) {
+        return { due: false, reason: `cron time not matched (current: ${currentHour}:${currentMinute}, need: ${hour}:${minute})` };
+      }
+
+      // 检查是否本周期已执行（同一天同一小时已执行）
+      if (lastRunAt !== undefined) {
+        const lastDate = new Date(lastRunAt);
+        if (
+          lastDate.getFullYear() === nowDate.getFullYear() &&
+          lastDate.getMonth() === nowDate.getMonth() &&
+          lastDate.getDate() === nowDate.getDate() &&
+          lastDate.getHours() === nowDate.getHours()
+        ) {
+          return { due: false, reason: 'already executed this hour' };
+        }
+      }
+
+      return { due: true, reason: 'cron time matched' };
     }
 
     default:

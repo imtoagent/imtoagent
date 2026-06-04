@@ -21,6 +21,7 @@ import type { Goal, GoalStatus } from './goal-types';
 import { isGoalDue } from './goal-types';
 import { GoalStore } from './goal-store';
 import type { ToolRegistry } from '../agent/tool-registry';
+import { appendHistory as appendHistoryUtil } from './scheduling-utils';
 
 // ================================================================
 // Prompt 构造
@@ -134,16 +135,8 @@ export function parseGoalResult(text: string, goalId: string): GoalResult {
 }
 
 // ================================================================
-// 历史持久化（复用 task-poller.ts 的 appendHistory 模式）
+// 历史持久化（P2-1: 使用共享工具函数）
 // ================================================================
-
-interface HistoryEntry {
-  goalId: string;
-  runAt: string;
-  action: string;
-  durationMs: number;
-  error?: string;
-}
 
 const GOALS_HISTORY_FILE = 'goals_history.json';
 const MAX_HISTORY = 100;
@@ -163,37 +156,15 @@ export function writeGoalHistory(
     ? path.join(workspaceDir, GOALS_HISTORY_FILE)
     : path.join(process.env.HOME || '.', '.imtoagent', GOALS_HISTORY_FILE);
 
-  let entries: HistoryEntry[] = [];
-  try {
-    if (fs.existsSync(historyPath)) {
-      entries = JSON.parse(fs.readFileSync(historyPath, 'utf-8'));
-    }
-  } catch {
-    // 文件损坏，从头开始
-  }
-
-  entries.push({
+  const entry = {
     goalId,
     runAt: new Date().toISOString(),
     action,
     durationMs,
     ...(error ? { error } : {}),
-  });
+  };
 
-  // 保留最近 N 条
-  if (entries.length > MAX_HISTORY) {
-    entries = entries.slice(-MAX_HISTORY);
-  }
-
-  try {
-    const dir = path.dirname(historyPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = `${historyPath}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(entries, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, historyPath);
-  } catch (e: any) {
-    console.error('[GoalEngine] Failed to write history:', e.message);
-  }
+  appendHistoryUtil(historyPath, entry, MAX_HISTORY);
 }
 
 // ================================================================
@@ -204,7 +175,13 @@ export interface GoalExecuteContext {
   /** Agent 执行接口（由调用方注入） */
   executeAgent: (
     prompt: string,
-    options?: { systemPrompt?: string; model?: string; timeoutMs?: number; tools?: object[] },
+    options?: {
+      systemPrompt?: string;
+      model?: string;
+      timeoutMs?: number;
+      tools?: object[];
+      cancelSignal?: AbortSignal;
+    },
   ) => Promise<string>;
 
   /** 发送 IM 消息 */
@@ -255,6 +232,8 @@ export class GoalEngine {
    * 3. 获取锁 → markActive → 构造 Prompt → 调 Agent
    * 4. 解析回复 → 更新状态 → reschedule
    * 5. 释放锁 → 写历史
+   *
+   * P2-4: 并发执行（带信号量控制并发数，默认 3）
    */
   async processDueGoals(now?: Date): Promise<GoalEngineStats> {
     const dueGoals = this.store.getDue(now);
@@ -274,21 +253,56 @@ export class GoalEngine {
 
     const overallStart = Date.now();
 
-    // v1 串行执行（Q7 决策）
-    for (const goal of dueGoals) {
-      // 检查锁
-      if (this.store.isLocked(goal.id)) {
-        console.log(`[GoalEngine] Goal ${goal.id} is locked, skipping`);
-        continue;
-      }
+    // P2-4: 并发执行，带信号量控制并发数
+    const CONCURRENCY_LIMIT = 3;
+    const semaphore: Promise<void>[] = Array.from(
+      { length: CONCURRENCY_LIMIT },
+      () => Promise.resolve(),
+    );
 
-      try {
-        await this.executeGoal(goal, stats);
-      } catch (e: any) {
-        console.error(`[GoalEngine] Unhandled error executing ${goal.id}:`, e.message);
-        this.store.markFailed(goal.id, e.message);
-        writeGoalHistory(goal.id, 'failed', 0, e.message, this.ctx.workspaceDir);
+    // 每个 Goal 执行后返回局部统计结果
+    const results = await Promise.allSettled(
+      dueGoals.map(async (goal) => {
+        // 检查锁
+        if (this.store.isLocked(goal.id)) {
+          console.log(`[GoalEngine] Goal ${goal.id} is locked, skipping`);
+          return { action: 'skipped' as const };
+        }
+
+        // 信号量：等待可用槽位
+        const slot = await Promise.race(semaphore);
+        const slotIndex = semaphore.indexOf(slot);
+
+        try {
+          const result = await this.executeGoalWithResult(goal);
+          return result;
+        } catch (e: any) {
+          console.error(`[GoalEngine] Unhandled error executing ${goal.id}:`, e.message);
+          this.store.markFailed(goal.id, e.message);
+          writeGoalHistory(goal.id, 'failed', 0, e.message, this.ctx.workspaceDir);
+          return { action: 'failed' as const };
+        } finally {
+          // 释放槽位
+          semaphore[slotIndex] = Promise.resolve();
+        }
+      }),
+    );
+
+    // 聚合统计结果
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        const { action } = result.value;
+        stats.executedCount++;
+        switch (action) {
+          case 'done': stats.doneCount++; break;
+          case 'skip': stats.skipCount++; break;
+          case 'failed': stats.failedCount++; break;
+          case 'unknown': stats.unknownCount++; break;
+          case 'skipped': break;
+        }
+      } else {
         stats.failedCount++;
+        stats.executedCount++;
       }
     }
 
@@ -308,15 +322,104 @@ export class GoalEngine {
   }
 
   /**
-   * 执行单个 Goal
+   * P2-4: 执行单个 Goal 并返回结果（用于并发聚合）
    */
-  private async executeGoal(goal: Goal, stats: GoalEngineStats): Promise<void> {
+  private async executeGoalWithResult(goal: Goal): Promise<{ action: GoalResultAction | 'skipped' }> {
     const timeoutMs = this.ctx.timeoutMs || 60_000;
     const startMs = Date.now();
+    const abortController = new AbortController();
 
     // 获取执行锁
     const lock = this.store.acquireLock(goal.id);
     if (!lock) {
+      abortController.abort();
+      console.log(`[GoalEngine] Goal ${goal.id} lock acquire failed`);
+      return { action: 'skipped' };
+    }
+
+    // Phase 2: 按需注入工具
+    const injectedTools: string[] = [];
+    try {
+      // 标记执行中
+      this.store.markActive(goal.id);
+
+      // Phase 2: 根据 Goal 条件注入所需工具
+      if (this.ctx.toolRegistry) {
+        const needed = this.resolveNeededTools(goal);
+        if (needed.length > 0) {
+          const actuallyInjected = this.ctx.toolRegistry.injectNeeded(needed);
+          injectedTools.push(...actuallyInjected);
+        }
+      }
+
+      // 构造 Prompt
+      const prompt = buildGoalPrompt(goal);
+      console.log(`[GoalEngine] Executing ${goal.id} (${goal.type}): ${goal.metadata.rawInput}`);
+
+      // Phase 2: 获取已注入的工具列表（OpenAI 格式）
+      const tools = this.ctx.toolRegistry?.getOpenAIFormat();
+
+      // 调 Agent（带超时保护 + 真正取消）
+      let reply: string;
+      try {
+        const agentPromise = this.ctx.executeAgent(prompt, {
+          timeoutMs,
+          cancelSignal: abortController.signal,
+          ...(tools && tools.length > 0 ? { tools } : {}),
+        });
+        reply = await Promise.race([
+          agentPromise,
+          new Promise<string>((_, reject) =>
+            setTimeout(() => {
+              abortController.abort();
+              reject(new Error('execution_timeout'));
+            }, timeoutMs),
+          ),
+        ]);
+      } catch (e: any) {
+        const duration = Date.now() - startMs;
+        console.error(`[GoalEngine] Agent execution failed for ${goal.id}:`, e.message);
+        this.store.markFailed(goal.id, e.message);
+        writeGoalHistory(goal.id, 'failed', duration, e.message, this.ctx.workspaceDir);
+        return { action: 'failed' };
+      }
+
+      // 解析结果
+      const result = parseGoalResult(reply, goal.id);
+      const duration = Date.now() - startMs;
+
+      // 处理结果
+      await this.handleGoalResult(goal, result, reply, duration);
+
+      return { action: result.action };
+    } finally {
+      // Phase 2: 清理注入的工具
+      if (this.ctx.toolRegistry && injectedTools.length > 0) {
+        this.ctx.toolRegistry.removeInjected(injectedTools);
+      }
+      // 确保清理 AbortController（防止孤儿进程）
+      if (!abortController.signal.aborted) {
+        abortController.abort();
+      }
+      // finally 确保释放锁
+      this.store.releaseLock(goal.id);
+    }
+  }
+
+  /**
+   * 执行单个 Goal（保留向后兼容）
+   */
+  private async executeGoal(goal: Goal, _stats: GoalEngineStats): Promise<void> {
+    await this.executeGoalWithResult(goal);
+  }
+    const timeoutMs = this.ctx.timeoutMs || 60_000;
+    const startMs = Date.now();
+    const abortController = new AbortController();
+
+    // 获取执行锁
+    const lock = this.store.acquireLock(goal.id);
+    if (!lock) {
+      abortController.abort();
       console.log(`[GoalEngine] Goal ${goal.id} lock acquire failed`);
       return;
     }
@@ -343,17 +446,21 @@ export class GoalEngine {
       // Phase 2: 获取已注入的工具列表（OpenAI 格式）
       const tools = this.ctx.toolRegistry?.getOpenAIFormat();
 
-      // 调 Agent（带超时保护）
+      // 调 Agent（带超时保护 + 真正取消）
       let reply: string;
       try {
         const agentPromise = this.ctx.executeAgent(prompt, {
           timeoutMs,
+          cancelSignal: abortController.signal,
           ...(tools && tools.length > 0 ? { tools } : {}),
         });
         reply = await Promise.race([
           agentPromise,
           new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('execution_timeout')), timeoutMs),
+            setTimeout(() => {
+              abortController.abort();
+              reject(new Error('execution_timeout'));
+            }, timeoutMs),
           ),
         ]);
       } catch (e: any) {
@@ -386,6 +493,10 @@ export class GoalEngine {
       if (this.ctx.toolRegistry && injectedTools.length > 0) {
         this.ctx.toolRegistry.removeInjected(injectedTools);
       }
+      // 确保清理 AbortController（防止孤儿进程）
+      if (!abortController.signal.aborted) {
+        abortController.abort();
+      }
       // finally 确保释放锁
       this.store.releaseLock(goal.id);
     }
@@ -404,6 +515,10 @@ export class GoalEngine {
 
     switch (action) {
       case 'done':
+        // 重置 unknown 计数器
+        if (goal.metadata.consecutiveUnknowns) {
+          delete goal.metadata.consecutiveUnknowns;
+        }
         this.store.markDone(goal.id);
         if (goal.lifecycle.repeat !== 'once') {
           this.store.reschedule(goal.id);
@@ -413,6 +528,10 @@ export class GoalEngine {
         break;
 
       case 'skip':
+        // 重置 unknown 计数器
+        if (goal.metadata.consecutiveUnknowns) {
+          delete goal.metadata.consecutiveUnknowns;
+        }
         if (goal.lifecycle.repeat !== 'once') {
           this.store.reschedule(goal.id);
         } else {
@@ -424,24 +543,47 @@ export class GoalEngine {
         break;
 
       case 'failed':
+        // 显式失败（Agent 正确回复了 GOAL_FAILED），重置 unknown 计数器
+        if (goal.metadata.consecutiveUnknowns) {
+          delete goal.metadata.consecutiveUnknowns;
+        }
         this.store.markFailed(goal.id, error || 'unknown');
         writeGoalHistory(goal.id, 'failed', durationMs, error, this.ctx.workspaceDir);
         console.error(`[GoalEngine] Goal ${goal.id} failed: ${error}`);
         break;
 
       case 'unknown':
-      default:
-        // 无明确标记，视为异常（Q13: v1 只精确匹配）
-        this.store.markFailed(goal.id, 'no GOAL_DONE/SKIP/FAILED marker in reply');
+      default: {
+        // 无明确标记 — Agent 回复格式不匹配
+        // 可重复 Goal 应当 reschedule 下次重试，不永久卡死
+        const consecutiveUnknowns = (goal.metadata.consecutiveUnknowns ?? 0) + 1;
+        const maxUnknowns = goal.lifecycle.maxUnknowns ?? 3;
+
+        if (goal.lifecycle.repeat !== 'once' && consecutiveUnknowns < maxUnknowns) {
+          goal.metadata.consecutiveUnknowns = consecutiveUnknowns;
+          this.store.reschedule(goal.id);
+          console.warn(
+            `[GoalEngine] Goal ${goal.id}: unknown reply (${consecutiveUnknowns}/${maxUnknowns}), rescheduled for retry`,
+          );
+        } else {
+          // once 类型或连续 unknown 超限，标记永久失败
+          this.store.markFailed(
+            goal.id,
+            consecutiveUnknowns >= maxUnknowns
+              ? `consecutive unknown replies (${consecutiveUnknowns})`
+              : 'no GOAL_DONE/SKIP/FAILED marker in reply',
+          );
+          console.error(`[GoalEngine] Goal ${goal.id}: permanently failed after unknown reply`);
+        }
         writeGoalHistory(
           goal.id,
           'unknown',
           durationMs,
-          'no status marker',
+          `no status marker (${consecutiveUnknowns}/${maxUnknowns})`,
           this.ctx.workspaceDir,
         );
-        console.warn(`[GoalEngine] Goal ${goal.id}: no status marker in reply`);
         break;
+      }
     }
 
     // 如果 action 是 send_message，需要将消息发送到 IM

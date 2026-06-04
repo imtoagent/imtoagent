@@ -30,10 +30,10 @@ export interface GoalManagementAction {
 export function parseGoalManagement(text: string): GoalManagementAction | null {
   const patterns = [
     { regex: /GOAL_LIST/i, action: 'list' as const },
-    { regex: /GOAL_CANCEL:\s*([\w-]+)/i, action: 'cancel' as const },
-    { regex: /GOAL_PAUSE:\s*([\w-]+)/i, action: 'pause' as const },
-    { regex: /GOAL_RESUME:\s*([\w-]+)/i, action: 'resume' as const },
-    { regex: /GOAL_UPDATE:\s*([\w-]+)\s+([\s\S]+)/i, action: 'update' as const },
+    { regex: /GOAL_CANCEL:\s*([a-zA-Z0-9-]+)/i, action: 'cancel' as const },
+    { regex: /GOAL_PAUSE:\s*([a-zA-Z0-9-]+)/i, action: 'pause' as const },
+    { regex: /GOAL_RESUME:\s*([a-zA-Z0-9-]+)/i, action: 'resume' as const },
+    { regex: /GOAL_UPDATE:\s*([a-zA-Z0-9-]+)\s+([\s\S]+)/i, action: 'update' as const },
   ];
 
   for (const p of patterns) {
@@ -134,21 +134,18 @@ export class GoalManager {
   // ================================================================
 
   /**
-   * 暂停 Goal（将状态设为 failed 但保留，不再调度）
+   * 暂停 Goal（将状态设为 paused，不再调度）
    */
   pauseGoal(goalId: string): { success: boolean; message: string } {
     const goal = this.goalStore.get(goalId);
     if (!goal) {
       return { success: false, message: `❌ Goal ${goalId} 不存在` };
     }
-    if (goal.lifecycle.status === 'done' || goal.lifecycle.status === 'cancelled') {
-      return { success: false, message: `❌ Goal ${goalId} 已结束（${goal.lifecycle.status}）` };
+    if (goal.lifecycle.status === 'done' || goal.lifecycle.status === 'cancelled' || goal.lifecycle.status === 'paused') {
+      return { success: false, message: `❌ Goal ${goalId} 已结束或已暂停（${goal.lifecycle.status}）` };
     }
 
-    // 使用 update 来设置状态
-    goal.lifecycle.status = 'cancelled';
-    // 保存 paused 标记到 lastError 字段（v1 简化方案）
-    goal.lifecycle.lastError = '_paused';
+    goal.lifecycle.status = 'paused';
     this.goalStore.update(goalId, { lifecycle: goal.lifecycle });
     return { success: true, message: `⏸ 已暂停 Goal ${goalId}` };
   }
@@ -161,20 +158,15 @@ export class GoalManager {
     if (!goal) {
       return { success: false, message: `❌ Goal ${goalId} 不存在` };
     }
-    if (goal.lifecycle.lastError !== '_paused') {
-      return { success: false, message: `❌ Goal ${goalId} 不是暂停状态` };
+    if (goal.lifecycle.status !== 'paused') {
+      return { success: false, message: `❌ Goal ${goalId} 不是暂停状态（当前: ${goal.lifecycle.status}）` };
     }
 
-    // 恢复状态
+    // 恢复状态为 pending
     goal.lifecycle.status = 'pending';
-    goal.lifecycle.lastError = undefined;
     // 重新计算 nextRunAt
     const now = new Date();
-    if (goal.lifecycle.repeat === 'once') {
-      goal.lifecycle.nextRunAt = now.toISOString();
-    } else {
-      goal.lifecycle.nextRunAt = now.toISOString();
-    }
+    goal.lifecycle.nextRunAt = now.toISOString();
     this.goalStore.update(goalId, { lifecycle: goal.lifecycle });
     return { success: true, message: `▶️ 已恢复 Goal ${goalId}` };
   }

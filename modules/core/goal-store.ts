@@ -104,6 +104,13 @@ export class GoalStore {
   }
 
   /**
+   * 获取暂停的 Goal（status = paused）
+   */
+  getPaused(): Goal[] {
+    return this.list({ status: ['paused'] });
+  }
+
+  /**
    * 获取到期的 Goal（nextRunAt <= now 且状态为 pending/active）
    */
   getDue(now?: Date): Goal[] {

@@ -12,6 +12,8 @@
 // ================================================================
 
 import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import type { AgentRuntime, SessionManager, MessageContext, Session, ScheduledTask } from './types';
 import type { AgentAdapter } from './types';
 import { parseInterval, getPhaseOffset, removeTaskFromHeartbeatFile } from './heartbeat';
@@ -90,6 +92,14 @@ export class HeartbeatScheduler {
       onTaskComplete: (task) => {
         // once/countdown 任务完成后，自动从 HEARTBEAT.md 中删除
         removeTaskFromHeartbeatFile(this.config.heartbeatFilePath, task.name);
+      },
+      // P1-2: 任务错误回调，不再静默失败
+      onTaskError: (task, error) => {
+        console.error(`[Cron] Task ${task.name} error:`, error.message);
+        const strategy = task.on_failure ?? this.config.defaults?.on_failure ?? 'ignore';
+        if (strategy === 'alert') {
+          this.sendAlert(task, error.message).catch(() => {});
+        }
       },
       lockTimeoutMs: 120_000, // 默认 2 分钟锁超时
       onTaskTimeout: (task) => {
@@ -321,10 +331,13 @@ export class HeartbeatScheduler {
    */
   private async executeGoalAgent(
     prompt: string,
-    options?: { systemPrompt?: string; model?: string; timeoutMs?: number; tools?: object[] },
+    options?: { systemPrompt?: string; model?: string; timeoutMs?: number; tools?: object[]; cancelSignal?: AbortSignal },
   ): Promise<string> {
     const target = this._resolver.resolveHeartbeat();
     const session = await this._resolver.getOrCreateSession(target);
+
+    // 每次 Goal 执行都使用全新上下文，防止跨 Goal 上下文膨胀
+    session.startFresh = true;
 
     let reply = '';
     const ctx: MessageContext = {
@@ -334,6 +347,7 @@ export class HeartbeatScheduler {
       workingDir: this.config.defaultCwd,
       model: options?.model ?? this.config.model,
       systemPrompt: options?.systemPrompt ?? this.config.systemPrompt,
+      cancelSignal: options?.cancelSignal,
       reply: async (text: string) => {
         reply = text;
       },
@@ -425,8 +439,12 @@ export class HeartbeatScheduler {
     const cronRounds = (sessionAny._cronRounds as number) ?? 0;
     if (cronRounds >= MAX_CRON_ROUNDS) {
       console.log(`[Cron] Task ${task.name} session rotation (${cronRounds} >= ${MAX_CRON_ROUNDS}), starting fresh thread`);
+      // 清除所有 adapter 特定的 session/thread ID
       delete sessionAny.codexThreadId;
       delete sessionAny._appServerGen;
+      delete sessionAny.sdkSessionId;
+      delete sessionAny.ocSessionId;
+      delete sessionAny.geminiSessionId;
       sessionAny._cronRounds = 0;
       taskSession.startFresh = true;
     }
@@ -548,11 +566,26 @@ export class HeartbeatScheduler {
 
   /**
    * 读取 HEARTBEAT.md 文件内容
+   * P2-2: 原子读取防御 - 先复制到临时文件再读取，避免读到不完整内容
    */
   private readHeartbeatFile(): string {
     try {
-      if (fs.existsSync(this.config.heartbeatFilePath)) {
-        return fs.readFileSync(this.config.heartbeatFilePath, 'utf-8');
+      if (!fs.existsSync(this.config.heartbeatFilePath)) {
+        return '';
+      }
+
+      // 原子读取：先复制到临时文件，再从临时文件读取
+      const tmpPath = path.join(os.tmpdir(), `heartbeat_${Date.now()}.tmp`);
+      fs.copyFileSync(this.config.heartbeatFilePath, tmpPath);
+
+      try {
+        const content = fs.readFileSync(tmpPath, 'utf-8');
+        return content;
+      } finally {
+        // 清理临时文件
+        try {
+          fs.unlinkSync(tmpPath);
+        } catch {}
       }
     } catch (e: any) {
       console.error(`[Heartbeat] Failed to read HEARTBEAT.md:`, e.message);

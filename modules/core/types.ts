@@ -101,7 +101,7 @@ export interface TaskRunState {
 }
 
 /** 任务类型 */
-export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional' | 'stopwatch';
+export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional' | 'stopwatch' | 'cron';
 
 /** 失败策略 */
 export type OnFailureStrategy = 'ignore' | 'alert' | 'retry';
@@ -119,6 +119,8 @@ export interface ScheduledTask {
   // countdown
   max_runs?: number;
   deadline?: string;                // "YYYY-MM-DD HH:MM"
+  // cron 表达式（P2-7 新增）
+  cron?: string;                    // cron 专用："0 9 * * *"
   // 失败策略覆盖
   on_failure?: OnFailureStrategy;
   max_retries?: number;
