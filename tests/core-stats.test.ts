@@ -8,7 +8,7 @@
  * - 多轮次累加准确
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from 'vitest';
 import { DefaultStatsTracker } from "../modules/core/stats";
 import type { Session } from "../modules/core/types";
 

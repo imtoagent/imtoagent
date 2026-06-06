@@ -8,6 +8,15 @@ import { parseShanghaiTime, parseTimeTodayShanghai, getShanghaiDateParts } from 
 /** 心跳轮次硬上限 */
 export const HEARTBEAT_ROUNDS_MAX = 5;
 
+/**
+ * 所有调 Agent 的任务的最小间隔限制。
+ * 防止高频 conditional/interval/countdown/stopwatch 任务无意义地大量消耗 Token。
+ * 任何带 interval 字段的任务都不允许低于此值。
+ * 当前值：30 分钟（每小时最多 2 次 Agent 调用）。
+ */
+export const MIN_AGENT_INTERVAL = "30m"; // 30 minutes = 1_800_000ms
+const MIN_AGENT_INTERVAL_MS = 30 * 60 * 1000; // 1_800_000
+
 // ================================================================
 // L0.6a: defaults 块解析（v3 新增）
 // ================================================================
@@ -253,6 +262,16 @@ export function parseHeartbeatTasks(
         errors.push({ taskName: task.name, reason: msg });
         continue;
       }
+      // 调 Agent 的任务：强制最小间隔，防止高频无意义调用
+      if (task.interval) {
+        const intervalMs = parseInterval(task.interval);
+        if (intervalMs !== null && intervalMs < MIN_AGENT_INTERVAL_MS) {
+          const msg = `Task "${task.name}" (${task.type}) interval "${task.interval}" is below minimum ${MIN_AGENT_INTERVAL}, skipping`;
+          console.warn(`[parseHeartbeatTasks] ${msg}`);
+          errors.push({ taskName: task.name, reason: msg });
+          continue;
+        }
+      }
       if (task.type === 'once' && !task.at && !task.after) {
         const msg = `Task "${task.name}" (once) missing at/after, skipping`;
         console.warn(`[parseHeartbeatTasks] ${msg}`);
@@ -362,6 +381,8 @@ export function isTaskDue(
       if (!task.interval) return { due: false, reason: 'missing interval' };
       const intervalMs = parseInterval(task.interval);
       if (!intervalMs) return { due: false, reason: 'invalid interval' };
+      // 安全网：即使解析阶段漏掉，到期判断也强制最小间隔
+      if (lastRunAt !== undefined && intervalMs < MIN_AGENT_INTERVAL_MS) return { due: false, reason: 'interval below minimum' };
       if (lastRunAt === undefined) return { due: true, reason: 'first run' };
       return {
         due: now - lastRunAt >= intervalMs,
@@ -444,6 +465,8 @@ export function isTaskDue(
       if (!task.interval) return { due: false, reason: 'missing interval' };
       const intervalMs = parseInterval(task.interval);
       if (!intervalMs) return { due: false, reason: 'invalid interval' };
+      // 安全网
+      if (lastRunAt !== undefined && intervalMs < MIN_AGENT_INTERVAL_MS) return { due: false, reason: 'interval below minimum' };
 
       // P2-3: 检查 max_runs（由调用方传入 runCount）
       if (task.max_runs !== undefined && runCount >= task.max_runs) {
@@ -470,6 +493,8 @@ export function isTaskDue(
       if (!task.interval) return { due: false, reason: 'missing interval' };
       const intervalMs = parseInterval(task.interval);
       if (!intervalMs) return { due: false, reason: 'invalid interval' };
+      // 安全网：防止高频无意义 Agent 调用
+      if (lastRunAt !== undefined && intervalMs < MIN_AGENT_INTERVAL_MS) return { due: false, reason: 'interval below minimum' };
       if (lastRunAt === undefined) return { due: true, reason: 'first run' };
       return {
         due: now - lastRunAt >= intervalMs,
@@ -482,6 +507,8 @@ export function isTaskDue(
       if (!task.interval) return { due: false, reason: 'missing interval' };
       const intervalMs = parseInterval(task.interval);
       if (!intervalMs) return { due: false, reason: 'invalid interval' };
+      // 安全网
+      if (lastRunAt !== undefined && intervalMs < MIN_AGENT_INTERVAL_MS) return { due: false, reason: 'interval below minimum' };
       if (lastRunAt === undefined) return { due: true, reason: 'first run' };
       return {
         due: now - lastRunAt >= intervalMs,

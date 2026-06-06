@@ -4,10 +4,15 @@
 // 测试 registerAdapter, getAdapter, processMessage 成功/失败/重试/fallback/stats/persist/sendProgress
 // ================================================================
 
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from "fs";
 import * as path from "path";
 import os from "os";
+
+// Mock the logger module to avoid ENOENT from global _logStream singleton
+vi.mock('../modules/utils/logger', () => ({
+  logEvent: vi.fn(),
+}));
 
 import { AgentRuntime } from "../modules/core/runtime";
 import type {

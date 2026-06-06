@@ -252,6 +252,9 @@ export interface ContextConfig {
     autoCompact?: boolean;       // Layer 4: LLM 摘要
   };
 
+  // P0 修复：消息条数硬性上限（默认 200，防止无限膨胀）
+  maxMessages?: number;
+
   // 触发阈值（预算使用率）
   compressionThresholds?: {
     layer1Start?: number;  // 默认 0.40
@@ -323,6 +326,7 @@ const DEFAULT_CONFIG: ContextConfig = {
     layer3Start: 0.75,  // Context Collapse: 合并批量调用，75% 开始
     layer4Start: 0.85,  // Auto-Compact: LLM 摘要，85% 开始（留足 token 给摘要本身）
   },
+  maxMessages: 200,  // P0: 消息条数硬性上限
 };
 
 // ================================================================
@@ -400,6 +404,8 @@ export class ContextManager {
     const systemPrompt = body.system;
     let messages = this.normalizeAnthropicMessages(body.messages || []);
     this.buildToolNameMap(messages);
+    // P0: 消息条数硬性上限
+    messages = this.enforceMessageCap(messages);
     messages = this.applyTransformations(messages);
     messages = this.enforceTokenBudget(messages);
     const result: AnthropicRequestBody = {
@@ -417,6 +423,8 @@ export class ContextManager {
     const systemPrompt = body.system;
     let messages = this.normalizeAnthropicMessages(body.messages || []);
     this.buildToolNameMap(messages);
+    // P0: 消息条数硬性上限
+    messages = this.enforceMessageCap(messages);
     // Step 0: Unconditional pre-normalization (always runs, independent of budget)
     messages = this.normalizeToolOutputs(messages);
     messages = await this.applyTransformationsAsync(messages);
@@ -446,6 +454,8 @@ export class ContextManager {
     );
     let messages = this.normalizeResponsesMessages(conversationItems);
     this.buildToolNameMap(messages);
+    // P0: 消息条数硬性上限
+    messages = this.enforceMessageCap(messages);
     messages = this.applyTransformations(messages);
     messages = this.enforceTokenBudget(messages);
     const processedInput: ResponsesItem[] = [
@@ -468,6 +478,8 @@ export class ContextManager {
     );
     let messages = this.normalizeResponsesMessages(conversationItems);
     this.buildToolNameMap(messages);
+    // P0: 消息条数硬性上限
+    messages = this.enforceMessageCap(messages);
     // Step 0: Unconditional pre-normalization (always runs, independent of budget)
     messages = this.normalizeToolOutputs(messages);
     messages = await this.applyTransformationsAsync(messages);
@@ -490,6 +502,10 @@ export class ContextManager {
     const conversationMessages = messages.filter((m) => m.role !== 'system');
     let normalized = this.normalizeOpenAIMessages(conversationMessages);
     this.buildToolNameMap(normalized);
+    // P0: 消息条数硬性上限
+    normalized = this.enforceMessageCap(normalized);
+    // Step 0: normalize tool outputs (truncation + success simplification)
+    normalized = this.normalizeToolOutputs(normalized);
     normalized = this.applyTransformations(normalized);
     normalized = this.enforceTokenBudget(normalized);
     const result: OpenAIRequestBody = {
@@ -509,6 +525,8 @@ export class ContextManager {
     const conversationMessages = messages.filter((m) => m.role !== 'system');
     let normalized = this.normalizeOpenAIMessages(conversationMessages);
     this.buildToolNameMap(normalized);
+    // P0: 消息条数硬性上限
+    normalized = this.enforceMessageCap(normalized);
     // Step 0: Unconditional pre-normalization (always runs, independent of budget)
     normalized = this.normalizeToolOutputs(normalized);
     normalized = await this.applyTransformationsAsync(normalized);
@@ -585,7 +603,7 @@ export class ContextManager {
     if (this.isErrorOutput(content)) return ToolCategory.ERROR_OUTPUT;
 
     // 空/极短成功
-    if (trimmed.length < 50 && (trimmed.includes('exit code: 0') || trimmed.includes('Process exited')))
+    if (trimmed.length < 100 && (trimmed.includes('exit code: 0') || trimmed.includes('Process exited')))
       return ToolCategory.EMPTY_SUCCESS;
 
     // Git 输出
@@ -748,6 +766,7 @@ export class ContextManager {
 
     switch (category) {
       case ToolCategory.EMPTY_SUCCESS: {
+        if (!this.config.simplifySuccessOutputs) return content;
         const exitCode = content.match(/exit code: (\d+)/)?.[1] || '0';
         const time = content.match(/Wall time: ([\d.]+)s/)?.[1];
         return `✓ ${toolLabel}success (exit ${exitCode})${time ? `, ${time}s` : ''}`;
@@ -873,8 +892,8 @@ export class ContextManager {
         return `${toolLabel}screenshot captured`;
 
       default:
-        // 兜底：超长通用截断
-        if (content.length > this.config.maxToolOutputChars) {
+        // 兜底：超长通用截断（仅在 truncateToolOutput 启用时生效）
+        if (this.config.truncateToolOutput && content.length > this.config.maxToolOutputChars) {
           const max = this.config.maxToolOutputChars;
           const head = content.slice(0, Math.floor(max * 0.7));
           const tail = content.slice(-Math.floor(max * 0.2));
@@ -1006,7 +1025,14 @@ export class ContextManager {
       if (m.role !== 'tool' || !m.content) return m;
       const category = this.categorizeToolOutput(m);
       const originalLen = m.content.length;
-      const compressed = this.snipByCategory(category, m.content, m.toolCallId);
+      let compressed = this.snipByCategory(category, m.content, m.toolCallId);
+      // 全局硬性上限：分类截断后再应用 maxToolOutputChars
+      if (this.config.truncateToolOutput && compressed.length > this.config.maxToolOutputChars) {
+        const max = this.config.maxToolOutputChars;
+        const head = compressed.slice(0, Math.floor(max * 0.7));
+        const tail = compressed.slice(-Math.floor(max * 0.2));
+        compressed = `${head}\n\n... [${compressed.length - head.length - tail.length} chars omitted, truncated] ...\n\n${tail}`;
+      }
       if (compressed !== m.content) {
         m.content = compressed;
         m.metadata.snipped = true;
@@ -1190,6 +1216,40 @@ export class ContextManager {
     };
 
     return [...systemMsgs, summaryMsg, ...keptRounds.flat()];
+  }
+
+  // ============================================================
+  // P0 修复：消息条数硬性上限
+  // ============================================================
+  /**
+   * 消息条数硬性上限：保留 system 消息 + 最近 N 条
+   * 在 normalize 之后、transformations 之前执行，确保后续步骤不会处理过多消息
+   */
+  private enforceMessageCap(messages: NormalizedMessage[]): NormalizedMessage[] {
+    const maxMessages = this.config.maxMessages ?? 200;
+    if (messages.length <= maxMessages) return messages;
+
+    // 分离 system 消息
+    const systemMsgs = messages.filter(m => m.role === 'system');
+    const nonSystem = messages.filter(m => m.role !== 'system');
+
+    // 保留最近的消息（去掉最旧的）
+    const keepCount = maxMessages - systemMsgs.length;
+    const kept = nonSystem.slice(-keepCount);
+    const droppedCount = nonSystem.length - kept.length;
+
+    // 插入一条截断通知
+    const truncationNotice: NormalizedMessage = {
+      role: 'user',
+      content: `⚠️ [Context truncated: ${droppedCount} oldest messages removed due to message cap (${maxMessages} max). ` +
+        `Previous conversation history is no longer available.]`,
+      metadata: { messageCapTruncated: true, droppedCount },
+    };
+
+    const result = [...systemMsgs, truncationNotice, ...kept];
+
+    console.log(`[ContextManager] Message cap: ${messages.length} → ${result.length} msgs (dropped ${droppedCount} oldest)`);
+    return result;
   }
 
   // ============================================================

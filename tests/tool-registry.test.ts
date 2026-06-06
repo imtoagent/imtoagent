@@ -2,7 +2,7 @@
 // ToolRegistry 单元测试
 // ================================================================
 
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'vitest';
 import { ToolRegistry, type ToolDefinition } from '../modules/agent/tool-registry';
 
 // ================================================================

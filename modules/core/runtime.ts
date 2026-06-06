@@ -194,6 +194,26 @@ export class AgentRuntime {
         // 3. 重置统计
         this.config.statsTracker.resetForCall(session);
 
+        // P0.5: 死循环检测 — 基于累计总轮数（覆盖所有后端）
+        const lifetimeTurns = session.stats.totalTurns || 0;
+        const SOFT_LIMIT = 500;  // 注入停止提示
+        const HARD_LIMIT = 800;  // 硬截断
+
+        if (lifetimeTurns > HARD_LIMIT) {
+          console.warn(`[Runtime] Dead loop detected: ${lifetimeTurns} total turns (hard limit ${HARD_LIMIT}), aborting`);
+          await ctx.reply(`⚠️ 此会话已运行过久（累计 ${lifetimeTurns} 轮），已自动停止以避免无限循环。请开始新对话。`);
+          session.running = false;
+          this.config.sessionManager.persist(botName, session);
+          return { restart: false };
+        }
+
+        if (lifetimeTurns > SOFT_LIMIT) {
+          console.warn(`[Runtime] Session approaching loop limit: ${lifetimeTurns} turns (soft limit ${SOFT_LIMIT}), injecting stop hint`);
+          const stopHint = '\n\n⚠️ IMPORTANT: You have been working on this session for a very long time. ' +
+            'STOP using tools now. Based on the information you already have, give your FINAL answer directly.';
+          ctx.systemPrompt = (ctx.systemPrompt || '') + stopHint;
+        }
+
         // Log message received
         logEvent({
           event: 'message_received',

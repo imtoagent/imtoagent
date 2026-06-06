@@ -2,7 +2,7 @@
 // GoalStore 单元测试
 // ================================================================
 
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { GoalStore } from '../modules/core/goal-store';
@@ -197,13 +197,17 @@ describe('GoalStore - 状态迁移', () => {
     goal.trigger.time = '09:00';
     store.add(goal);
 
-    const now = new Date('2026-06-03T09:00:00+08:00');
     store.reschedule(goal.id);
 
     const g = store.get(goal.id)!;
     expect(g.lifecycle.runCount).toBe(1);
     expect(g.lifecycle.status).toBe('pending');
-    expect(g.lifecycle.nextRunAt).toContain('2026-06-05');
+    // reschedule 计算的是明天上海时间 09:00
+    const nextRun = new Date(g.lifecycle.nextRunAt!);
+    const shanghaiTomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    const [tomorrowDate] = shanghaiTomorrow.split(' ');
+    const expected = new Date(`${tomorrowDate}T09:00:00+08:00`);
+    expect(nextRun.getTime()).toBe(expected.getTime());
   });
 });
 

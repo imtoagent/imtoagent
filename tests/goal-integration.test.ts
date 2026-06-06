@@ -8,7 +8,7 @@
 //   T9: 多 Goal 同时到期串行执行
 // ================================================================
 
-import { describe, test, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterAll, mock } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { GoalEngine } from '../modules/core/goal-engine';

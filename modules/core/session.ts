@@ -401,4 +401,37 @@ export class FileSessionManager implements SessionManager {
       console.log(`[Session] Watchdog cleanup: ${s.chatId.slice(-8)}`);
     }
   }
+
+  /**
+   * P0.5: 内存感知驱逐 — 基于进程 RSS 清理空闲 session
+   * 当 RSS 超过阈值时，清理所有空闲（非 running）session
+   */
+  cleanupByMemory(botKey: string, rssWarnMB: number = 2048): void {
+    const botCache = this.cache.get(botKey);
+    if (!botCache || botCache.size === 0) return;
+
+    const rssMB = process.memoryUsage().rss / (1024 * 1024);
+    if (rssMB <= rssWarnMB) return;  // 内存正常，不需要清理
+
+    const now = Date.now();
+    const toRemove: string[] = [];
+
+    for (const [chatId, session] of botCache) {
+      // 豁免正在运行的 session
+      if (session.running) continue;
+      // 豁免心跳和定时任务 session
+      if (session.sessionType === 'heartbeat') continue;
+      if (session.sessionType === 'cron') continue;
+      toRemove.push(chatId);
+    }
+
+    if (toRemove.length > 0) {
+      for (const chatId of toRemove) {
+        botCache.delete(chatId);
+        // 持久化到文件（不清理文件，只清缓存）
+        console.log(`[Session] Memory-driven cache cleanup: ${chatId.slice(-8)}`);
+      }
+      console.log(`[Session] Memory-driven cleanup: removed ${toRemove.length} idle sessions (RSS ${Math.round(rssMB)}MB)`);
+    }
+  }
 }

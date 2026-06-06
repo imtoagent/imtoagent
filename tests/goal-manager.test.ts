@@ -2,7 +2,7 @@
 // GoalManager 单元测试
 // ================================================================
 
-import { describe, test, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, beforeEach, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { GoalManager, parseGoalManagement } from '../modules/core/goal-manager';

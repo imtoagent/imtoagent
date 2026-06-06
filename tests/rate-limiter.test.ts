@@ -12,7 +12,7 @@
  * 所以每个测试使用唯一的 chatId 避免互相干扰。
  */
 
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach } from 'vitest';
 import { checkRateLimit, setRateLimitConfig } from "../modules/rate-limiter";
 
 let idCounter = 0;

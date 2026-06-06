@@ -12,7 +12,7 @@
  * - attempt >= 2 → reply (no retry)
  */
 
-import { describe, it, expect, mock, afterEach } from "bun:test";
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { DefaultErrorHandler } from "../modules/core/error";
 import type { ErrorContext } from "../modules/core/types";
 
@@ -46,7 +46,7 @@ describe("DefaultErrorHandler rate limit (429)", () => {
     const handler = new DefaultErrorHandler();
 
     // Mock sleep to resolve immediately
-    const sleepSpy = mock(async (_ms: number) => {});
+    const sleepSpy = vi.fn(async (_ms: number) => {});
     (handler as any).sleep = sleepSpy;
 
     const error = makeError("status: 429 Rate limit exceeded");
@@ -245,7 +245,7 @@ describe("DefaultErrorHandler extractStatusCode", () => {
 describe("DefaultErrorHandler extractRetryAfter", () => {
   it("should extract retry-after from message", async () => {
     const handler = new DefaultErrorHandler();
-    const sleepSpy = mock(async (_ms: number) => {});
+    const sleepSpy = vi.fn(async (_ms: number) => {});
     (handler as any).sleep = sleepSpy;
 
     const error = makeError("status: 429 Retry-After: 5");
@@ -257,7 +257,7 @@ describe("DefaultErrorHandler extractRetryAfter", () => {
 
   it("should use default 2000ms when no retry-after found", async () => {
     const handler = new DefaultErrorHandler();
-    const sleepSpy = mock(async (_ms: number) => {});
+    const sleepSpy = vi.fn(async (_ms: number) => {});
     (handler as any).sleep = sleepSpy;
 
     const error = makeError("status: 429 Rate limited");

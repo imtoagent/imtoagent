@@ -579,7 +579,7 @@ export class HeartbeatScheduler {
       `类型: ${taskType}${task.interval ? ` (${task.interval})` : ''}`,
       `失败次数: ${maxRetries}/${maxRetries}`,
       `最后错误: ${lastError}`,
-      `时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+      `时间: ${formatShanghaiTimeShort(Date.now())}`,
     ].join('\n');
 
     console.warn(`[Cron] ALERT: ${alertMsg.replace(/\n/g, ' | ')}`);

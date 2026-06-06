@@ -13,9 +13,9 @@ export interface WatchdogConfig {
   checkIntervalMs?: number;
   /** 无消息超时（分钟），超过则判定卡死，默认 30 */
   idleTimeoutMin?: number;
-  /** 内存告警阈值（%），默认 80 */
+  /** 系统内存告警阈值（%），仅作参考，不触发退出，默认 80 */
   memoryWarnPercent?: number;
-  /** 内存退出阈值（%），默认 95 */
+  /** @deprecated 已废弃，改用进程 RSS 硬阈值（3GB） */
   memoryKillPercent?: number;
   /** 最大活跃 session 数，超过则清理最旧的，默认 100 */
   maxSessions?: number;
@@ -28,6 +28,8 @@ export interface WatchdogOptions {
   getSessionCount: () => number;
   /** 清理最旧的 N 个 session（由 Bot 层注入） */
   cleanupOldestSessions: (count: number) => void;
+  /** 内存感知驱逐空闲 session（由 Bot 层注入） */
+  cleanupSessionsByMemory?: () => void;
 }
 
 const DEFAULT_CONFIG: Required<WatchdogConfig> = {
@@ -106,19 +108,56 @@ export class Watchdog {
 
   /**
    * 检查内存使用
+   * P0 修复：改用进程 RSS 而非系统总内存，避免误杀
    */
   private checkMemory(): void {
+    const rssMB = process.memoryUsage().rss / (1024 * 1024);
+
+    // 系统内存作为辅助参考（判断整体压力）
     const totalMemMB = os.totalmem() / (1024 * 1024);
     const freeMemMB = os.freemem() / (1024 * 1024);
-    const usedPercent = ((totalMemMB - freeMemMB) / totalMemMB) * 100;
+    const systemUsedPercent = ((totalMemMB - freeMemMB) / totalMemMB) * 100;
 
-    if (usedPercent > this.config.memoryKillPercent) {
-      console.error(`[Watchdog] Memory usage ${Math.round(usedPercent)}% > kill threshold ${this.config.memoryKillPercent}%, exiting`);
+    // 进程 RSS 硬阈值
+    const rssWarnMB = 2048;   // 2 GB 告警
+    const rssKillMB = 3072;   // 3 GB 退出
+
+    if (rssMB > rssKillMB) {
+      console.error(`[Watchdog] Process RSS ${Math.round(rssMB)}MB > kill threshold ${rssKillMB}MB, exiting`);
       process.exit(1);
     }
 
-    if (usedPercent > this.config.memoryWarnPercent) {
-      console.warn(`[Watchdog] Memory usage ${Math.round(usedPercent)}% > warning threshold ${this.config.memoryWarnPercent}%`);
+    if (rssMB > rssWarnMB) {
+      console.warn(`[Watchdog] Process RSS ${Math.round(rssMB)}MB > warning threshold ${rssWarnMB}MB`);
+      // P0.5: 尝试内存感知驱逐
+      if (this.options.cleanupSessionsByMemory) {
+        this.options.cleanupSessionsByMemory();
+      }
+      // P1: 主动 GC
+      this.triggerGC();
+    }
+
+    // 系统内存作为辅助（仅告警，不退出）
+    if (systemUsedPercent > this.config.memoryWarnPercent) {
+      console.warn(`[Watchdog] System memory ${Math.round(systemUsedPercent)}% > warning threshold (reference only)`);
+    }
+  }
+
+  /**
+   * P1: 主动 GC 触发
+   * 如果 Node.js 启动时加了 --expose-gc，调用 global.gc()
+   * 否则跳过，不强制要求启动参数
+   */
+  private triggerGC(): void {
+    const globalObj = global as typeof global & { gc?: () => void };
+    if (typeof globalObj.gc === 'function') {
+      const beforeMB = Math.round(process.memoryUsage().rss / (1024 * 1024));
+      globalObj.gc();
+      const afterMB = Math.round(process.memoryUsage().rss / (1024 * 1024));
+      const freed = beforeMB - afterMB;
+      console.log(`[Watchdog] GC triggered: ${beforeMB}MB → ${afterMB}MB (freed ${freed}MB)`);
+    } else {
+      console.log('[Watchdog] GC not available (start Node with --expose-gc to enable)');
     }
   }
 

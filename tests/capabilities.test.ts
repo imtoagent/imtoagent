@@ -7,7 +7,7 @@
  * - 能力禁用时不解析对应语法
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from 'vitest';
 import { buildCapabilityPrompt, parseToBlocks } from "../modules/capabilities";
 import type { IMCapabilities } from "../modules/types";
 

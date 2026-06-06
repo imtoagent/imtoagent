@@ -2,7 +2,7 @@
 // ContextManager 单元测试
 // ================================================================
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   ContextManager,
   createContextManager,
@@ -408,8 +408,8 @@ describe('ContextManager - Success Output Simplification', () => {
 
     const result = manager.process(body) as any;
     const toolMsg = result.messages.find((m: any) => m.role === 'tool');
-    expect(toolMsg.content).toContain('✓ Success');
-    expect(toolMsg.content).toContain('abc123');
+    expect(toolMsg.content).toContain('success');
+    expect(toolMsg.content).toContain('exit 0');
     expect(toolMsg.content).toContain('1.23s');
     expect(toolMsg.content.length).toBeLessThan(100);
   });

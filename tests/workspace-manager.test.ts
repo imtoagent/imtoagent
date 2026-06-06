@@ -8,7 +8,7 @@
  *   - WorkspaceManager.isPathAllowed
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from 'vitest';
 import { parseWorkspaceConfig, WorkspaceManager } from "../modules/utils/workspace-manager";
 import { getDataDir } from "../modules/utils/paths";
 import * as path from "path";

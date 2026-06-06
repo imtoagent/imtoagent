@@ -11,7 +11,7 @@
 //  6. 回复发送回 IM
 // ================================================================
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'vitest';
 import * as fs from "fs";
 import * as path from "path";
 

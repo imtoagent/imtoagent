@@ -126,7 +126,7 @@ import { initCodexProxyConfig, resolveSupportedInputTypes, updateCodexConfig } f
 import { checkRateLimit, setRateLimitConfig } from './modules/rate-limiter';
 import { setCurrentBot } from './modules/bot-context';
 import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath } from './modules/utils/paths';
-import { TimezoneManager } from './modules/core/timezone';
+import { TimezoneManager, formatShanghaiTimeShort } from './modules/core/timezone';
 
 // ===== SDK 核心 =====
 import { AgentRuntime, FileSessionManager, DefaultErrorHandler, DefaultStatsTracker } from './modules/core';
@@ -889,7 +889,7 @@ class Bot {
       const taskStatus = this.heartbeatScheduler?.getTaskStatus();
       if (taskStatus && taskStatus.length > 0) {
         const lines = taskStatus.map(t => {
-          const lastRun = t.lastRunAt > 0 ? new Date(t.lastRunAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '未执行';
+          const lastRun = t.lastRunAt > 0 ? formatShanghaiTimeShort(t.lastRunAt) : '未执行';
           const locked = t.locked ? '🔒运行中' : '';
           const next = t.nextTriggerEstimate ? ` 下次: ${t.nextTriggerEstimate}` : '';
           return `  ${t.name} | ${t.type} | 运行${t.runCount}次 | 上次: ${lastRun}${locked}${next}`;
@@ -1305,6 +1305,7 @@ async function main() {
           getLastMessageTime: () => bot.sessionManager.getLastMessageTime(bot.id),
           getSessionCount: () => bot.sessionManager.getActiveCount(bot.id),
           cleanupOldestSessions: (n: number) => bot.sessionManager.cleanupOldest(bot.id, n),
+          cleanupSessionsByMemory: () => bot.sessionManager.cleanupByMemory(bot.id),
         }
       );
       bot.watchdog.start();

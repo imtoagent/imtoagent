@@ -104,7 +104,7 @@ Check system health.
   });
 });
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -186,12 +186,12 @@ tasks:
   interval: 1h
   prompt: "Check disk usage."
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].name).toBe('disk-check');
-    expect(tasks[0].type).toBe('interval');
-    expect(tasks[0].interval).toBe('1h');
-    expect(tasks[0].prompt).toBe('Check disk usage.');
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].name).toBe('disk-check');
+    expect(result.tasks[0].type).toBe('interval');
+    expect(result.tasks[0].interval).toBe('1h');
+    expect(result.tasks[0].prompt).toBe('Check disk usage.');
   });
 
   it('parses once task with at', () => {
@@ -202,10 +202,10 @@ tasks:
   at: "2026-06-03 15:00"
   prompt: "提醒开会"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].type).toBe('once');
-    expect(tasks[0].at).toBe('2026-06-03 15:00');
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].type).toBe('once');
+    expect(result.tasks[0].at).toBe('2026-06-03 15:00');
   });
 
   it('parses once task with after', () => {
@@ -216,9 +216,9 @@ tasks:
   after: "30m"
   prompt: "喝水"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks[0].type).toBe('once');
-    expect(tasks[0].after).toBe('30m');
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks[0].type).toBe('once');
+    expect(result.tasks[0].after).toBe('30m');
   });
 
   it('parses scheduled task', () => {
@@ -235,11 +235,11 @@ tasks:
   on: "monday"
   prompt: "Weekly report"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(2);
-    expect(tasks[0].type).toBe('scheduled');
-    expect(tasks[0].at).toBe('09:00');
-    expect(tasks[1].on).toBe('monday');
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(2);
+    expect(result.tasks[0].type).toBe('scheduled');
+    expect(result.tasks[0].at).toBe('09:00');
+    expect(result.tasks[1].on).toBe('monday');
   });
 
   it('parses countdown task', () => {
@@ -247,13 +247,14 @@ tasks:
 tasks:
 - name: retry-deploy
   type: countdown
-  interval: 1m
+  interval: 30m
   max_runs: 5
   prompt: "Check deploy"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks[0].type).toBe('countdown');
-    expect(tasks[0].max_runs).toBe(5);
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].type).toBe('countdown');
+    expect(result.tasks[0].max_runs).toBe(5);
   });
 
   it('skips once task missing at/after', () => {
@@ -263,8 +264,8 @@ tasks:
   type: once
   prompt: "This should be skipped"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(0);
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(0);
   });
 
   it('skips scheduled task missing at', () => {
@@ -274,8 +275,8 @@ tasks:
   type: scheduled
   prompt: "This should be skipped"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(0);
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(0);
   });
 
   it('merges defaults into tasks', () => {
@@ -291,19 +292,19 @@ tasks:
   prompt: "Check disk"
 
 - name: critical
-  interval: 5m
+  interval: 30m
   on_failure: alert
   prompt: "Critical check"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(2);
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(2);
     // disk-check inherits defaults
-    expect(tasks[0].on_failure).toBe('retry');
-    expect(tasks[0].max_retries).toBe(5);
-    expect(tasks[0].timeout).toBe('30s');
+    expect(result.tasks[0].on_failure).toBe('retry');
+    expect(result.tasks[0].max_retries).toBe(5);
+    expect(result.tasks[0].timeout).toBe('30s');
     // critical overrides on_failure
-    expect(tasks[1].on_failure).toBe('alert');
-    expect(tasks[1].max_retries).toBe(5); // still inherited
+    expect(result.tasks[1].on_failure).toBe('alert');
+    expect(result.tasks[1].max_retries).toBe(5); // still inherited
   });
 
   it('parses multiple tasks of different types', () => {
@@ -325,13 +326,13 @@ tasks:
 
 - name: countdown-task
   type: countdown
-  interval: 1m
+  interval: 30m
   deadline: "2026-06-03 18:00"
   prompt: "Countdown task"
 `;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(4);
-    expect(tasks.map(t => t.type)).toEqual([
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(4);
+    expect(result.tasks.map(t => t.type)).toEqual([
       'interval',
       'once',
       'scheduled',
@@ -406,8 +407,10 @@ describe('isTaskDue', () => {
     });
 
     it('not due when future target time', () => {
-      const future = new Date(now + 60 * 60 * 1_000); // 1 hour later
-      const at = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, '0')}-${String(future.getDate()).padStart(2, '0')} ${String(future.getHours()).padStart(2, '0')}:${String(future.getMinutes()).padStart(2, '0')}`;
+      // Build 'at' string from a future timestamp, converting to Shanghai time for parseDateTime
+      const futureTs = now + 2 * 60 * 60 * 1_000; // 2 hours from now
+      const futureShanghai = new Date(futureTs + 8 * 60 * 60 * 1_000);
+      const at = `${futureShanghai.getUTCFullYear()}-${String(futureShanghai.getUTCMonth() + 1).padStart(2, '0')}-${String(futureShanghai.getUTCDate()).padStart(2, '0')} ${String(futureShanghai.getUTCHours()).padStart(2, '0')}:${String(futureShanghai.getUTCMinutes()).padStart(2, '0')}`;
       const task = { name: 'test', type: 'once' as const, at, prompt: 'test' };
       expect(isTaskDue(task, undefined, now, undefined).due).toBe(false);
     });
@@ -441,9 +444,13 @@ describe('isTaskDue', () => {
 
   describe('scheduled type', () => {
     it('first run due when time passed today', () => {
-      // Use a time 1 hour ago as target
-      const past = new Date(now - 60 * 60 * 1_000);
-      const at = `${String(past.getHours()).padStart(2, '0')}:${String(past.getMinutes()).padStart(2, '0')}`;
+      // Compute Shanghai time from UTC now, then use a past Shanghai time
+      // Shanghai = UTC+8, so Shanghai ms = now + 8*60*60*1000
+      const shanghaiNow = now + 8 * 60 * 60 * 1_000;
+      const shanghaiDate = new Date(shanghaiNow);
+      // 1 hour ago in Shanghai time
+      const pastShanghai = new Date(shanghaiNow - 60 * 60 * 1_000);
+      const at = `${String(pastShanghai.getUTCHours()).padStart(2, '0')}:${String(pastShanghai.getUTCMinutes()).padStart(2, '0')}`;
       const task = { name: 'test', type: 'scheduled' as const, at, prompt: 'test' };
       expect(isTaskDue(task, undefined, now, undefined).due).toBe(true);
     });
@@ -475,13 +482,14 @@ describe('isTaskDue', () => {
     });
 
     it('due when interval elapsed and deadline not passed', () => {
-      const future = new Date(now + 60 * 60 * 1_000);
-      const deadline = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, '0')}-${String(future.getDate()).padStart(2, '0')} ${String(future.getHours()).padStart(2, '0')}:${String(future.getMinutes()).padStart(2, '0')}`;
-      const task = { name: 'test', type: 'countdown' as const, interval: '1m', deadline, prompt: 'test' };
+      // Build deadline string in Shanghai time since parseDateTime interprets it as such
+      const futureShanghai = new Date(now + 60 * 60 * 1_000 + 8 * 60 * 60 * 1_000);
+      const deadline = `${futureShanghai.getUTCFullYear()}-${String(futureShanghai.getUTCMonth() + 1).padStart(2, '0')}-${String(futureShanghai.getUTCDate()).padStart(2, '0')} ${String(futureShanghai.getUTCHours()).padStart(2, '0')}:${String(futureShanghai.getUTCMinutes()).padStart(2, '0')}`;
+      const task = { name: 'test', type: 'countdown' as const, interval: '30m', deadline, prompt: 'test' };
       // first run
       expect(isTaskDue(task, undefined, now, undefined).due).toBe(true);
       // after interval elapsed
-      const lastRunAt = now - 2 * 60 * 1_000;
+      const lastRunAt = now - 35 * 60 * 1_000;
       expect(isTaskDue(task, lastRunAt, now, undefined).due).toBe(true);
     });
   });
@@ -508,8 +516,10 @@ describe('parseTimeToday', () => {
   it('parses HH:MM as today', () => {
     const ts = parseTimeToday('09:00');
     expect(isNaN(ts)).toBe(false);
+    // parseTimeToday builds a local-date + HH:MM timestamp; verify the UTC hour matches Asia/Shanghai offset
+    // At Asia/Shanghai (UTC+8), 09:00 local = 01:00 UTC
     const d = new Date(ts);
-    expect(d.getHours()).toBe(9);
+    expect(d.getUTCHours()).toBe(1); // 09:00 CST = 01:00 UTC
     expect(d.getMinutes()).toBe(0);
   });
 });

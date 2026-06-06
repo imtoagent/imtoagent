@@ -11,7 +11,7 @@
  * - filterAndSend (output-router)
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from 'vitest';
 import {
   isHeartbeatContentEffectivelyEmpty,
   stripHeartbeatTasksBlock,
@@ -133,13 +133,13 @@ describe("parseHeartbeatTasks", () => {
 - name: memory-check
   interval: 30m
   prompt: "Check memory."`;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(2);
-    expect(tasks[0].name).toBe("disk-check");
-    expect(tasks[0].interval).toBe("1h");
-    expect(tasks[0].prompt).toBe("Check disk usage.");
-    expect(tasks[1].name).toBe("memory-check");
-    expect(tasks[1].interval).toBe("30m");
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(2);
+    expect(result.tasks[0].name).toBe("disk-check");
+    expect(result.tasks[0].interval).toBe("1h");
+    expect(result.tasks[0].prompt).toBe("Check disk usage.");
+    expect(result.tasks[1].name).toBe("memory-check");
+    expect(result.tasks[1].interval).toBe("30m");
   });
 
   it("parses YAML style tasks", () => {
@@ -149,20 +149,22 @@ tasks:
 - name: disk-check
   interval: 1h
   prompt: "Check disk."`;
-    const tasks = parseHeartbeatTasks(md);
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0].name).toBe("disk-check");
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].name).toBe("disk-check");
   });
 
   it("returns empty array when no tasks section", () => {
-    expect(parseHeartbeatTasks("# Heartbeat\n\nNo tasks here.")).toEqual([]);
+    expect(parseHeartbeatTasks("# Heartbeat\n\nNo tasks here.")).toEqual({ tasks: [], errors: [] });
   });
 
   it("skips tasks without interval", () => {
     const md = `## Tasks
 - name: no-interval
   prompt: "No interval."`;
-    expect(parseHeartbeatTasks(md)).toEqual([]);
+    const result = parseHeartbeatTasks(md);
+    expect(result.tasks).toEqual([]);
+    expect(result.errors.length).toBeGreaterThan(0);
   });
 });
 
@@ -244,16 +246,18 @@ describe("HEARTBEAT_ROUNDS_MAX", () => {
 });
 
 // ================================================================
-// isHeartbeatOk (output-router) - Phase 1 重构后始终返回 false
+// isHeartbeatOk (output-router) — ≤300 字符且 HEARTBEAT_OK 独占一行时返回 true
 // ================================================================
 
 describe("isHeartbeatOk", () => {
-  it("always returns false after Phase 1 refactoring", () => {
-    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(false);
-    expect(isHeartbeatOk("heartbeat_ok")).toBe(false);
-    expect(isHeartbeatOk("Heartbeat_OK")).toBe(false);
-    expect(isHeartbeatOk("heartbeat ok")).toBe(false);
-    expect(isHeartbeatOk("HEARTBEAT OK")).toBe(false);
+  it("returns true for HEARTBEAT_OK variants", () => {
+    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(true);
+    expect(isHeartbeatOk("heartbeat_ok")).toBe(true);
+    expect(isHeartbeatOk("Heartbeat_OK")).toBe(true);
+    expect(isHeartbeatOk("heartbeat ok")).toBe(true);
+    expect(isHeartbeatOk("HEARTBEAT OK")).toBe(true);
+  });
+  it("returns false for empty or non-heartbeat text", () => {
     expect(isHeartbeatOk("")).toBe(false);
     expect(isHeartbeatOk("some text")).toBe(false);
   });
@@ -275,26 +279,26 @@ describe("filterAndSend", () => {
     expect(sent).toBe(true);
   });
 
-  it("heartbeat session sends HEARTBEAT_OK (no longer filtered)", () => {
+  it("heartbeat session filters HEARTBEAT_OK", () => {
     let sentText = "";
     const result = filterAndSend("HEARTBEAT_OK", {
       sessionType: "heartbeat",
       reply: async (t: string) => { sentText = t; },
     });
-    expect(result.shouldSend).toBe(true);
-    expect(result.reason).toBe("normal");
-    expect(sentText).toBe("HEARTBEAT_OK");
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sentText).toBe("");
   });
 
-  it("cron session sends heartbeat_ok (no longer filtered)", () => {
+  it("cron session filters heartbeat_ok", () => {
     let sentText = "";
     const result = filterAndSend("heartbeat_ok", {
       sessionType: "cron",
       reply: async (t: string) => { sentText = t; },
     });
-    expect(result.shouldSend).toBe(true);
-    expect(result.reason).toBe("normal");
-    expect(sentText).toBe("heartbeat_ok");
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sentText).toBe("");
   });
 
   it("heartbeat session sends normal content", () => {

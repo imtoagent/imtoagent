@@ -10,7 +10,7 @@
  * Uses bun:test, temporary directories, and environment variable mocking.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from "fs";
 import * as path from "path";
 import {

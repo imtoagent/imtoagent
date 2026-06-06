@@ -10,7 +10,7 @@
  * - Cache and reset
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   loadPresets,
   findPreset,

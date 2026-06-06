@@ -2,7 +2,7 @@
 // core-config.test.ts — FileConfigManager 核心测试
 // 测试: get嵌套, getBotConfig, getProviderConfig, getActiveModel, resolveModel
 // ================================================================
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from "fs";
 import * as path from "path";
 import { FileConfigManager } from "../modules/core/config";

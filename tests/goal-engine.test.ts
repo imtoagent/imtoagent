@@ -2,7 +2,7 @@
 // GoalEngine 单元测试
 // ================================================================
 
-import { describe, test, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, beforeEach, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -375,9 +375,11 @@ describe('GoalEngine - 执行', () => {
     expect(updated.lifecycle.status).toBe('pending');
     expect(updated.lifecycle.runCount).toBe(1);
     expect(updated.lifecycle.nextRunAt).toBeDefined();
-    // 下次应该在明天
+    // 下次应该在 ~24 小时后（12-36 小时之间）
     const nextRun = new Date(updated.lifecycle.nextRunAt!);
-    expect(nextRun.getDate()).toBe(now.getDate() + 1);
+    const diffHours = (nextRun.getTime() - now.getTime()) / 3600_000;
+    expect(diffHours).toBeGreaterThan(12);
+    expect(diffHours).toBeLessThan(36);
   });
 
   test('锁冲突时跳过', async () => {

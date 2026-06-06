@@ -6,21 +6,24 @@
  * - filterAndSend 路由逻辑（main/heartbeat/cron）
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from 'vitest';
 import { isHeartbeatOk, isHeartbeatDuplicate, filterAndSend } from "../modules/core/output-router";
 
 // ================================================================
-// 1. isHeartbeatOk (Phase 1 重构后始终返回 false)
+// 1. isHeartbeatOk (实际行为：≤300 字符且 HEARTBEAT_OK 独占一行时返回 true)
 // ================================================================
 
 describe("isHeartbeatOk", () => {
-  it("should always return false after Phase 1 refactoring", () => {
-    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(false);
-    expect(isHeartbeatOk("HEARTBEAT OK")).toBe(false);
-    expect(isHeartbeatOk("heartbeat_ok")).toBe(false);
-    expect(isHeartbeatOk("\n  HEARTBEAT_OK  \n")).toBe(false);
+  it("should return true for HEARTBEAT_OK standalone", () => {
+    expect(isHeartbeatOk("HEARTBEAT_OK")).toBe(true);
+    expect(isHeartbeatOk("HEARTBEAT OK")).toBe(true);
+    expect(isHeartbeatOk("heartbeat_ok")).toBe(true);
+    expect(isHeartbeatOk("\n  HEARTBEAT_OK  \n")).toBe(true);
+  });
+  it("should return false for empty or long text", () => {
     expect(isHeartbeatOk("")).toBe(false);
     expect(isHeartbeatOk("some text")).toBe(false);
+    expect(isHeartbeatOk("a".repeat(301))).toBe(false);
   });
 });
 
@@ -80,42 +83,42 @@ describe("filterAndSend main session", () => {
 });
 
 describe("filterAndSend heartbeat session", () => {
-  // Phase 1 重构后：heartbeat session 不再过滤 HEARTBEAT_OK，直接发送
+  // 实际行为：heartbeat session 会过滤 HEARTBEAT_OK 和短噪音
 
-  it("should send HEARTBEAT_OK in heartbeat session (no longer filtered)", async () => {
-    let sent = "";
+  it("should filter HEARTBEAT_OK in heartbeat session", async () => {
+    let sent = false;
     const result = filterAndSend("HEARTBEAT_OK", {
       sessionType: "heartbeat",
-      reply: async (t: string) => { sent = t; },
+      reply: async () => { sent = true; },
     });
 
-    expect(result.shouldSend).toBe(true);
-    expect(result.reason).toBe("normal");
-    expect(sent).toBe("HEARTBEAT_OK");
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
   });
 
-  it("should send JSON status ok in heartbeat session (no longer filtered)", async () => {
-    let sent = "";
+  it("should filter JSON status ok in heartbeat session", async () => {
+    let sent = false;
     const result = filterAndSend('{"status": "ok"}', {
       sessionType: "heartbeat",
-      reply: async (t: string) => { sent = t; },
+      reply: async () => { sent = true; },
     });
 
-    expect(result.shouldSend).toBe(true);
-    expect(result.reason).toBe("normal");
-    expect(sent).toBe('{"status": "ok"}');
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
   });
 
-  it("should send short text like 全部正常 (no longer filtered)", async () => {
-    let sent = "";
+  it("should filter short noise like 全部正常 in heartbeat session", async () => {
+    let sent = false;
     const result = filterAndSend("全部正常。", {
       sessionType: "heartbeat",
-      reply: async (t: string) => { sent = t; },
+      reply: async () => { sent = true; },
     });
 
-    expect(result.shouldSend).toBe(true);
-    expect(result.reason).toBe("normal");
-    expect(sent).toBe("全部正常。");
+    expect(result.shouldSend).toBe(false);
+    expect(result.reason).toBe("heartbeat_ok_filtered");
+    expect(sent).toBe(false);
   });
 
   it("should filter duplicates in heartbeat session", async () => {

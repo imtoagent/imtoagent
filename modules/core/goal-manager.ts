@@ -15,7 +15,7 @@
 import type { Goal, GoalTrigger, GoalAction, RepeatStrategy, GoalType } from './goal-types';
 import { createGoal, generateGoalId } from './goal-types';
 import type { GoalStore } from './goal-store';
-import { getShanghaiDateParts } from './timezone';
+import { getShanghaiDateParts, formatShanghaiTimeShort } from './timezone';
 
 // ================================================================
 // 解析函数
@@ -276,13 +276,7 @@ export class GoalManager {
     const lines = filtered.map(g => {
       const status = g.lifecycle.status;
       const nextRun = g.lifecycle.nextRunAt
-        ? new Date(g.lifecycle.nextRunAt).toLocaleString('zh-CN', {
-            timeZone: 'Asia/Shanghai',
-            month: 'numeric',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-          })
+        ? formatShanghaiTimeShort(g.lifecycle.nextRunAt)
         : '未调度';
       const type = g.type;
       const rawInput = g.metadata.rawInput.length > 30

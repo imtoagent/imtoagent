@@ -12,7 +12,7 @@
  * - Manager findAvailable / healthStatus
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   CircuitBreaker,
   CircuitBreakerManager,
