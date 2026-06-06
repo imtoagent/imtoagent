@@ -21,6 +21,7 @@ import { getDataDir, getSessionsDir } from '../utils/paths';
 import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
 import { logEvent } from '../utils/logger';
 import { logUsage } from './usage-logger';
+import { ContextManager } from './context-manager';
 import type {
   AnthropicRequestBody,
   OpenAIRequestBody,
@@ -772,6 +773,23 @@ export function calculateCost(modelSpec: string, inputTokens: number, outputToke
 let server: http.Server | null = null;
 const REQUEST_TIMEOUT = 120_000; // 120 秒
 
+// ===== ContextManager — 通用上下文管理 =====
+const contextManager = new ContextManager({
+  backend: 'anthropic',
+  budget: {
+    maxTokens: 64000,
+    reservedForResponse: 8000,
+    maxInputTokens: 48000,
+  },
+  keepRecentRounds: 2,
+  maxToolOutputChars: 2000,
+  truncateToolOutput: true,
+  simplifySuccessOutputs: true,
+  preserveSystemPrompt: true,
+  preserveReasoning: true,
+  debugLog: true,
+});
+
 function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   const reqUrl = new URL(req.url || '/', 'http://localhost');
   const reqPath = reqUrl.pathname;
@@ -966,6 +984,29 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const targetUpstreamPath = targetIsAnthropic
       ? `${targetBasePath}/v1/messages`
       : `${targetBasePath}/chat/completions`;
+
+    // 🧠 ContextManager — 通用上下文管理（token 预算 + tool output 压缩）
+    // 所有 Agentic 后端共享：Claude Code、OpenCode 和 Codex 均经过此路径
+    // 此时 parsedBody 仍为 Anthropic 格式，格式转换在后面
+    const preMsgCount = (parsedBody.messages || []).length;
+    const preEstChars = (parsedBody.messages || []).reduce(
+      (s: number, m: AnthropicMessage) => s + (typeof m.content === 'string' ? m.content.length
+        : Array.isArray(m.content) ? m.content.reduce((ss: number, b) => ss + (b.type === 'text' ? (b as AnthropicTextBlock).text.length : 0), 0)
+        : 0), 0);
+
+    const processedBody = contextManager.process(parsedBody) as typeof parsedBody;
+
+    const postMsgCount = (processedBody.messages || []).length;
+    const postEstChars = (processedBody.messages || []).reduce(
+      (s: number, m: AnthropicMessage) => s + (typeof m.content === 'string' ? m.content.length
+        : Array.isArray(m.content) ? m.content.reduce((ss: number, b) => ss + (b.type === 'text' ? (b as AnthropicTextBlock).text.length : 0), 0)
+        : 0), 0);
+
+    if (preMsgCount !== postMsgCount || Math.abs(preEstChars - postEstChars) > 100) {
+      const savings = preEstChars - postEstChars;
+      console.log(`[Proxy] 🧠 ContextManager: ${preMsgCount}→${postMsgCount} msgs, ~${preEstChars.toLocaleString()}→~${postEstChars.toLocaleString()} chars (saved ${savings.toLocaleString()})`);
+    }
+    parsedBody = processedBody;
 
     // 格式转换
     let finalBody: string;

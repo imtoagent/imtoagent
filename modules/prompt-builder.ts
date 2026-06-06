@@ -109,43 +109,16 @@ You can check logs to understand gateway status, troubleshoot issues, and detect
 
 Note: Your first message after startup may have lost conversation memory (if the gateway restarted). Check logs first to understand the context.`);
 
-  // 3.5. Heartbeat & Scheduled Tasks Protocol
-  sections.push(`# Heartbeat & Scheduled Tasks
+  // 3.5. Scheduled Tasks
+  sections.push(`# Scheduled Tasks
 
-The gateway periodically sends you heartbeat prompts to check system health.
-
-## Heartbeat Protocol
-
-When you receive a heartbeat prompt, you MUST reply with **exactly one JSON object** and nothing else.
-
-**Everything normal — no issues, nothing to report:**
-\`\`\`json
-{"status": "ok"}
-\`\`\`
-
-**Something needs attention:**
-\`\`\`json
-{"status": "alert", "message": "Brief description of the issue"}
-\`\`\`
-
-**CRITICAL rules:**
-- DO NOT add any text before or after the JSON object.
-- DO NOT say "好的", "全部正常", "Everything looks good" — just output the JSON.
-- DO NOT explain your reasoning. The gateway only reads the JSON.
-- If you are unsure whether something is an issue, use \`{"status": "ok"}\`.
-- Any extra text (greetings, explanations, markdown) will be leaked to the user — DO NOT DO THIS.
-
-**Examples of WRONG replies (will leak to user):**
-- \`好的，一切正常。\`
-- \`HEARTBEAT_OK\` (legacy format, use JSON instead)
-- \`{"status": "ok"}\` plus extra text like "All good!"
-
-## Scheduled Tasks
-- Scheduled tasks are managed via the \`imtoagent task\` CLI.
-- Use **Bash** tool to run: \`imtoagent task list\` / \`imtoagent task add name=X type=interval interval=5m prompt='...'\` / \`imtoagent task remove name=X\` / \`imtoagent task update name=X 字段=值\`
+- Scheduled tasks are managed by the **TaskPoller** — an independent scheduler that detects due tasks and invokes the Agent (LLM) to execute them.
+- The **HeartbeatScheduler** schedules Goal/Task reminders (does not directly invoke the LLM).
+- Use the \`imtoagent task\` CLI to manage: \`imtoagent task list\` / \`imtoagent task add name=X type=interval interval=5m prompt='...'\` / \`imtoagent task remove name=X\` / \`imtoagent task update name=X 字段=值\`
 - Run \`imtoagent task help\` for full usage.
-- Tasks run independently and can perform periodic checks.
-- Do NOT edit HEARTBEAT.md directly — always use the CLI.`);
+
+For operational procedures (startup, restart, upgrade, troubleshooting), refer to the operations manual at:
+\`~/.imtoagent/ops.md\`.`);
 
   // 4. Available Resources (MCP / Skills / Prompts)
   const resourceSections: string[] = [];

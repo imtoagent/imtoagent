@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getDataDir } from '../utils/paths';
 import { logUsage } from './usage-logger';
+import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
 
 // ================================================================
@@ -22,9 +23,51 @@ interface CodexProxyConfig {
 
 let _codexConfig: CodexProxyConfig | null = null;
 
+// ================================================================
+// P2: ContextManager singleton — token budget + tool output compression + semantic compression
+// ================================================================
+const codexContextManager = new ContextManager({
+  backend: 'openai',
+  budget: {
+    maxTokens: 64000,
+    reservedForResponse: 8000,
+    maxInputTokens: 48000,
+  },
+  keepRecentRounds: 2,
+  maxToolOutputChars: 2000,
+  truncateToolOutput: true,
+  simplifySuccessOutputs: true,
+  preserveSystemPrompt: true,
+  preserveReasoning: true,
+  debugLog: true,
+  semanticCompression: {
+    model: 'deepseek-ai/DeepSeek-V3',
+    apiBase: 'https://api.siliconflow.cn/v1',
+    apiKey: process.env.SILICONFLOW_API_KEY || '',
+    thresholdRatio: 0.5,
+    maxOutputTokens: 4096,
+    timeoutMs: 10000,
+    enableCache: true,
+    cacheSize: 200,
+  },
+});
+
 export function initCodexProxyConfig(cfg: CodexProxyConfig) {
   _codexConfig = cfg;
   console.log(`[Codex Proxy] Config loaded: model=${cfg.model}, upstream=${cfg.upstream}`);
+}
+
+/**
+ * 热切换模型：在 /model 命令中调用，更新内存中的 _codexConfig。
+ * 需同时持久化到 config.json（调用方负责），确保重启后不丢失。
+ */
+export function updateCodexConfig(modelSpec: string) {
+  if (_codexConfig) {
+    const parts = modelSpec.split('/');
+    const modelName = parts[parts.length - 1] || modelSpec;
+    _codexConfig.model = modelName;
+    console.log(`[Codex Proxy] Model hot-switched to: ${modelName}`);
+  }
 }
 
 function getConfig(): CodexProxyConfig {
@@ -412,7 +455,7 @@ function validateToolPairing(messages: ChatMessage[]): ChatMessage[] {
 // ================================================================
 // 2. 响应翻译: Chat SSE → Responses SSE
 // ================================================================
-async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>): Promise<void> {
+async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>, reqBody?: OpenAIRequestBody): Promise<void> {
   const enc = new TextEncoder();
   let accumulatedText = '';
   let accumulatedReasoning = '';
@@ -592,6 +635,8 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
               outputTokens: outT,
               totalTokens: inT + outT,
               isStream: true,
+              messageCount: Array.isArray(reqBody?.messages) ? reqBody.messages.length : Array.isArray((reqBody as any)?.input) ? (reqBody as any).input.length : undefined,
+              hasTools: !!(Array.isArray(reqBody?.tools) && (reqBody.tools as any[]).length > 0),
             });
           }
         }
@@ -706,6 +751,19 @@ export async function handleCodexRequest(
       if (typeof sysMsg.content !== 'string') sysMsg.content = '';
       sysMsg.content = sysMsg.content + '\n\n---\n\n' + systemPrompt;
 
+      // P2: ContextManager — four-layer progressive compression
+      const preMsgs = chatReq.messages.length;
+      const preEst = chatReq.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
+      const processed = await codexContextManager.processAsync(chatReq) as typeof chatReq;
+      const postMsgs = processed.messages.length;
+      const postEst = processed.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
+      const savings = preEst - postEst;
+      // Always log to verify processAsync is running
+      console.log(`[Codex] 🔧 ContextManager: ${preMsgs}→${postMsgs} msgs, ~${preEst.toLocaleString()}→~${postEst.toLocaleString()} chars (saved ${savings.toLocaleString()})`);
+      if (savings > 0) {
+        Object.assign(chatReq, processed);
+      }
+
       const roles = chatReq.messages?.map((m: ChatMessage) => m.role).join(',');
       console.log(`[Codex] → ${chatReq.model} [${roles}] tools:${chatReq.tools?.length || 0}`);
 
@@ -757,7 +815,7 @@ export async function handleCodexRequest(
             abort(_err: unknown) { res.end(); },
           });
           const writer = writable.getWriter();
-          await streamResponse(retryRes, writer).catch((e: unknown) => {
+          await streamResponse(retryRes, writer, body).catch((e: unknown) => {
             console.error(`[Codex] streamResponse error: ${e?.message || e}`);
           }).finally(() => { try { writer.close(); } catch {} });
           return;
@@ -781,7 +839,7 @@ export async function handleCodexRequest(
         },
       });
       const writer = writable.getWriter();
-      await streamResponse(upstreamRes, writer).catch((e: unknown) => {
+      await streamResponse(upstreamRes, writer, body).catch((e: unknown) => {
         console.error(`[Codex] streamResponse error: ${e?.message || e}`);
       }).finally(() => {
         try { writer.close(); } catch {}

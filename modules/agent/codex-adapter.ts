@@ -86,9 +86,9 @@ async function spawnCodexExec(cwd: string, prompt: string, cancelSignal?: AbortS
   return { threadId, response };
 }
 
-async function spawnCodexResume(cwd: string, threadId: string, prompt: string, cancelSignal?: AbortSignal): Promise<{ response: string }> {
+async function spawnCodexResume(cwd: string, threadId: string, prompt: string, model?: string, cancelSignal?: AbortSignal): Promise<{ response: string }> {
   const child = Bun.spawn(['codex', 'exec', 'resume', threadId,
-    '--dangerously-bypass-approvals-and-sandbox', '-c', 'model_provider=imtoagent', '-c', 'model=gpt-5.5', '--json', '--skip-git-repo-check', prompt], {
+    '--dangerously-bypass-approvals-and-sandbox', '-c', 'model_provider=imtoagent', '-c', `model=${model || 'gpt-5.5'}`, '--json', '--skip-git-repo-check', prompt], {
     cwd, stdout: 'pipe', stderr: 'pipe',
   });
 
@@ -291,7 +291,7 @@ export class CodexAdapter implements AgentAdapter {
         session.metadata.codexThreadId = r.threadId;
         response = r.response;
       } else {
-        const r = await spawnCodexResume(cwd, sessionAny.codexThreadId, effectiveText, input.cancelSignal);
+        const r = await spawnCodexResume(cwd, sessionAny.codexThreadId, effectiveText, input.model, input.cancelSignal);
         response = r.response;
       }
     }
