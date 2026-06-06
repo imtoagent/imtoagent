@@ -7,6 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 import type { Session, SessionManager, CallStats } from './types';
 import { HEARTBEAT_ROUNDS_MAX } from './heartbeat';
@@ -140,7 +141,14 @@ export class FileSessionManager implements SessionManager {
           session = this.createNewSession(chatId, userId);
         }
       } catch (e: unknown) {
-        console.error(`[Session] Failed to load ${chatId}: ${e.message}, creating new session`);
+        const errMsg = (e as Error).message;
+        console.error(`[Session] Failed to load ${chatId}: ${errMsg}, creating new session`);
+        // L1 防护：备份损坏文件，便于后续排查
+        try {
+          const bakPath = `${filePath}.corrupt.${Date.now()}`;
+          fs.copyFileSync(filePath, bakPath);
+          console.error(`[Session] Corrupted session backed up to: ${bakPath}`);
+        } catch {}
         session = this.createNewSession(chatId, userId);
       }
     } else {
@@ -221,9 +229,14 @@ export class FileSessionManager implements SessionManager {
     const fileKey = session.sessionKey || session.chatId;
     const filePath = this.sessionPath(botKey, fileKey);
     try {
-      fs.writeFileSync(filePath, JSON.stringify(output, null, 2));
+      // L1 防护：tmp + rename 确保原子写入，防断电半截文件
+      const tmpPath = path.join(os.tmpdir(), `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.tmp`);
+      fs.writeFileSync(tmpPath, JSON.stringify(output, null, 2));
+      fs.renameSync(tmpPath, filePath);
     } catch (e: unknown) {
-      console.error(`[Session] Failed to persist ${session.chatId}: ${e.message}`);
+      console.error(`[Session] Failed to persist ${session.chatId}: ${(e as Error).message}`);
+      // 清理可能残留的 tmp 文件
+      try { fs.unlinkSync(path.join(os.tmpdir(), path.basename(filePath))); } catch {}
     }
   }
 
@@ -282,6 +295,12 @@ export class FileSessionManager implements SessionManager {
         };
       } catch (e: unknown) {
         console.error(`[Session] Failed to load ${sessionKey}: ${(e as Error).message}, creating new session`);
+        // L1 防护：备份损坏文件
+        try {
+          const bakPath = `${filePath}.corrupt.${Date.now()}`;
+          fs.copyFileSync(filePath, bakPath);
+          console.error(`[Session] Corrupted session backed up to: ${bakPath}`);
+        } catch {}
         session = this.createNewSessionByKey(sessionKey, defaults);
       }
     } else {
@@ -341,5 +360,45 @@ export class FileSessionManager implements SessionManager {
     const botCache = this.cache.get(botKey);
     if (!botCache) return [];
     return Array.from(botCache.values());
+  }
+
+  /**
+   * Watchdog: 获取上次处理消息的时间
+   */
+  getLastMessageTime(botKey: string): number {
+    const botCache = this.cache.get(botKey);
+    if (!botCache || botCache.size === 0) return 0;
+    let latest = 0;
+    for (const s of botCache.values()) {
+      if (s.lastUsed > latest) latest = s.lastUsed;
+    }
+    return latest;
+  }
+
+  /**
+   * Watchdog: 获取活跃 session 数量
+   */
+  getActiveCount(botKey: string): number {
+    const botCache = this.cache.get(botKey);
+    return botCache ? botCache.size : 0;
+  }
+
+  /**
+   * Watchdog: 清理最旧的 N 个 session
+   */
+  cleanupOldest(botKey: string, count: number): void {
+    const botCache = this.cache.get(botKey);
+    if (!botCache || botCache.size === 0) return;
+    const sorted = Array.from(botCache.values()).sort((a, b) => a.lastUsed - b.lastUsed);
+    for (let i = 0; i < Math.min(count, sorted.length); i++) {
+      const s = sorted[i];
+      const fileKey = s.sessionKey || s.chatId;
+      const filePath = this.sessionPath(botKey, fileKey);
+      try {
+        fs.unlinkSync(filePath);
+      } catch {}
+      botCache.delete(s.chatId);
+      console.log(`[Session] Watchdog cleanup: ${s.chatId.slice(-8)}`);
+    }
   }
 }

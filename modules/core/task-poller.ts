@@ -281,54 +281,69 @@ export class TaskPoller {
 
     const now = Date.now();
 
-    for (const [name, entry] of this.tasks) {
-      const task = entry.task;
-      const runState = this.taskState.getCompatible(name);
-      const lastRunAt = runState.lastRunAt > 0 ? runState.lastRunAt : undefined;
-
-      // Phase 2: 检查任务锁 + 超时
-      const lock = this.taskLocks.get(name);
-      if (lock) {
-        const lockTimeoutMs = this.config.lockTimeoutMs ?? 120_000;
-        const lockDuration = now - lock.acquiredAt;
-        if (lockDuration > lockTimeoutMs) {
-          // 锁超时：强制释放
-          console.warn(`[TaskPoller] Task ${name} lock timed out (${Math.round(lockDuration / 1000)}s > ${Math.round(lockTimeoutMs / 1000)}s), force-releasing`);
-          this.taskLocks.delete(name);
-          // 更新 lastRunAt 防止下次 tick 立即重复触发
-          this.taskState.set(name, { ...runState, lastRunAt: now });
-          // 通知调度器处理超时
-          if (this.config.onTaskTimeout) {
-            this.config.onTaskTimeout(task);
-          }
+    try {
+      for (const [name, entry] of this.tasks) {
+        try {
+          this.tickOne(name, entry, now);
+        } catch (e: any) {
+          console.error(`[TaskPoller] tick error on task ${name}: ${e.message}`);
         }
-        continue;
       }
+    } catch (e: any) {
+      console.error(`[TaskPoller] tick loop error: ${e.message}`);
+    }
+  }
 
-      const due = isTaskDue(task, lastRunAt, now, entry.createdAt, runState.runCount);
+  /**
+   * 处理单个任务的 tick 逻辑（提取为独立方法便于隔离错误）
+   */
+  private tickOne(name: string, entry: TaskPollerEntry, now: number): void {
+    const task = entry.task;
+    const runState = this.taskState.getCompatible(name);
+    const lastRunAt = runState.lastRunAt > 0 ? runState.lastRunAt : undefined;
 
-      if (due.due) {
-        // 获取锁
-        this.taskLocks.set(name, { acquiredAt: now });
-
-        // Task Observability: 任务被调度
-        TaskLogger.log({
-          event: 'task.scheduled',
-          name,
-          type: task.type || 'interval',
-        });
-
-        // 跟踪 in-flight 任务
-        const promise = this.fireTask(entry, name, runState).finally(() => {
-          this.inFlight.delete(promise);
-          this.taskLocks.delete(name); // 释放锁
-        });
-        this.inFlight.add(promise);
-        promise.catch(err => {
-          console.error(`[TaskPoller] Error firing task ${name}:`, err.message);
-          this.taskLocks.delete(name); // 异常时也要释放锁
-        });
+    // Phase 2: 检查任务锁 + 超时
+    const lock = this.taskLocks.get(name);
+    if (lock) {
+      const lockTimeoutMs = this.config.lockTimeoutMs ?? 120_000;
+      const lockDuration = now - lock.acquiredAt;
+      if (lockDuration > lockTimeoutMs) {
+        // 锁超时：强制释放
+        console.warn(`[TaskPoller] Task ${name} lock timed out (${Math.round(lockDuration / 1000)}s > ${Math.round(lockTimeoutMs / 1000)}s), force-releasing`);
+        this.taskLocks.delete(name);
+        // 更新 lastRunAt 防止下次 tick 立即重复触发
+        this.taskState.set(name, { ...runState, lastRunAt: now });
+        // 通知调度器处理超时
+        if (this.config.onTaskTimeout) {
+          this.config.onTaskTimeout(task);
+        }
       }
+      return;
+    }
+
+    const due = isTaskDue(task, lastRunAt, now, entry.createdAt, runState.runCount);
+
+    if (due.due) {
+      // 获取锁
+      this.taskLocks.set(name, { acquiredAt: now });
+
+      // Task Observability: 任务被调度
+      TaskLogger.log({
+        event: 'task.scheduled',
+        name,
+        type: task.type || 'interval',
+      });
+
+      // 跟踪 in-flight 任务
+      const promise = this.fireTask(entry, name, runState).finally(() => {
+        this.inFlight.delete(promise);
+        this.taskLocks.delete(name); // 释放锁
+      });
+      this.inFlight.add(promise);
+      promise.catch(err => {
+        console.error(`[TaskPoller] Error firing task ${name}:`, err.message);
+        this.taskLocks.delete(name); // 异常时也要释放锁
+      });
     }
   }
 

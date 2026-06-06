@@ -122,7 +122,7 @@ registerIM('wechat', {
   },
 });
 import { startAnthropicProxy, stopAnthropicProxy } from './modules/proxy/anthropic-proxy';
-import { initCodexProxyConfig, resolveSupportedInputTypes, updateCodexConfig } from './modules/proxy/codex-proxy';
+import { initCodexProxyConfig, resolveSupportedInputTypes } from './modules/proxy/codex-proxy';
 import { checkRateLimit, setRateLimitConfig } from './modules/rate-limiter';
 import { setCurrentBot } from './modules/bot-context';
 import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath } from './modules/utils/paths';
@@ -132,7 +132,6 @@ import { TimezoneManager } from './modules/core/timezone';
 import { AgentRuntime, FileSessionManager, DefaultErrorHandler, DefaultStatsTracker } from './modules/core';
 import { HeartbeatScheduler } from './modules/core/heartbeat-scheduler';
 import { TaskManager } from './modules/core/task-manager';
-import { Watchdog } from './modules/core/watchdog';
 import { ClaudeAdapter } from './modules/agent/claude-adapter';
 import { CodexAdapter } from './modules/agent/codex-adapter';
 import { OpenCodeAdapter } from './modules/agent/opencode-adapter';
@@ -254,8 +253,6 @@ class Bot {
   heartbeatScheduler: HeartbeatScheduler | null = null;
   /** 任务管理器（Phase 3） */
   taskManager: TaskManager | null = null;
-  /** 健康检查（L2） */
-  watchdog: Watchdog | null = null;
 
   constructor(cfg: BotConfig, globalConfig: any, workspaceManager: WorkspaceManager) {
     this.id = cfg.id || cfg.name; // 后向兼容：无 id 时用 name
@@ -459,20 +456,6 @@ class Bot {
     }
   }
 
-  /** 同步模型到 config.json 的 codex.model，确保重启后不丢失 */
-  _syncCodexModelToConfigJson(modelSpec: string) {
-    try {
-      const configPath = path.join(getDataDir(), 'config.json');
-      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      if (!raw.codex) raw.codex = {};
-      const parts = modelSpec.split('/');
-      raw.codex.model = parts[parts.length - 1] || modelSpec;
-      fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
-    } catch (e: any) {
-      console.error(`[${this.name}] Failed to sync codex model to config.json:`, e.message);
-    }
-  }
-
   // ===== 命令注册 =====
   _registerCommands() {
     const cmd = (name: string, handler: CommandHandler) => this.commands.set(name, handler);
@@ -587,10 +570,6 @@ class Bot {
         this.activeModel = spec;
         this.modelAliases.default = spec;
         this._saveBotConfig();
-        if (this.backend === 'codex') {
-          updateCodexConfig(spec);
-          this._syncCodexModelToConfigJson(spec);
-        }
         return `🤖 Switched: ${spec} (${raw})`;
       }
 
@@ -618,10 +597,6 @@ class Bot {
       this.activeModel = raw;
       this.modelAliases.default = raw;
       this._saveBotConfig();
-      if (this.backend === 'codex') {
-        updateCodexConfig(raw);
-        this._syncCodexModelToConfigJson(raw);
-      }
       return `🤖 Switched: ${raw}`;
     });
 
@@ -851,13 +826,6 @@ class Bot {
     activeRequests++;
     const controller = new AbortController();
     this.activeControllers.set(chatId, controller);
-
-    // L2 防护：LLM 调用超时控制（默认 5 分钟）
-    const llmTimeoutMs = (this.config as any).llmTimeoutMs ?? 300_000;
-    const timeoutTimer = setTimeout(() => {
-      console.warn(`[${this.name}] LLM call timeout (${llmTimeoutMs}ms), aborting request`);
-      controller.abort(new Error(`LLM call timeout (${Math.round(llmTimeoutMs / 1000)}s)`));
-    }, llmTimeoutMs);
     // Track real IM chatId for heartbeat/cron delivery
     this.heartbeatScheduler?.resolver.updateLastActiveChatId(this.id, chatId);
     try {
@@ -950,7 +918,6 @@ class Bot {
       console.error(`[${this.name}] handleMessage error: ${e.message}`);
       await this.reply(chatId, `❌ ${e.message}`);
     } finally {
-      clearTimeout(timeoutTimer);
       this.activeControllers.delete(chatId);
       activeRequests--;
     }
@@ -1081,9 +1048,9 @@ async function gracefulReload(reason: string) {
   for (const bot of _allBots) bot.im.stop();
   await new Promise(r => setTimeout(r, 500));
 
-  // 4. 退出，daemon 检测到 code=42 会立即拉起（不退避）
+  // 4. 退出，daemon.sh 会自动拉起新进程
   console.log('[Reload] Cleanup complete, exiting...');
-  process.exit(42);
+  process.exit(0);
 }
 
 process.on('SIGHUP', () => gracefulReload('SIGHUP'));
@@ -1290,25 +1257,6 @@ async function main() {
     if (bot.heartbeatScheduler) {
       bot.heartbeatScheduler.start();
     }
-
-    // L2: 启动健康检查 Watchdog（默认启用）
-    const wdConfig = (bot.config as any).watchdog || {};
-    if (wdConfig.enabled !== false) {
-      bot.watchdog = new Watchdog(
-        {
-          idleTimeoutMin: wdConfig.idleTimeoutMin ?? 30,
-          memoryWarnPercent: wdConfig.memoryWarnPercent ?? 80,
-          memoryKillPercent: wdConfig.memoryKillPercent ?? 95,
-          maxSessions: wdConfig.maxSessions ?? 100,
-        },
-        {
-          getLastMessageTime: () => bot.sessionManager.getLastMessageTime(bot.id),
-          getSessionCount: () => bot.sessionManager.getActiveCount(bot.id),
-          cleanupOldestSessions: (n: number) => bot.sessionManager.cleanupOldest(bot.id, n),
-        }
-      );
-      bot.watchdog.start();
-    }
   }
   console.log('');
 
@@ -1439,34 +1387,20 @@ async function main() {
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
-// ─── L1: 全局异常防护 ───────────────────────────────────────
-// uncaughtException: 记录日志后主动退出，由 monitor mode (exit 42) 自动重启
-// 继续跑在损坏状态比重启更危险
-process.on('uncaughtException', (err) => {
-  console.error(`[uncaughtException] ${err.message}`);
-  console.error(err.stack);
-  console.error('[uncaughtException] Exiting to trigger monitor-mode restart');
-  process.exit(1);
-});
+process.on('uncaughtException', (err) => { console.error(`[uncaught] ${err.message}`); console.error(err.stack); });
 
-// unhandledRejection: 全部记录到日志，不丢弃
-// 1 分钟内超过 10 次 → 视为异常状态，触发重启
-let _rejectionTotal = 0;
 let _rejectionCount = 0;
 let _rejectionLastMinute = 0;
 process.on('unhandledRejection', (reason, promise) => {
   const now = Date.now();
   if (now - _rejectionLastMinute > 60000) { _rejectionCount = 0; _rejectionLastMinute = now; }
   _rejectionCount++;
-  _rejectionTotal++;
-  const msg = reason instanceof Error ? reason.message : String(reason);
-  console.error(`[unhandledRejection #${_rejectionTotal}] ${msg}`);
-  if (reason instanceof Error && reason.stack) {
-    console.error(reason.stack.split('\n').slice(0, 3).join('\n'));
-  }
-  if (_rejectionCount > 10) {
-    console.error(`[unhandledRejection] ${_rejectionCount} rejections in 1 minute, exiting to trigger restart`);
-    process.exit(1);
+  if (_rejectionCount > 5) return;
+  if (reason instanceof Error) {
+    console.error(`[unhandled #${_rejectionCount}] ${reason.message}`);
+    console.error(reason.stack?.split('\n').slice(0, 4).join('\n'));
+  } else {
+    console.error(`[unhandled #${_rejectionCount}] ${String(reason)} (type=${typeof reason})`);
   }
 });
 
