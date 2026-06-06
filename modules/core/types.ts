@@ -77,6 +77,14 @@ export interface Session {
   heartbeatTaskState?: Record<string, number | TaskRunState>;
   /** 心跳轮数控制：最近 N 轮（硬截断） */
   heartbeatRounds?: HeartbeatRound[];
+
+  /** 跨 thread 上下文记忆：轮转时自动填充，新 thread 首条消息注入 */
+  contextMemory?: {
+    summary: string;
+    fromThreadId: string;
+    rotatedAt: number;
+    rotationCount: number;
+  };
 }
 
 /** 心跳轮次记录 */
@@ -112,7 +120,7 @@ export interface TaskRunState {
 }
 
 /** 任务类型 */
-export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional' | 'stopwatch' | 'cron';
+export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional' | 'stopwatch';
 
 /** 失败策略 */
 export type OnFailureStrategy = 'ignore' | 'alert' | 'retry';
@@ -130,8 +138,6 @@ export interface ScheduledTask {
   // countdown
   max_runs?: number;
   deadline?: string;                // "YYYY-MM-DD HH:MM"
-  // cron 表达式（P2-7 新增）
-  cron?: string;                    // cron 专用："0 9 * * *"
   // 失败策略覆盖
   on_failure?: OnFailureStrategy;
   max_retries?: number;

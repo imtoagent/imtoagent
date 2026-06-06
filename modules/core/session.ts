@@ -186,6 +186,11 @@ export class FileSessionManager implements SessionManager {
       running: session.running,
     };
 
+    // 持久化 contextMemory
+    if (session.contextMemory) {
+      output.contextMemory = session.contextMemory;
+    }
+
     // 通用 backendSessionId
     if (session.backendSessionId) {
       output.backendSessionId = session.backendSessionId;

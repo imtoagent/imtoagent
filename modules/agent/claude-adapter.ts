@@ -119,6 +119,10 @@ export class ClaudeAdapter implements AgentAdapter {
       effectiveText = buildAttachmentHint(input.attachments) + '\n\n---\n\n' + effectiveText;
     }
 
+    // Inject context memory
+    effectiveText = injectContextMemory(session, _turnCount, effectiveText);
+    incrementTurnCount(sessionAny2);
+
     // Claude SDK 环境变量（走本地 :18899 代理）
     const customEnv: Record<string, string> = {
       ...process.env,
@@ -154,6 +158,11 @@ export class ClaudeAdapter implements AgentAdapter {
     if (overrideSystemPrompt) {
       queryOptions.systemPrompt = overrideSystemPrompt;
     }
+
+    // Thread Rotation
+    const sessionAny2 = session as Record<string, unknown>;
+    checkAndRotate(session, sessionAny2, "sdkSessionId", { maxTurns: 10 });
+    const _turnCount = (sessionAny2._turnCount as number) ?? 0;
 
     // 恢复/创建 SDK 会话 ID
     const shouldClear = session.startFresh;

@@ -127,18 +127,58 @@ async function runViaAppServer(
   let turnCount = 0;
   const manager = getAppServerManager();
   const client = await manager.getClient(chatId);
-
   const currentGen = manager.generation;
   const sessionAny = session as Record<string, unknown>;
   const threadExpired = (sessionAny._appServerGen as number) !== currentGen;
+
+  // ================================================================
+  // Thread Rotation + Context Memory
+  // ================================================================
+  const MAX_THREAD_ROUNDS = 10;
+  const _turnCount = (sessionAny._turnCount as number) ?? 0;
+
   if (isFresh || !sessionAny.codexThreadId || threadExpired) {
+    const oldThreadId = sessionAny.codexThreadId as string | undefined;
+
+    // 非首次、有旧 thread、超过轮次上限 → 提取上下文摘要
+    if (oldThreadId && !isFresh && !threadExpired && _turnCount >= MAX_THREAD_ROUNDS) {
+      try {
+        const rounds = (session.heartbeatRounds || []).slice(-3);
+        if (rounds.length > 0) {
+          const summaryParts = rounds.map((r, i) =>
+            `[轮${i + 1}] 用户: ${r.prompt || "(无)"}\n回复: ${r.response || "(无)"}`
+          );
+          const summary = "以下是之前对话的关键上下文（自动轮转保留）：\n" + summaryParts.join("\n---\n");
+          session.contextMemory = {
+            summary,
+            fromThreadId: oldThreadId,
+            rotatedAt: Date.now(),
+            rotationCount: ((session.contextMemory?.rotationCount) || 0) + 1,
+          };
+          console.log(`[CodexAdapter] context memory saved (${summary.length} chars, rotation #${session.contextMemory.rotationCount})`);
+        }
+      } catch (e: unknown) {
+        console.error(`[CodexAdapter] failed to extract context memory: ${(e as Error).message}`);
+      }
+    }
+
     sessionAny.codexThreadId = await client.startThread(cwd);
     sessionAny._appServerGen = currentGen;
+    sessionAny._turnCount = 0;
     session.metadata.codexThreadId = sessionAny.codexThreadId;
-    console.log(`[CodexAdapter] app-server new thread=${sessionAny.codexThreadId.slice(-8)}${threadExpired ? ' (process restarted)' : ''}`);
+    console.log(`[CodexAdapter] app-server new thread=${sessionAny.codexThreadId.slice(-8)}${threadExpired ? " (process restarted)" : ""}${_turnCount >= MAX_THREAD_ROUNDS ? ` (rotation after ${_turnCount} turns)` : ""}`);
   }
 
-  await client.sendPrompt(sessionAny.codexThreadId, prompt, cwd, systemPrompt);
+  // 注入 context memory 到新 thread 的首条消息
+  let effectivePrompt = prompt;
+  if (session.contextMemory?.summary && _turnCount === 0) {
+    effectivePrompt = `<previous-context>\n${session.contextMemory.summary}\n</previous-context>\n\n${prompt}`;
+    console.log(`[CodexAdapter] injected context memory (${session.contextMemory.summary.length} chars)`);
+  }
+
+  sessionAny._turnCount = _turnCount + 1;
+
+  await client.sendPrompt(sessionAny.codexThreadId, effectivePrompt, cwd, systemPrompt);
 
   let response = '';
   let totalUsage = { inputTokens: 0, outputTokens: 0 };

@@ -183,13 +183,11 @@ export class AgentRuntime {
           session.metadata = {};
           session.startFresh = false;
           session.running = false;
-          // 清除所有 adapter 特定的 session/thread ID，确保下次走 isFresh 分支
+          // 清除 adapter 特定的线程 ID，确保下次走 isFresh 分支
           const s = session as Record<string, unknown>;
           delete s.codexThreadId;
           delete s._appServerGen;
-          delete s.sdkSessionId;        // Claude
-          delete s.ocSessionId;          // OpenCode
-          delete s.geminiSessionId;      // Gemini
+          delete s.sdkSessionId;        // Claude          delete s.ocSessionId;          // OpenCode          delete s.geminiSessionId;      // Gemini
           console.log(`[Runtime] startFresh: cleared session and thread for ${ctx.chatId}`);
         }
 

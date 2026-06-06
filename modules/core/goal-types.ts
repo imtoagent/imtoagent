@@ -12,7 +12,7 @@ export type ConditionType = 'weather' | 'system_metric' | 'api_check' | 'externa
 export type ActionType = 'send_message' | 'run_tool' | 'tool_chain';
 
 /** 生命周期状态 */
-export type GoalStatus = 'pending' | 'active' | 'done' | 'failed' | 'cancelled' | 'paused';
+export type GoalStatus = 'pending' | 'active' | 'done' | 'failed' | 'cancelled';
 
 /** 重复策略 */
 export type RepeatStrategy = 'once' | 'hourly' | 'daily' | 'weekly' | 'custom';
@@ -69,8 +69,6 @@ export interface GoalLifecycle {
   customCron?: string;
   /** 最大执行次数（once 时 =1，无限制时省略） */
   maxRuns?: number;
-  /** 连续 unknown 回复的最大容忍次数，超限后永久失败（默认 3） */
-  maxUnknowns?: number;
   /** 已执行次数 */
   runCount: number;
   createdAt: string;
@@ -86,8 +84,6 @@ export interface GoalMetadata {
   rawInput: string;
   tags?: string[];
   priority?: 'low' | 'normal' | 'high';
-  /** 连续 unknown 回复计数器（每次 done/skip 时重置） */
-  consecutiveUnknowns?: number;
 }
 
 export interface Goal {
