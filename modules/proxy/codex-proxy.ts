@@ -6,6 +6,7 @@ import { buildSystemPrompt, resolveCapabilities, DEFAULT_TERMINAL_CAPS } from '.
 import * as path from 'path';
 import * as fs from 'fs';
 import { getDataDir } from '../utils/paths';
+import { logUsage } from './usage-logger';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
 
 // ================================================================
@@ -578,6 +579,21 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
             }
           });
           accumulateProxyUsage(finalUsage.prompt_tokens || 0, finalUsage.completion_tokens || 0);
+
+          // P1: 记录 Codex 请求的 usage
+          const inT = finalUsage.prompt_tokens || 0;
+          const outT = finalUsage.completion_tokens || 0;
+          if (inT > 0 || outT > 0) {
+            logUsage({
+              timestamp: new Date().toISOString(),
+              provider: 'codex',
+              model: MODEL(),
+              inputTokens: inT,
+              outputTokens: outT,
+              totalTokens: inT + outT,
+              isStream: true,
+            });
+          }
         }
       }
     }

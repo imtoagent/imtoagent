@@ -20,6 +20,7 @@ import { handleCodexRequest } from './codex-proxy';
 import { getDataDir, getSessionsDir } from '../utils/paths';
 import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
 import { logEvent } from '../utils/logger';
+import { logUsage } from './usage-logger';
 import type {
   AnthropicRequestBody,
   OpenAIRequestBody,
@@ -545,6 +546,8 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
   let toolUseStarted = false;
   let lastFinishReason = 'end_turn';
   let cachedReasoningContent = '';
+  let finalUsageInput = 0;
+  let finalUsageOutput = 0;
 
   function sendEvent(eventType: string, data: AnthropicStreamEvent) {
     res.write(`event: ${eventType}\n`);
@@ -619,10 +622,26 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
     sendEvent('message_delta', {
       type: 'message_delta',
       delta: { stop_reason: lastFinishReason, stop_sequence: null },
-      usage: { output_tokens: 0 },
+      usage: { output_tokens: finalUsageOutput },
     });
     sendEvent('message_stop', { type: 'message_stop' });
     if (providerName) logEvent({ event: 'proxy_sse_end', provider: providerName });
+
+    // P1: 记录流式请求的 usage
+    if (finalUsageInput > 0 || finalUsageOutput > 0) {
+      logUsage({
+        timestamp: new Date().toISOString(),
+        provider: providerName || 'unknown',
+        model: modelName,
+        inputTokens: finalUsageInput,
+        outputTokens: finalUsageOutput,
+        totalTokens: finalUsageInput + finalUsageOutput,
+        messageCount: _reqBody?.messages?.length,
+        hasTools: !!(Array.isArray(_reqBody?.tools) && (_reqBody.tools as any[]).length > 0),
+        isStream: true,
+      });
+    }
+
     res.end();
   }
 
@@ -642,6 +661,12 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
 
       let json: OpenAIStreamChunk;
       try { json = JSON.parse(dataStr); } catch { continue; }
+
+      // P1: 捕获 usage（最终 chunk 有 usage 但无 delta）
+      if (json.usage) {
+        finalUsageInput = (json.usage as any).input_tokens || (json.usage as any).prompt_tokens || 0;
+        finalUsageOutput = (json.usage as any).output_tokens || (json.usage as any).completion_tokens || 0;
+      }
 
       const delta = json.choices?.[0]?.delta;
       // 跟踪 finish_reason — 移到 delta 判断外面，因为最终 chunk 可能有 finish_reason 但无 delta
@@ -1067,6 +1092,24 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
             try {
               let uj = JSON.parse(respStr);
               uj.model = originalModel || uj.model;
+
+              // P1: 记录 Anthropic 格式非流式 usage
+              if (uj.usage) {
+                const inT = uj.usage.input_tokens || 0;
+                const outT = uj.usage.output_tokens || 0;
+                logUsage({
+                  timestamp: new Date().toISOString(),
+                  provider: targetProviderName,
+                  model: targetModelName,
+                  inputTokens: inT,
+                  outputTokens: outT,
+                  totalTokens: inT + outT,
+                  messageCount: parsedBody.messages?.length,
+                  hasTools: !!(Array.isArray(parsedBody.tools) && (parsedBody.tools as any[]).length > 0),
+                  isStream: false,
+                });
+              }
+
               res.writeHead(200, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify(uj));
             } catch {
@@ -1081,6 +1124,24 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
               res.end(JSON.stringify({ error: 'Invalid upstream response', type: 'api_error' }));
               return;
             }
+
+            // P1: 记录 OpenAI 格式非流式 usage
+            if (openAIJson.usage) {
+              const inT = (openAIJson.usage as any).input_tokens || (openAIJson.usage as any).prompt_tokens || 0;
+              const outT = (openAIJson.usage as any).output_tokens || (openAIJson.usage as any).completion_tokens || 0;
+              logUsage({
+                timestamp: new Date().toISOString(),
+                provider: targetProviderName,
+                model: targetModelName,
+                inputTokens: inT,
+                outputTokens: outT,
+                totalTokens: inT + outT,
+                messageCount: parsedBody.messages?.length,
+                hasTools: !!(Array.isArray(parsedBody.tools) && (parsedBody.tools as any[]).length > 0),
+                isStream: false,
+              });
+            }
+
             const anthropicResp = openAIToAnthropic(openAIJson, originalModel || targetModelName);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(anthropicResp));
