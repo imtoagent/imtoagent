@@ -122,7 +122,7 @@ registerIM('wechat', {
   },
 });
 import { startAnthropicProxy, stopAnthropicProxy } from './modules/proxy/anthropic-proxy';
-import { initCodexProxyConfig, resolveSupportedInputTypes } from './modules/proxy/codex-proxy';
+import { initCodexProxyConfig, resolveSupportedInputTypes, updateCodexConfig } from './modules/proxy/codex-proxy';
 import { checkRateLimit, setRateLimitConfig } from './modules/rate-limiter';
 import { setCurrentBot } from './modules/bot-context';
 import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath } from './modules/utils/paths';
@@ -456,6 +456,20 @@ class Bot {
     }
   }
 
+  /** 同步模型到 config.json 的 codex.model，确保重启后不丢失 */
+  _syncCodexModelToConfigJson(modelSpec: string) {
+    try {
+      const configPath = path.join(getDataDir(), 'config.json');
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      if (!raw.codex) raw.codex = {};
+      const parts = modelSpec.split('/');
+      raw.codex.model = parts[parts.length - 1] || modelSpec;
+      fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
+    } catch (e: any) {
+      console.error(`[${this.name}] Failed to sync codex model to config.json:`, e.message);
+    }
+  }
+
   // ===== 命令注册 =====
   _registerCommands() {
     const cmd = (name: string, handler: CommandHandler) => this.commands.set(name, handler);
@@ -570,6 +584,10 @@ class Bot {
         this.activeModel = spec;
         this.modelAliases.default = spec;
         this._saveBotConfig();
+        if (this.backend === 'codex') {
+          updateCodexConfig(spec);
+          this._syncCodexModelToConfigJson(spec);
+        }
         return `🤖 Switched: ${spec} (${raw})`;
       }
 
@@ -597,6 +615,10 @@ class Bot {
       this.activeModel = raw;
       this.modelAliases.default = raw;
       this._saveBotConfig();
+      if (this.backend === 'codex') {
+        updateCodexConfig(raw);
+        this._syncCodexModelToConfigJson(raw);
+      }
       return `🤖 Switched: ${raw}`;
     });
 
@@ -1048,9 +1070,9 @@ async function gracefulReload(reason: string) {
   for (const bot of _allBots) bot.im.stop();
   await new Promise(r => setTimeout(r, 500));
 
-  // 4. 退出，daemon.sh 会自动拉起新进程
+  // 4. 退出，daemon 检测到 code=42 会立即拉起（不退避）
   console.log('[Reload] Cleanup complete, exiting...');
-  process.exit(0);
+  process.exit(42);
 }
 
 process.on('SIGHUP', () => gracefulReload('SIGHUP'));

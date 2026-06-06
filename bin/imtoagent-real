@@ -318,49 +318,78 @@ async function cmdStart() {
   const logFile = ensureLogDir(dataDir);
   rotateLogFile(logFile);
 
-  console.log('🚀 Starting imtoagent gateway (background)...');
+  console.log('🚀 Starting imtoagent gateway...');
   console.log(`   Data directory: ${dataDir}`);
   console.log(`   Log file: ${logFile}`);
+  console.log(`   Monitor mode: exit code 42 triggers auto-restart`);
+  console.log('   Press Ctrl+C to stop\n');
 
   const { execPath, args } = getGatewayArgs();
-  const cmdLine = `"${execPath}" run "${path.resolve(import.meta.dirname, '..', 'index.ts')}"`;
+  const { spawn: childSpawn } = await import('child_process');
 
-  // Use a shell to launch the gateway in background — avoids event-loop blockers
-  const shellCmd = `IMTOAGENT_HOME="${dataDir}" ${cmdLine} >> "${logFile}" 2>&1 &
-PID=$!
-echo $PID`;
+  let shuttingDown = false;
+  process.on('SIGTERM', () => { shuttingDown = true; });
+  process.on('SIGINT', () => { shuttingDown = true; });
 
-  const { execSync } = await import('child_process');
-  const pidStr = execSync(shellCmd, {
-    cwd: dataDir,
-    env: { ...process.env, IMTOAGENT_HOME: dataDir },
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
-  const gatewayPid = parseInt(pidStr.split('\n').pop()!);
+  // Respawn loop: restarts gateway on exit code 42 (graceful reload)
+  while (!shuttingDown) {
+    const logFd = fs.openSync(logFile, 'a');
 
-  fs.writeFileSync(PID_FILE, String(gatewayPid));
-  console.log(`✅ Gateway started (PID=${gatewayPid})`);
+    const child = childSpawn(execPath, args, {
+      cwd: dataDir,
+      env: { ...process.env, IMTOAGENT_HOME: dataDir },
+      stdio: ['ignore', logFd, logFd],
+    });
 
-  // Wait for startup verification
-  await new Promise(r => setTimeout(r, 3000));
-  try {
-    process.kill(gatewayPid, 0);
-    console.log('✅ Gateway is running');
-  } catch {
-    console.error('❌ Gateway failed to start, check logs:');
-    if (fs.existsSync(logFile)) {
-      console.log(fs.readFileSync(logFile, 'utf-8').slice(-2000));
+    const childPid = child.pid!;
+    fs.writeFileSync(PID_FILE, String(childPid));
+    console.log(`[${new Date().toISOString()}] 🚀 Gateway started (PID=${childPid})`);
+
+    // Startup verification
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      process.kill(childPid, 0);
+      console.log(`[${new Date().toISOString()}] ✅ Gateway is running`);
+    } catch {
+      fs.closeSync(logFd);
+      console.error('❌ Gateway failed to start, check logs:');
+      if (fs.existsSync(logFile)) {
+        console.log(fs.readFileSync(logFile, 'utf-8').slice(-2000));
+      }
+      fs.unlinkSync(PID_FILE);
+      process.exit(1);
     }
-    fs.unlinkSync(PID_FILE);
-    process.exit(1);
+
+    // Wait for gateway to exit
+    let exitCode: number | null = null;
+    await new Promise<void>(resolve => {
+      child.on('exit', (code) => { exitCode = code; resolve(); });
+      child.on('error', () => resolve());
+    });
+    fs.closeSync(logFd);
+
+    if (shuttingDown) break;
+
+    // exit 0 = clean shutdown, monitor exits too
+    if (exitCode === 0) {
+      console.log(`[${new Date().toISOString()}] ⏹  Gateway exited cleanly, monitor stopping`);
+      break;
+    }
+
+    // exit 42 = graceful reload, respawn immediately
+    if (exitCode === 42) {
+      console.log(`[${new Date().toISOString()}] 🔄 Gateway requested reload, restarting immediately...`);
+      try { fs.unlinkSync(PID_FILE); } catch {}
+      continue;
+    }
+
+    // Other non-zero = crash; start doesn't handle crashes (daemon's job)
+    console.log(`[${new Date().toISOString()}] ⚠️  Gateway crashed (code=${exitCode}), monitor exiting`);
+    console.log('   Use "imtoagent daemon" for automatic crash recovery');
+    break;
   }
 
-  // Non-blocking version check
-  checkForUpdates().then(printUpdateHint).catch(() => {});
-
-  // Explicitly exit — Bun may keep event loop alive due to inherited stdio
-  process.exit(0);
+  console.log('👋 Monitor stopped');
 }
 
 // ================================================================
@@ -479,6 +508,14 @@ async function cmdStop() {
   }
 
   try { fs.unlinkSync(PID_FILE); } catch {}
+
+  // Hint: autostart may bring it back
+  const home = process.env.HOME || '';
+  const plistPath = path.join(home, 'Library', 'LaunchAgents', 'com.imtoagent.gateway.plist');
+  if (fs.existsSync(plistPath)) {
+    console.log('💡 autostart is enabled — launchd may restart the gateway automatically');
+    console.log('   To prevent auto-restart: imtoagent autostart disable && imtoagent stop');
+  }
 }
 
 // ================================================================
@@ -628,6 +665,13 @@ async function cmdDaemon(): Promise<void> {
     if (childExitCode === 0) {
       console.log(`[${new Date().toISOString()}] ⏹  Gateway exited cleanly (code=0), not restarting`);
       break;
+    }
+
+    // code=42 → graceful reload, immediate restart without backoff
+    if (childExitCode === 42) {
+      console.log(`[${new Date().toISOString()}] 🔄 Gateway requested reload (code=42), restarting immediately`);
+      retryDelay = 0;
+      continue;
     }
 
     retryDelay = retryDelay === 0 ? 3_000 : Math.min(retryDelay * 2, MAX_RETRY_DELAY);
