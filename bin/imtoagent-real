@@ -41,6 +41,9 @@ switch (command) {
   case 'stop':
     await cmdStop();
     break;
+  case 'restart':
+    await cmdRestart();
+    break;
   case 'status':
     await cmdStatus();
     break;
@@ -151,6 +154,7 @@ Usage:
   imtoagent start               Start gateway in background (returns immediately)
   imtoagent run                 Start gateway in foreground (Ctrl+C to stop)
   imtoagent stop                Stop gateway
+  imtoagent restart             Stop and restart gateway
   imtoagent status              Check running status
   imtoagent restore             Hot reload
   imtoagent daemon              Foreground daemon with auto-restart (for launchd/systemd)
@@ -476,9 +480,13 @@ async function cmdRun() {
 // stop — stop gateway
 // ================================================================
 async function cmdStop() {
+  await doStop();
+}
+
+async function doStop(): Promise<boolean> {
   if (!fs.existsSync(PID_FILE)) {
     console.log('ℹ️  Gateway is not running');
-    return;
+    return false;
   }
 
   const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim());
@@ -505,6 +513,8 @@ async function cmdStop() {
     }
   } catch {
     console.log('ℹ️  Gateway not running (stale PID file cleaned up)');
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    return false;
   }
 
   try { fs.unlinkSync(PID_FILE); } catch {}
@@ -516,6 +526,27 @@ async function cmdStop() {
     console.log('💡 autostart is enabled — launchd may restart the gateway automatically');
     console.log('   To prevent auto-restart: imtoagent autostart disable && imtoagent stop');
   }
+  return true;
+}
+
+// ================================================================
+// restart — stop then start
+// ================================================================
+async function cmdRestart() {
+  const wasRunning = await doStop();
+
+  if (!wasRunning) {
+    // PID file didn't exist or process was already dead — proceed to start
+  }
+
+  // Give the old process a moment to release ports
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Clean stale PID file if still present
+  try { fs.unlinkSync(PID_FILE); } catch {}
+
+  // Now start
+  await cmdStart();
 }
 
 // ================================================================
