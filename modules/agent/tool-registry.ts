@@ -38,13 +38,15 @@ export class ToolRegistry {
 
   /**
    * 注册工具到全局注册表
-   * 注册 ≠ 注入：工具不会自动出现在 Agent 的 tool list 中
+   * 注册 = 注入：工具会自动出现在 Agent 的 tool list 中
    */
-  register(tool: ToolDefinition): void {
-    if (this.registry.has(tool.name)) {
-      console.warn(`[ToolRegistry] Tool "${tool.name}" already registered, overwriting`);
+  register(...tools: ToolDefinition[]): void {
+    for (const tool of tools) {
+      if (this.registry.has(tool.name)) {
+        console.warn(`[ToolRegistry] Tool "${tool.name}" already registered, overwriting`);
+      }
+      this.registry.set(tool.name, tool);
     }
-    this.registry.set(tool.name, tool);
   }
 
   /**
