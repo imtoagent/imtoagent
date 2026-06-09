@@ -1150,24 +1150,16 @@ export async function handleCodexRequest(
               });
               cameFromIntercept = true;
             }
-              // 无 tool_calls（纯文本）→ 第一次流已消费，需要重新 fetch 来输出
-              console.log('[Codex] ✅ no tool_calls in stream, re-fetching for streaming output');
-              upstreamRes = await fetch(UPSTREAM(), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                body: JSON.stringify({ ...chatReq, stream: true }),
-                signal: ac.signal,
-              });
-            }
+          } else {
+            // 无 tool_calls（纯文本）→ 第一次流已消费，需要重新 fetch 来输出
+            console.log('[Codex] ✅ no tool_calls in stream, re-fetching for streaming output');
+            upstreamRes = await fetch(UPSTREAM(), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+              body: JSON.stringify({ ...chatReq, stream: true }),
+              signal: ac.signal,
+            });
           }
-        } else {
-          // 无本地工具 → 直接流式调用（原有路径）
-          upstreamRes = await fetch(UPSTREAM(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-            body: JSON.stringify(chatReq),
-            signal: ac.signal,
-          });
         }
       } catch (e: unknown) {
         console.error(`[Codex] ❌ fetch failed: ${(e as Error).message}`);
