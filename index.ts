@@ -64,7 +64,7 @@ import { parseToBlocks } from './modules/capabilities';
 import { resolveCapabilities } from './modules/prompt-builder';
 import { WorkspaceManager, createWorkspaceManager } from './modules/utils/workspace-manager';
 import { migrateWorkspaces } from './modules/utils/migrate-workspaces';
-import { migrateConfig } from './modules/utils/config-migration';
+import { migrateConfigs, migrateBotJsonConfigs } from './modules/utils/config-migration';
 import { McpManager, McpServerConfig } from './modules/utils/mcp-manager';
 import { SkillsManager } from './modules/utils/skills-manager';
 import { PromptsManager } from './modules/utils/prompts-manager';
@@ -125,7 +125,7 @@ import { startAnthropicProxy, stopAnthropicProxy } from './modules/proxy/anthrop
 import { initCodexProxyConfig, resolveSupportedInputTypes, updateCodexConfig } from './modules/proxy/codex-proxy';
 import { checkRateLimit, setRateLimitConfig } from './modules/rate-limiter';
 import { setCurrentBot } from './modules/bot-context';
-import { getDataDir, getSessionsDir, getSoulDir, getBotKey, getRestoreMarkerPath } from './modules/utils/paths';
+import { getDataDir, getSessionsDir, getBotsDir, getSoulDir, getBotKey, getRestoreMarkerPath } from './modules/utils/paths';
 import { TimezoneManager, formatShanghaiTimeShort } from './modules/core/timezone';
 
 // ===== SDK 核心 =====
@@ -275,7 +275,10 @@ class Bot {
 
     // Bot 级模型配置
     const botCfg = this._loadBotConfig();
-    this.activeModel = botCfg.activeModel || globalConfig.defaultModel || 'deepseek/deepseek-v4-pro';
+    this.activeModel = botCfg.activeModel
+      || (globalConfig as any).activeModel
+      || globalConfig.defaultModel
+      || 'deepseek/deepseek-v4-pro';
     this.modelAliases = botCfg.modelAliases || globalConfig.modelAliases || {};
     this.modelPresets = botCfg.modelPresets || {
       fast: 'deepseek/deepseek-v4-flash',
@@ -435,21 +438,32 @@ class Bot {
   }
 
   // ===== Bot 配置 =====
-  _botConfigPath() { return path.join(getSessionsDir(), this.id, '_bot.json'); }
+  /** Bot 级配置路径：统一在 ~/.imtoagent/bots/<Bot>/bot-config.json */
+  _botConfigPath() { return path.join(getDataDir(), 'bots', this.id, 'bot-config.json'); }
 
   _loadBotConfig() {
+    const botsPath = this._botConfigPath();
+    const fallbackPath = path.join(getSessionsDir(), this.id, '_bot.json');
+
+    // 优先读新版路径
     try {
-      const p = this._botConfigPath();
-      if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'));
+      if (fs.existsSync(botsPath)) return JSON.parse(fs.readFileSync(botsPath, 'utf-8'));
     } catch {}
+
+    // 后向兼容旧路径
+    try {
+      if (fs.existsSync(fallbackPath)) return JSON.parse(fs.readFileSync(fallbackPath, 'utf-8'));
+    } catch {}
+
     return {};
   }
 
   _saveBotConfig() {
     try {
-      const dir = path.dirname(this._botConfigPath());
+      const botsPath = this._botConfigPath();
+      const dir = path.dirname(botsPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this._botConfigPath(), JSON.stringify({
+      fs.writeFileSync(botsPath, JSON.stringify({
         activeModel: this.activeModel,
         modelAliases: this.modelAliases,
         modelPresets: this.modelPresets,
@@ -459,18 +473,11 @@ class Bot {
     }
   }
 
-  /** 同步模型到 config.json 的 codex.model，确保重启后不丢失 */
+  /** 同步模型到 config.json，确保重启后不丢失（已简化：只写 activeModel） */
   _syncCodexModelToConfigJson(modelSpec: string) {
-    try {
-      const configPath = path.join(getDataDir(), 'config.json');
-      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      if (!raw.codex) raw.codex = {};
-      const parts = modelSpec.split('/');
-      raw.codex.model = parts[parts.length - 1] || modelSpec;
-      fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
-    } catch (e: any) {
-      console.error(`[${this.name}] Failed to sync codex model to config.json:`, e.message);
-    }
+    // activeModel 已统一在 config.json 根级，saveActiveModel() 已处理持久化
+    // 保留 codex.model 字段用于旧版兼容（不再主动写入）
+    // 重启时 codex-proxy 的 getConfig() 会优先解析 activeModel
   }
 
   // ===== 命令注册 =====
@@ -587,9 +594,12 @@ class Bot {
         this.activeModel = spec;
         this.modelAliases.default = spec;
         this._saveBotConfig();
+        // 持久化到 config.json.activeModel（唯一持久化位置）
+        saveActiveModel(spec);
+        // 更新全局代理配置（无匹配前缀时的回退目标）
+        sharedState.activeConfig = cfg;
         if (this.backend === 'codex') {
           updateCodexConfig(spec);
-          this._syncCodexModelToConfigJson(spec);
         }
         return `🤖 Switched: ${spec} (${raw})`;
       }
@@ -605,7 +615,11 @@ class Bot {
             const cfg = getProviderConfig(spec);
             if (!cfg) return `❌ Unknown model: ${spec}`;
             (this.modelAliases as any)[role] = spec;
-            if (role === 'default') this.activeModel = spec;
+            if (role === 'default') {
+              this.activeModel = spec;
+              saveActiveModel(spec);
+              sharedState.activeConfig = cfg;
+            }
             this._saveBotConfig();
             return `🎭 ${role} → ${spec} (updated)`;
           }
@@ -618,9 +632,12 @@ class Bot {
       this.activeModel = raw;
       this.modelAliases.default = raw;
       this._saveBotConfig();
+      // 持久化到 config.json.activeModel（唯一持久化位置）
+      saveActiveModel(raw);
+      // 更新全局代理配置（无匹配前缀时的回退目标）
+      sharedState.activeConfig = cfg;
       if (this.backend === 'codex') {
         updateCodexConfig(raw);
-        this._syncCodexModelToConfigJson(raw);
       }
       return `🤖 Switched: ${raw}`;
     });
@@ -827,6 +844,12 @@ class Bot {
       this.adapter,
       this.sessionManager,
     );
+
+    // Phase 3: 将 GoalManager 注入到 runtime，使 Agent 回复可被拦截
+    const gm = this.heartbeatScheduler.getGoalManager();
+    if (gm) {
+      (this.runtime as any).config.goalManager = gm;
+    }
   }
 
   async tryHandleCommand(chatId: string, text: string, session: Session | undefined): Promise<string | null> {
@@ -897,10 +920,22 @@ class Bot {
         taskStatusInjection = `\n\n## 当前定时任务状态\n${lines.join('\n')}\n如果用户询问任务/任务列表/任务状态，请直接引用上方数据回答，不要调用工具。`;
       }
 
+      // 构建动态运行时上下文
+      const tz = require('./modules/core/timezone');
+      const parts = tz.getShanghaiDateParts();
+      const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const runtimeContext = {
+        currentTime: `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')} ${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')} (${tz.TZ}, ${weekdays[parts.weekday]})`,
+        workingDir: session.cwd || this.defaultCwd,
+        trigger: 'user_message',
+        chatType: 'direct',
+      };
+
       // 构建系统提示词（统一入口：资源 + soul + restart instruction）
       let systemPrompt = buildSystemPromptWithSoul(this.soul || undefined, this.name, this.im,
         this.systemMcp, this.systemSkills, this.systemPrompts,
-        this.botMcp, this.botSkills, this.botPrompts);
+        this.botMcp, this.botSkills, this.botPrompts,
+        runtimeContext);
       systemPrompt += taskStatusInjection;
 
       // P3-2: 注入任务管理指引（高优先级）
@@ -974,7 +1009,7 @@ class Bot {
 }
 
 // ===== 系统提示词构建（不依赖 prompt-builder 的旧接口） =====
-import { buildSystemPrompt } from './modules/prompt-builder';
+import { buildSystemPrompt, buildPromptContext } from './modules/prompt-builder';
 
 /**
  * Merge system-level and bot-level MCP servers.
@@ -1004,22 +1039,35 @@ function buildSystemPromptWithSoul(
   botMcp: McpManager,
   botSkills: SkillsManager,
   botPrompts: PromptsManager,
+  runtimeContext?: {
+    currentTime?: string;
+    workingDir?: string;
+    trigger?: string;
+    chatType?: string;
+  },
 ): string {
   // Merge system + bot resources
   const mergedMcp = mergeMcpServers(systemMcp.list(), botMcp.list());
   const mergedSkills = [...systemSkills.list(), ...botSkills.list()];
   const mergedPrompts = [...systemPrompts.list(), ...botPrompts.list()];
 
-  const base = buildSystemPrompt({
+  const ctx = buildPromptContext({
     imModule,
     botName,
     mcpInfo: mergedMcp.length ? { servers: mergedMcp } : undefined,
     skillsInfo: mergedSkills.length ? { skills: mergedSkills.map(s => ({ name: s.name, description: s.description })) } : undefined,
     promptsInfo: mergedPrompts.length ? { prompts: mergedPrompts.map(p => ({ name: p.name })) } : undefined,
+  }, {
+    ...(runtimeContext?.workingDir ? { workingDir: runtimeContext.workingDir } : {}),
+    trigger: runtimeContext?.trigger,
+    chatType: runtimeContext?.chatType,
   });
+  const base = buildSystemPrompt(ctx);
 
   // 注入 Agent 自主重启能力说明（信号文件路径固定）
-  const restartInstruction = `\n\n## Gateway Restart Capability\n\nIf you determine that the IMtoAgent gateway needs to be restarted (e.g., config changes, abnormal state detected that requires reset), execute the following command:\n\n\`\`\`bash\necho '{"reason": "<brief reason>", "timestamp": '"$(date +%s)"'}' > ${process.env.HOME}/.imtoagent/.restart_requested\n\`\`\`\n\nRules:\n- This signal file is automatically detected and consumed by the Runtime, the user will not see it\n- Your reply will be sent to the user normally before the gateway restarts\n- Only use when truly needed, do not trigger arbitrarily\n- If you don't need a restart, ignore this instruction`;
+  const gatewayPid = process.pid;
+  const restartInstruction = `\n\n## ⛔ GATEWAY RESTART — ONLY ONE METHOD EXISTS (MANDATORY)\n\nYou are running INSIDE the Gateway process (PID ${gatewayPid}). The Gateway is a **single-process** architecture.\n\n### The ONLY valid restart method: write a signal file\n\n\`\`\`bash\necho '{"reason": "<brief reason>", "timestamp": '"$(date +%s)"'}' > ${process.env.HOME}/.imtoagent/.restart_requested\n\`\`\`\n\n**Flow:**\n1. You write the signal file → your reply goes out first\n2. Runtime detects the file after your turn ends\n3. gracefulReload() cleans up and exits with code 42\n4. Monitor detects code 42 → immediately respawns\n\n### 🚫 ABSOLUTELY FORBIDDEN (will permanently kill the Gateway)\n\n| Forbidden action | Why it fails |\n|---|---|\n| \`kill ${gatewayPid}\`, \`kill -9 ${gatewayPid}\` | Kills yourself, no respawn (exit code ≠ 42) |\n| \`pkill -f imtoagent\` | Kills yourself + monitor, no respawn |\n| \`imtoagent restart\` / \`imtoagent stop\` | Stops the monitor too, no respawn |\n| SIGTERM / SIGKILL on PID ${gatewayPid} | Exit code 143/137 ≠ 42, monitor treats as crash |\n| \`sudo reboot\` | System-level, out of scope |\n\n**There is NO other restart method. These are not warnings — they are hard constraints. Violating them permanently kills the Gateway.**\n\n### When to restart\n- Only when truly needed (config change, critical bug)\n- Otherwise: ignore this instruction`;
+
 
   let combined = `${base}${restartInstruction}`;
   if (soul) {
@@ -1210,18 +1258,9 @@ async function main() {
 
   // ===== Config Migration =====
   // 老用户升级：自动迁移 config.json 结构变化
-  const configMigrationResult = migrateConfig();
-  if (configMigrationResult.migrated) {
-    console.log(`   🔄 Config migration: ${configMigrationResult.fromVersion} → ${configMigrationResult.toVersion}`);
-    for (const step of configMigrationResult.steps) {
-      console.log(`      • ${step}`);
-    }
-    if (configMigrationResult.backupPath) {
-      console.log(`      Backup: ${configMigrationResult.backupPath}`);
-    }
-  } else if (configMigrationResult.error) {
-    console.error(`   ⚠️  Config migration skipped: ${configMigrationResult.error}`);
-  }
+  migrateConfigs();
+  // 老用户升级：迁移 sessions/<name>/_bot.json → bots/<name>.json
+  migrateBotJsonConfigs();
 
   // ===== Workspace Migration =====
   // 老用户升级：自动迁移旧 sessions/ + soul/ 到新的 workspace 结构
@@ -1272,13 +1311,17 @@ async function main() {
         : '';
       console.log(`[${bot.name}] Received chat=${chatId.slice(-8)} "${text.slice(0, 80)}"${attDesc}`);
       // Merge system + bot resources for proxy path
+      const capturedChatId = chatId;
       setCurrentBot({
         botName: bot.name,
         caps: bot.im.getCapabilities(),
+        activeModel: bot.activeModel,
         modelAliases: bot.modelAliases,
         mcpInfo: { servers: mergeMcpServers(bot.systemMcp.list(), bot.botMcp.list()) },
         skillsInfo: { skills: [...bot.systemSkills.list(), ...bot.botSkills.list()].map(s => ({ name: s.name, description: s.description })) },
         promptsInfo: { prompts: [...bot.systemPrompts.list(), ...bot.botPrompts.list()].map(p => ({ name: p.name })) },
+        notifyUser: (msg: string) => bot.im.reply(capturedChatId, msg),
+        toolRegistry: bot.heartbeatScheduler?.getToolRegistry(),
       });
       bot.handleMessage(chatId, text, userId, attachments).catch((e: Error) =>
         console.error(`[${bot.name}] handleMessage unhandled:`, e.message)
@@ -1437,7 +1480,26 @@ async function main() {
   }
 
   process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+  // SIGTERM 硬拦截：Agent 若执行 kill/pkill 自杀，捕获后写重启信号 + exit(42)
+  // 确保 monitor 自动拉起，而不是当作正常退出（exit 0）
+  process.on('SIGTERM', () => {
+    if (isShuttingDown) {
+      // gracefulShutdown 已触发，按原流程走
+      return;
+    }
+    console.error('[SIGTERM Trap] Unexpected SIGTERM detected (Agent kill attempt or external signal)');
+    console.error('[SIGTERM Trap] Writing restart signal and exiting with code 42 for monitor respawn...');
+    try {
+      const signal = JSON.stringify({ reason: 'SIGTERM trap: gateway killed unexpectedly', timestamp: Math.floor(Date.now() / 1000) });
+      fs.writeFileSync(RESTART_SIGNAL_PATH, signal);
+      console.error(`[SIGTERM Trap] Restart signal written to ${RESTART_SIGNAL_PATH}`);
+    } catch (e: unknown) {
+      console.error(`[SIGTERM Trap] Failed to write restart signal: ${(e as Error).message}`);
+    }
+    // 不等 gracefulShutdown，直接 42 让 monitor 拉起
+    process.exit(42);
+  });
 }
 
 // ─── L1: 全局异常防护 ───────────────────────────────────────

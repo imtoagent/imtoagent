@@ -216,13 +216,6 @@ export interface AgentInput {
   cancelSignal?: AbortSignal;
   /** 进度回调（适配器向用户发送中间状态，如工具调用、思考进度） */
   sendProgress?: (text: string) => Promise<void>;
-  /** 工具执行结果（AgentLoop 注入，供 adapter 以标准格式回传给后端） */
-  toolResults?: Array<{
-    toolCallId: string;
-    name: string;
-    result: string;
-    isError?: boolean;
-  }>;
 }
 
 /** Agent 输出 */

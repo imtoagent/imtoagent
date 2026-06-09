@@ -6,6 +6,7 @@
 // ================================================================
 
 import * as fs from 'fs';
+import * as path from 'path';
 import type { ScheduledTask, TaskType, OnFailureStrategy } from './types';
 import { parseHeartbeatTasks, parseInterval } from './heartbeat';
 
@@ -55,7 +56,13 @@ export class TaskManager {
     const type = task.type ?? 'interval';
     if (type === 'interval' || type === 'countdown') {
       if (!task.interval) return { success: false, error: `${type} 类型需要 interval 字段` };
-      if (!parseInterval(task.interval)) return { success: false, error: `interval "${task.interval}" 格式无效（如 5m, 1h, 30s）` };
+      const ms = parseInterval(task.interval);
+      if (!ms) return { success: false, error: `interval "${task.interval}" 格式无效（如 5m, 1h, 30s）` };
+      // 🔧 防止"幽灵任务"：写入成功但调度器静默跳过
+      const MIN_INTERVAL = 30 * 60 * 1000; // 30 分钟
+      if (ms < MIN_INTERVAL) {
+        return { success: false, error: `间隔太短: "${task.interval}" (${ms / 1000}秒)，最小允许 30 分钟。请调整为更大的间隔，如 "30m"、"1h" 等` };
+      }
     }
     if (type === 'once' && !task.at && !task.after) {
       return { success: false, error: `once 类型需要 at 或 after 字段` };
@@ -260,6 +267,11 @@ export class TaskManager {
 
   private write(content: string): void {
     const tmpPath = `${this.heartbeatFilePath}.tmp`;
+    // 确保父目录存在（例如 CodexBot 的 workspaces/ 可能尚未创建）
+    const dir = path.dirname(this.heartbeatFilePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     fs.writeFileSync(tmpPath, content, 'utf-8');
     fs.renameSync(tmpPath, this.heartbeatFilePath);
   }

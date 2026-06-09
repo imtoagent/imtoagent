@@ -2,26 +2,49 @@
 // imtoagent providers — Provider management CLI
 // ================================================================
 // Commands: list, presets, presets show <name>, add, remove, set
-// Reads/writes ~/.imtoagent/providers.json
+// 统一读写 config.json.providers（不再使用 providers.json）
 // ================================================================
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getProvidersPath } from '../utils/paths';
+import { getDataDir } from '../utils/paths';
 import { loadPresets, findPreset, listPresets, presetToProvider } from '../utils/provider-presets';
 
 // ================================================================
-// Providers.json structure
+// Config structure
 // ================================================================
 
-interface ProvidersFile {
-  providers: Record<string, {
+interface ConfigFile {
+  providers?: Record<string, {
     baseUrl: string;
     apiKey: string;
-    model: string;
-    format: 'openai' | 'anthropic' | 'azure';
+    models?: string[] | Array<{ id: string }>;
+    format?: string;
   }>;
-  active?: string;
+  defaultModel?: string;
+  activeModel?: string;
+  modelAliases?: Record<string, string>;
+}
+
+function getConfigPath(): string {
+  return path.join(getDataDir(), 'config.json');
+}
+
+function loadConfig(): ConfigFile {
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return { providers: {} };
+  }
+  try {
+    return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch {
+    return { providers: {} };
+  }
+}
+
+function saveConfig(config: ConfigFile): void {
+  const configPath = getConfigPath();
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 }
 
 // ================================================================
@@ -58,8 +81,8 @@ export async function cmdProviders(...args: string[]): Promise<void> {
 // ================================================================
 
 async function cmdProvidersList(): Promise<void> {
-  const data = loadProviders();
-  const entries = Object.entries(data.providers);
+  const config = loadConfig();
+  const entries = Object.entries(config.providers || {});
 
   if (entries.length === 0) {
     console.log('No providers configured. Use "imtoagent providers presets" to see available templates.');
@@ -67,17 +90,19 @@ async function cmdProvidersList(): Promise<void> {
   }
 
   console.log('\n🔌 Configured Providers\n');
-  if (data.active) {
-    console.log(`  Active: ${data.active}\n`);
+  if (config.activeModel) {
+    console.log(`  Active Model: ${config.activeModel}\n`);
   }
 
   for (const [name, p] of entries) {
-    const activeTag = data.active === name ? ' ← active' : '';
-    console.log(`  ${name}${activeTag}`);
-    console.log(`    Base URL: ${p.baseUrl}`);
-    console.log(`    Model:    ${p.model}`);
-    console.log(`    Format:   ${p.format}`);
-    console.log(`    API Key:  ${maskKey(p.apiKey)}`);
+    const modelList = (p.models || [])
+      .map((m: any) => typeof m === 'string' ? m : m.id)
+      .join(', ');
+    console.log(`  ${name}`);
+    console.log(`    Base URL: ${p.baseUrl || ''}`);
+    console.log(`    Models:   ${modelList || '(none)'}`);
+    console.log(`    Format:   ${p.format || 'anthropic'}`);
+    console.log(`    API Key:  ${maskKey(p.apiKey || '')}`);
     console.log();
   }
 }
@@ -172,7 +197,12 @@ async function cmdProvidersAdd(args: string[]): Promise<void> {
     }
     const provider = presetToProvider(preset, apiKey);
     const name = customName || preset.name.toLowerCase().replace(/\s+/g, '-');
-    saveProvider(name, provider);
+    saveProvider(name, {
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      models: preset.models,
+      format: provider.format,
+    });
     console.log(`✅ Provider "${name}" added from preset "${preset.name}".`);
     return;
   }
@@ -187,7 +217,7 @@ async function cmdProvidersAdd(args: string[]): Promise<void> {
   saveProvider(customName, {
     baseUrl,
     apiKey,
-    model: model || '',
+    models: model ? [model] : [],
     format,
   });
   console.log(`✅ Provider "${customName}" added.`);
@@ -204,62 +234,60 @@ async function cmdProvidersRemove(args: string[]): Promise<void> {
     return;
   }
 
-  const data = loadProviders();
-  if (!data.providers[name]) {
+  const config = loadConfig();
+  if (!config.providers || !config.providers[name]) {
     console.log(`Provider "${name}" not found.`);
     return;
   }
 
-  delete data.providers[name];
-  if (data.active === name) data.active = undefined;
-
-  fs.writeFileSync(getProvidersPath(), JSON.stringify(data, null, 2));
+  delete config.providers[name];
+  saveConfig(config);
   console.log(`✅ Provider "${name}" removed.`);
 }
 
 // ================================================================
-// set — Switch active provider
+// set — Switch active model
 // ================================================================
 
 async function cmdProvidersSet(args: string[]): Promise<void> {
-  const name = args[0];
-  if (!name) {
-    console.log('Usage: imtoagent providers set <name>');
+  // "set <provider/model>" — sets activeModel
+  const modelSpec = args[0];
+  if (!modelSpec) {
+    console.log('Usage: imtoagent providers set <provider/model>');
     return;
   }
 
-  const data = loadProviders();
-  if (!data.providers[name]) {
-    console.log(`Provider "${name}" not found. Use "imtoagent providers list" to see configured providers.`);
+  const config = loadConfig();
+  const parts = modelSpec.split('/');
+  const providerName = parts[0];
+
+  if (!config.providers || !config.providers[providerName]) {
+    console.log(`Provider "${providerName}" not found. Use "imtoagent providers list" to see configured providers.`);
     return;
   }
 
-  data.active = name;
-  fs.writeFileSync(getProvidersPath(), JSON.stringify(data, null, 2));
-  console.log(`✅ Active provider set to "${name}".`);
+  config.activeModel = modelSpec;
+  saveConfig(config);
+  console.log(`✅ Active model set to "${modelSpec}".`);
 }
 
 // ================================================================
 // Helpers
 // ================================================================
 
-function loadProviders(): ProvidersFile {
-  const providersPath = getProvidersPath();
-  if (!fs.existsSync(providersPath)) {
-    return { providers: {} };
+function saveProvider(name: string, provider: { baseUrl: string; apiKey: string; models: string[]; format: string }): void {
+  const config = loadConfig();
+  if (!config.providers) config.providers = {};
+  config.providers[name] = {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    models: provider.models,
+    format: provider.format,
+  };
+  if (!config.activeModel) {
+    config.activeModel = `${name}/${provider.models[0] || ''}`;
   }
-  try {
-    return JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
-  } catch {
-    return { providers: {} };
-  }
-}
-
-function saveProvider(name: string, config: { baseUrl: string; apiKey: string; model: string; format: string }): void {
-  const data = loadProviders();
-  data.providers[name] = config as Record<string, unknown>;
-  if (!data.active) data.active = name;
-  fs.writeFileSync(getProvidersPath(), JSON.stringify(data, null, 2));
+  saveConfig(config);
 }
 
 function maskKey(key: string): string {
@@ -282,6 +310,6 @@ Usage:
   imtoagent providers add --preset <name> --key <api-key>
   imtoagent providers add --name <name> --base-url <url> --key <api-key>
   imtoagent providers remove <name>         Remove a provider
-  imtoagent providers set <name>            Switch active provider
+  imtoagent providers set <provider/model>  Switch active model
 `);
 }

@@ -11,6 +11,7 @@
     "modules/",
     "bin/",
     "templates/",
+    "data/",
     "scripts/",
     "skills/",
     "README.md",

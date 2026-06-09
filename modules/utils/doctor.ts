@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import { getDataDir, getConfigPath, getProvidersPath, getSessionsDir, getLogsDir, getOpencodeConfigPath } from './paths';
+import { getDataDir, getConfigPath, getSessionsDir, getLogsDir, getOpencodeConfigPath } from './paths';
 import { checkBackend, checkAllBackends } from './backend-check';
 
 // ================================================================
@@ -61,7 +61,6 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
   const issues: DoctorIssue[] = [];
   const dataDir = getDataDir();
   const configPath = getConfigPath();
-  const providersPath = getProvidersPath();
   const sessionsDir = getSessionsDir();
   const logsDir = getLogsDir();
 
@@ -189,74 +188,41 @@ export async function runDoctorChecks(): Promise<DoctorIssue[]> {
     });
   }
 
-  // ---- 3. providers.json ----
-  let providers: Record<string, unknown> | null = null;
+  // ---- 3. providers (from config.json, providers.json is deprecated) ----
+  // providers.json is deprecated; check config.json.providers instead
+  if (config.providers && Object.keys(config.providers).length > 0) {
+    const provStr = JSON.stringify(config.providers);
+    if (provStr.includes('YOUR_') || provStr.includes('sk-xxx') || provStr.includes('PLACEHOLDER')) {
+      issues.push({
+        severity: 'warning',
+        category: 'Providers',
+        message: 'config.json.providers may contain placeholder API keys',
+        fixable: false,
+      });
+    }
 
-  if (!fs.existsSync(providersPath)) {
+    for (const [provName, provCfg] of Object.entries(config.providers) as [string, Record<string, unknown>][]) {
+      if (provCfg.apiKey) {
+        const result = validateApiKey(provCfg.apiKey as string);
+        if (!result.valid) {
+          issues.push({
+            severity: 'warning',
+            category: 'Providers',
+            message: `Provider "${provName}" API key looks invalid (${result.reason})`,
+            fixable: false,
+          });
+        } else {
+          issues.push({ severity: 'info', category: 'Providers', message: `Provider "${provName}" API key format OK`, fixable: false });
+        }
+      }
+    }
+  } else {
     issues.push({
       severity: 'warning',
       category: 'Providers',
-      message: 'providers.json not found',
+      message: 'No providers defined in config.json',
       fixable: false,
     });
-  } else {
-    try {
-      const provRaw = fs.readFileSync(providersPath, 'utf-8');
-      providers = JSON.parse(provRaw);
-      issues.push({ severity: 'info', category: 'Providers', message: 'providers.json parse OK', fixable: false });
-
-      // 检查 placeholder API keys
-      const provStr = JSON.stringify(providers);
-      if (provStr.includes('YOUR_') || provStr.includes('sk-xxx') || provStr.includes('PLACEHOLDER')) {
-        issues.push({
-          severity: 'warning',
-          category: 'Providers',
-          message: 'providers.json may contain placeholder API keys',
-          fixable: false,
-        });
-      }
-
-      // 验证每个 provider 的 API key
-      if (providers.providers) {
-        for (const [provName, provCfg] of Object.entries(providers.providers) as [string, Record<string, unknown>][]) {
-          if (provCfg.apiKey) {
-            const result = validateApiKey(provCfg.apiKey);
-            if (!result.valid) {
-              issues.push({
-                severity: 'warning',
-                category: 'Providers',
-                message: `Provider "${provName}" API key looks invalid (${result.reason})`,
-                fixable: false,
-              });
-            } else {
-              issues.push({ severity: 'info', category: 'Providers', message: `Provider "${provName}" API key format OK`, fixable: false });
-            }
-          }
-        }
-      }
-    } catch (e: unknown) {
-      const fixed = tryFixJSON(fs.readFileSync(providersPath, 'utf-8'));
-      if (fixed !== null) {
-        issues.push({
-          severity: 'error',
-          category: 'Providers',
-          message: `providers.json has syntax errors: ${e.message}`,
-          fixable: true,
-          fixDescription: 'Auto-fix common JSON syntax issues',
-          fix: () => {
-            fs.writeFileSync(providersPath, fixed + '\n');
-            return true;
-          },
-        });
-      } else {
-        issues.push({
-          severity: 'error',
-          category: 'Providers',
-          message: `providers.json parse error: ${e.message}`,
-          fixable: false,
-        });
-      }
-    }
   }
 
   // ---- 4. 后端检查 ----

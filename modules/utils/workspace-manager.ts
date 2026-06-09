@@ -167,7 +167,7 @@ export class WorkspaceManager {
                  (resolved === soulGlob || resolved.startsWith(soulGlob + path.sep))) {
         // OK — 全局模式下的 soul 目录
       } else {
-        // 其他 ~/.imtoagent/ 路径一律禁止（config.json、providers.json、bot-ids.json 等）
+        // 其他 ~/.imtoagent/ 路径一律禁止（config.json、bots/ 等）
         return false;
       }
     }

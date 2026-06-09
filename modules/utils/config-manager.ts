@@ -11,7 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
-import { getDataDir, getConfigPath, getProvidersPath } from './paths';
+import { getDataDir, getConfigPath } from './paths';
 import crypto from 'crypto';
 
 // ================================================================

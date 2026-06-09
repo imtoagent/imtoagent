@@ -5,12 +5,10 @@ import { getCurrentBot } from '../bot-context';
 import { buildSystemPrompt, buildPromptContext, resolveCapabilities, DEFAULT_TERMINAL_CAPS } from '../prompt-builder';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getDataDir, getBotConfigPath } from '../utils/paths';
+import { getDataDir } from '../utils/paths';
 import { logUsage } from './usage-logger';
 import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
-import { hasLocalTool, isLocalTool, parseToolCalls, executeLocalTools, generateRemotePlaceholders, buildToolMessages } from './tool-interceptor';
-import type { ToolRegistry } from '../agent/tool-registry';
 
 /** Map HTTP status code to user-friendly error message */
 function statusToUserMessage(status: number): string {
@@ -69,15 +67,6 @@ function getCodexContextManager(): ContextManager {
 
   // provider 变了或第一次创建 → 重建
   if (!_codexContextManager || _codexContextManagerProvider !== currentProvider) {
-    // 🔧 从 config.json 动态读取当前 provider 的 baseUrl，不再硬编码
-    let providerBaseUrl = '';
-    try {
-      const configPath = path.join(getDataDir(), 'config.json');
-      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      const providers = raw.providers || {};
-      providerBaseUrl = (providers[currentProvider] as Record<string, unknown>)?.baseUrl as string || '';
-    } catch { /* fallback: leave providerBaseUrl empty */ }
-
     _codexContextManager = new ContextManager({
       backend: 'openai',
       budget: {
@@ -92,10 +81,10 @@ function getCodexContextManager(): ContextManager {
       preserveSystemPrompt: true,
       preserveReasoning: true,
       debugLog: true,
-      ...(apiKey && providerBaseUrl
+      ...(apiKey
         ? { semanticCompression: {
-            model: cfg.model || 'default-model',
-            apiBase: providerBaseUrl,
+            model: 'deepseek-ai/DeepSeek-V3',
+            apiBase: 'https://api.deepseek.com/v1',
             apiKey,
             thresholdRatio: 0.5,
             maxOutputTokens: 4096,
@@ -106,7 +95,7 @@ function getCodexContextManager(): ContextManager {
         : {}),
     });
     _codexContextManagerProvider = currentProvider;
-    console.log(`[ContextManager] Initialized (provider=${currentProvider}, baseUrl=${providerBaseUrl ? 'configured' : 'none'}, apiKey=${apiKey ? 'yes' : 'no'})`);
+    console.log(`[ContextManager] Initialized (provider=${currentProvider}, apiKey=${apiKey ? 'yes' : 'no'})`);
   }
 
   return _codexContextManager;
@@ -150,8 +139,7 @@ function _buildConfig(overrides?: Partial<CodexProxyConfig>): CodexProxyConfig {
   const providers = raw.providers || {};
 
   // 优先从 activeModel 解析（统一模型选择），fallback 到 codex.model（旧版兼容）
-  // 🔧 不再硬编码默认模型，从已配置的 providers 中动态获取
-  let modelId = codex.model || '';
+  let modelId = codex.model || 'deepseek-v4-pro';
   let providerName = '';
   if (raw.activeModel) {
     const parsed = parseActiveModel(raw.activeModel);
@@ -186,43 +174,10 @@ function _buildConfig(overrides?: Partial<CodexProxyConfig>): CodexProxyConfig {
 }
 
 function getConfig(): CodexProxyConfig {
-  // Bot 独立配置文件作为唯一真相源 — 每次实时读取
+  // 优先用 Bot 级别配置（index.ts 每次 handleMessage 前通过 setCurrentBot 传入）
   const botCtx = getCurrentBot();
-  const botId = botCtx?.botId || 'CodexBot';
-  const botConfigPath = getBotConfigPath(botId);
-
-  let activeModel: string | undefined;
-
-  // 优先读 bot-config.json（唯一真相源）
-  try {
-    if (fs.existsSync(botConfigPath)) {
-      const botCfg = JSON.parse(fs.readFileSync(botConfigPath, 'utf-8'));
-      activeModel = botCfg.activeModel;
-    }
-  } catch (e: unknown) {
-    console.error(`[Codex Proxy] Failed to read bot-config.json: ${(e as Error).message}`);
-  }
-
-  // Fallback: 用 botCtx.activeModel（内存变量）或 config.json.activeModel
-  if (!activeModel) {
-    if (botCtx?.activeModel) {
-      activeModel = botCtx.activeModel;
-    } else {
-      try {
-        const configPath = path.join(getDataDir(), 'config.json');
-        const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        activeModel = raw.activeModel;
-      } catch {
-        // 最终 fallback 到 _codexConfig
-        if (!_codexConfig) _codexConfig = _buildConfig();
-        return _codexConfig!;
-      }
-    }
-  }
-
-  // 用 activeModel 构建配置
-  if (activeModel) {
-    const parsed = parseActiveModel(activeModel);
+  if (botCtx?.activeModel) {
+    const parsed = parseActiveModel(botCtx.activeModel);
     const providersPath = path.join(getDataDir(), 'config.json');
     try {
       const raw = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
@@ -524,7 +479,7 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
 // ================================================================
 // 1.5 工具消息配对验证
 // 确保每个 assistant(tool_calls) 后面紧跟对应数量的 tool 消息，
-// 且 tool_call_id 一一对应。严格 API 需要此验证。
+// 且 tool_call_id 一一对应。deepseek-v4-pro 等严格 API 需要此验证。
 // ================================================================
 function cleanOrphanTools(messages: ChatMessage[]): ChatMessage[] {
   // Build set of all tool_call ids from assistant messages with tool_calls
@@ -618,81 +573,9 @@ function validateToolPairing(messages: ChatMessage[]): ChatMessage[] {
 }
 
 // ================================================================
-// 1.6 流式工具调用解析（用于拦截模式）
-// 解析第一次流式响应，收集 tool_calls 但不输出给用户
-// ================================================================
-interface StreamToolCallInfo {
-  toolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
-  assistantText: string;
-  reasoningContent: string;
-}
-
-async function parseStreamToolCalls(upstreamRes: Response): Promise<StreamToolCallInfo> {
-  const result: StreamToolCallInfo = { toolCalls: [], assistantText: '', reasoningContent: '' };
-
-  if (!upstreamRes.body) return result;
-
-  const reader = upstreamRes.body.getReader();
-  const dec = new TextDecoder();
-  let buf = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6);
-        if (data === '[DONE]') continue;
-
-        let chunk: OpenAIStreamChunk;
-        try { chunk = JSON.parse(data); } catch { continue; }
-
-        const delta = chunk.choices?.[0]?.delta || {};
-
-        if (delta.reasoning_content) {
-          result.reasoningContent += delta.reasoning_content;
-        }
-        if (delta.content) {
-          result.assistantText += delta.content;
-        }
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const idx: number = tc.index ?? result.toolCalls.length;
-            // 确保数组连续，避免稀疏数组
-            while (result.toolCalls.length <= idx) {
-              result.toolCalls.push({
-                id: `call_placeholder_${Date.now()}_${result.toolCalls.length}`,
-                type: 'function',
-                function: { name: '', arguments: '' },
-              });
-            }
-            if (tc.id) result.toolCalls[idx].id = tc.id;
-            if (tc.function?.name) result.toolCalls[idx].function.name = tc.function.name;
-            if (tc.function?.arguments) result.toolCalls[idx].function.arguments += tc.function.arguments;
-          }
-        }
-      }
-    }
-  } catch {
-    // stream broken — return what we have
-  } finally {
-    reader.releaseLock();
-  }
-
-  return result;
-}
-
-// ================================================================
 // 2. 响应翻译: Chat SSE → Responses SSE
 // ================================================================
-async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>, reqBody?: OpenAIRequestBody, opts?: { suppressToolCalls?: boolean }): Promise<void> {
-  const suppressToolCalls = opts?.suppressToolCalls ?? false;
-  if (suppressToolCalls) console.log('[Codex] 🔇 streamResponse: suppressing tool_call emission (post-intercept mode)');
+async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>, reqBody?: OpenAIRequestBody): Promise<void> {
   const enc = new TextEncoder();
   let accumulatedText = '';
   let accumulatedReasoning = '';
@@ -767,12 +650,6 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
         }
 
         if (delta.tool_calls) {
-          if (suppressToolCalls) {
-            // Post-intercept re-fetch: model may still emit tool_calls due to history context.
-            // Silently discard them — we already handled all tools in the intercept phase.
-            console.log(`[Codex] 🔇 Suppressed ${delta.tool_calls.length} tool_call(s) from re-fetch response`);
-            continue;
-          }
           ensureStarted();
           for (const tc of delta.tool_calls) {
             const idx: number = tc.index ?? 0;
@@ -811,36 +688,21 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
         }
 
         if (delta.content) {
-          // Filter out DSML XML tool_call hallucinations in post-intercept mode
-          let contentToEmit = delta.content;
-          if (suppressToolCalls) {
-            // Strip any text that looks like tool_call XML: <｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls>
-            contentToEmit = contentToEmit.replace(/<[^>]*DSML[^>]*tool_calls[^>]*>[\s\S]*?<\/[^>]*tool_calls[^>]*>/g, '');
-            // Also strip partial fragments that might accumulate
-            contentToEmit = contentToEmit.replace(/<[^>]*DSML[\s\S]*$/g, '');
-            contentToEmit = contentToEmit.replace(/^[\s\S]*?<\/[^>]*tool_calls[^>]*>/g, '');
-            if (contentToEmit !== delta.content) {
-              console.log(`[Codex] 🔇 Filtered DSML XML from content delta (${delta.content.length} → ${contentToEmit.length} chars)`);
+          ensureStarted();
+          if (!msgActive) {
+            if (rsnActive) {
+              emit('response.output_item.done', { output_index: rsnIdx, item: { id: 'rsn_0', type: 'reasoning', summary: [{ type: 'summary_text', text: accumulatedReasoning }], status: 'completed' } });
+              rsnActive = false;
             }
+            msgIdx = outputIndex++;
+            msgId = 'msg_' + Date.now();
+            emit('response.output_item.added', { output_index: msgIdx, item: { id: msgId, type: 'message', role: 'assistant', content: [], status: 'in_progress' } });
+            emit('response.content_part.added', { item_id: msgId, output_index: msgIdx, content_index: 0, part: { type: 'output_text', text: '' } });
+            msgActive = true;
+            items.push({ id: msgId, type: 'message', role: 'assistant', content: [], status: 'completed' });
           }
-          
-          if (contentToEmit) {
-            ensureStarted();
-            if (!msgActive) {
-              if (rsnActive) {
-                emit('response.output_item.done', { output_index: rsnIdx, item: { id: 'rsn_0', type: 'reasoning', summary: [{ type: 'summary_text', text: accumulatedReasoning }], status: 'completed' } });
-                rsnActive = false;
-              }
-              msgIdx = outputIndex++;
-              msgId = 'msg_' + Date.now();
-              emit('response.output_item.added', { output_index: msgIdx, item: { id: msgId, type: 'message', role: 'assistant', content: [], status: 'in_progress' } });
-              emit('response.content_part.added', { item_id: msgId, output_index: msgIdx, content_index: 0, part: { type: 'output_text', text: '' } });
-              msgActive = true;
-              items.push({ id: msgId, type: 'message', role: 'assistant', content: [], status: 'completed' });
-            }
-            accumulatedText += contentToEmit;
-            emit('response.output_text.delta', { item_id: msgId, output_index: msgIdx, content_index: 0, delta: contentToEmit });
-          }
+          accumulatedText += delta.content;
+          emit('response.output_text.delta', { item_id: msgId, output_index: msgIdx, content_index: 0, delta: delta.content });
         }
 
         if (finish) {
@@ -1025,139 +887,35 @@ export async function handleCodexRequest(
       console.log(`[Codex] 🔧 ContextManager: ${preMsgs}→${postMsgs} msgs, ~${preEst.toLocaleString()}→~${postEst.toLocaleString()} chars (saved ${savings.toLocaleString()})`);
       Object.assign(chatReq, processed);
 
-      // 🔧 Inject IMtoAgent local tools into the request
-      const toolRegistry = getCurrentBot()?.toolRegistry;
-      if (toolRegistry) {
-        const localTools = toolRegistry.getOpenAIFormat();
-        if (localTools.length > 0) {
-          const existingNames = new Set((chatReq.tools || []).map((t: any) => t.function?.name));
-          let added = 0;
-          for (const lt of localTools) {
-            const name = (lt as any).function?.name;
-            if (name && !existingNames.has(name)) {
-              chatReq.tools = chatReq.tools || [];
-              chatReq.tools.push(lt as any);
-              added++;
-            }
-          }
-          if (added > 0) {
-            console.log(`[Codex] 🔧 Injected ${added} IMtoAgent local tools: ${localTools.map((t: any) => t.function?.name).join(', ')}`);
-          }
+      // Phase 3: 注入 imtoagent_* 工具到请求体
+      const botCtx = getCurrentBot();
+      const registryTools = botCtx?.toolRegistry?.getOpenAIFormat();
+      if (registryTools?.length) {
+        const existingNames = new Set((chatReq.tools || []).map((t: any) => (t.function?.name || t.name || '')));
+        const newTools = registryTools.filter((t: any) => !existingNames.has(t.function?.name || t.name || ''));
+        if (newTools.length > 0) {
+          chatReq.tools = [...(chatReq.tools || []), ...newTools];
+          const injectedNames = newTools.map((t: any) => t.function?.name || t.name).join(', ');
+          console.log(`[Codex] 🔧 ToolRegistry injected: ${injectedNames}`);
         }
       }
 
       const roles = chatReq.messages?.map((m: ChatMessage) => m.role).join(',');
       console.log(`[Codex] → ${chatReq.model} [${roles}] tools:${chatReq.tools?.length || 0}`);
 
-      // ---- Tool Intercept: 流式拦截所有工具调用 ----
-      // 设计原则：只要 body 里有 tools 定义，LLM 就可能返回 tool_calls。
-      // 所有 tool_calls 都必须被拦截（本地执行 / 远端占位），不能泄漏到客户端。
-      const hasAnyTools = !!(chatReq.tools && chatReq.tools.length > 0);
-      const hasLocal = hasLocalTool(chatReq.tools);
-      const interceptRegistry = hasLocal ? getCurrentBot()?.toolRegistry : undefined;
-
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), 180_000);
 
       let upstreamRes: Response;
-      let cameFromIntercept = false; // Track if we're in post-intercept re-fetch mode
-
       try {
-        if (hasAnyTools) {
-          // 有任何工具定义 → 流式拦截模式（防止远端 tool_calls 泄漏到客户端）
-          console.log(`[Codex] 🔧 tools detected (${chatReq.tools!.length} defined, ${hasLocal ? 'has local' : 'remote only'}), using streaming intercept`);
-
-          // 第一次流式请求（收集 tool_calls）
-          const firstFetchBody = { ...chatReq, stream: true };
-          upstreamRes = await fetch(UPSTREAM(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-            body: JSON.stringify(firstFetchBody),
-            signal: ac.signal,
-          });
-
-          if (upstreamRes.ok) {
-            // 解析第一次响应，提取 tool_calls（流已被完全消费，无法回退）
-            const toolCallInfo = await parseStreamToolCalls(upstreamRes);
-
-            // 判断是否有本地工具调用
-            const allParsed = parseToolCalls(toolCallInfo.toolCalls);
-            const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
-            const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
-            const hasLocalCalls = localCalls.length > 0;
-
-            if (toolCallInfo.toolCalls.length > 0) {
-              // 有 tool_calls → 执行本地工具 + 合并结果 → 二次请求
-              console.log(`[Codex] 🔧 intercepted ${localCalls.length} local, ${remoteCalls.length} remote tool_calls`);
-
-              // 并行执行本地工具（如果有）
-              const localResults = localCalls.length > 0 && interceptRegistry
-                ? await executeLocalTools(localCalls, interceptRegistry)
-                : [];
-
-              // 远端工具占位
-              const remoteResults = generateRemotePlaceholders(remoteCalls);
-
-              // 合并所有结果
-              const allResults = [...localResults, ...remoteResults];
-              const toolMessages = buildToolMessages(allResults);
-
-              // 构建 assistant 消息（包含 tool_calls 引用）
-              const assistantMsg: any = {
-                role: 'assistant',
-                content: toolCallInfo.assistantText,
-                tool_calls: toolCallInfo.toolCalls,
-              };
-              if (toolCallInfo.reasoningContent) {
-                assistantMsg.reasoning_content = toolCallInfo.reasoningContent;
-              }
-
-              // 拼接最终 messages
-              const finalMessages = [...chatReq.messages, assistantMsg, ...toolMessages];
-              console.log(`[Codex] ✅ tool results merged (${allResults.length} total), re-fetching for streaming response`);
-
-              // 二次流式请求（带完整 tool 结果）
-              const reFetchBody: Record<string, unknown> = {
-                ...chatReq,
-                messages: finalMessages,
-                stream: true,
-              };
-              delete reFetchBody.tools;
-
-              // 如果有 reasoning_content，保留 thinking
-              if (toolCallInfo.reasoningContent) {
-                reFetchBody.thinking = { type: 'enabled' };
-              }
-
-              upstreamRes = await fetch(UPSTREAM(), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                body: JSON.stringify(reFetchBody),
-                signal: ac.signal,
-              });
-              cameFromIntercept = true; // Suppress tool_call emission in streamResponse
-            } else {
-              // 无 tool_calls（纯文本）→ 第一次流已消费，需要重新 fetch 来输出
-              console.log('[Codex] ✅ no tool_calls in stream, re-fetching for streaming output');
-              upstreamRes = await fetch(UPSTREAM(), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                body: JSON.stringify({ ...chatReq, stream: true }),
-                signal: ac.signal,
-              });
-            }
-          }
-        } else {
-          // 无本地工具 → 直接流式调用（原有路径）
-          upstreamRes = await fetch(UPSTREAM(), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-            body: JSON.stringify(chatReq),
-            signal: ac.signal,
-          });
-        }
+        upstreamRes = await fetch(UPSTREAM(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+          body: JSON.stringify(chatReq),
+          signal: ac.signal,
+        });
       } catch (e: unknown) {
-        console.error(`[Codex] ❌ fetch failed: ${(e as Error).message}`);
+        console.error(`[Codex] ❌ fetch failed: ${e.message}`);
         notifyUserError(502);
         res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
       } finally {
@@ -1220,7 +978,7 @@ export async function handleCodexRequest(
         },
       });
       const writer = writable.getWriter();
-      await streamResponse(upstreamRes, writer, body, { suppressToolCalls: cameFromIntercept }).catch((e: unknown) => {
+      await streamResponse(upstreamRes, writer, body).catch((e: unknown) => {
         console.error(`[Codex] streamResponse error: ${e?.message || e}`);
       }).finally(() => {
         try { writer.close(); } catch {}

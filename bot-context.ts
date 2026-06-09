@@ -22,7 +22,7 @@ export interface BotContextData {
   promptsInfo?: { prompts: Array<{ name: string }> };
   /** Notify the IM user directly (for proxy-layer errors, slash commands, etc.) */
   notifyUser?: (msg: string) => Promise<void>;
-  /** Tool registry for local tool execution */
+  /** Phase 3: ToolRegistry for imtoagent_* tool injection */
   toolRegistry?: ToolRegistry;
 }
 

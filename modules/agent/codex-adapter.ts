@@ -8,9 +8,15 @@
 // ================================================================
 
 import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/types';
+import type { ParsedToolCall, AgentToolSupport } from './agent-loop';
 import { buildAttachmentHint } from '../core/types';
 
 import { getAppServerManager, type AgentEvent } from './codex-exec-server';
+import { saveActiveModel } from '../proxy/anthropic-proxy';
+import { loadConfig } from '../core/config';
+import * as path from 'path';
+import * as fs from 'fs';
+import { getDataDir, getBotConfigPath } from '../utils/paths';
 
 // ================================================================
 // CodexAdapter 上下文
@@ -122,7 +128,8 @@ async function spawnCodexResume(cwd: string, threadId: string, prompt: string, m
 async function runViaAppServer(
   cwd: string, prompt: string, chatId: string, session: Session,
   isFresh: boolean, systemPrompt?: string, onProgress?: (text: string) => Promise<void>,
-  cancelSignal?: AbortSignal
+  cancelSignal?: AbortSignal,
+  toolResults?: Array<{ toolCallId: string; result: string; isError?: boolean }>
 ): Promise<{ threadId: string; response: string; usage: { inputTokens: number; outputTokens: number } }> {
   let turnCount = 0;
   const manager = getAppServerManager();
@@ -178,7 +185,7 @@ async function runViaAppServer(
 
   sessionAny._turnCount = _turnCount + 1;
 
-  await client.sendPrompt(sessionAny.codexThreadId, effectivePrompt, cwd, systemPrompt);
+  await client.sendPrompt(sessionAny.codexThreadId, effectivePrompt, cwd, systemPrompt, toolResults);
 
   let response = '';
   let totalUsage = { inputTokens: 0, outputTokens: 0 };
@@ -238,6 +245,14 @@ export class CodexAdapter implements AgentAdapter {
     const sessionAny = session as Record<string, unknown>;
     const cwd = workingDir;
 
+    // ═══════════════════════════════════════════════════════════
+    // 🚫 拦截 /model 命令 — IMtoAgent 原生处理，不传给 Codex
+    // ═══════════════════════════════════════════════════════════
+    const modelCmdResult = this.handleModelCommand(text);
+    if (modelCmdResult) {
+      return { text: modelCmdResult };
+    }
+
     let effectiveText = text;
 
     // 附件信息注入：让 Agent 知道用户发送了附件（图片/文件/语音）及本地路径
@@ -259,7 +274,7 @@ export class CodexAdapter implements AgentAdapter {
 
     try {
       const r = await runViaAppServer(cwd, effectiveText, input.chatId, session, isFresh, overrideSystemPrompt,
-        async (t: string) => { try { await input.sendProgress?.(t); } catch {} }, input.cancelSignal);
+        async (t: string) => { try { await input.sendProgress?.(t); } catch {} }, input.cancelSignal, input.toolResults);
       response = r.response;
       execServerUsage = r.usage;
     } catch (appErr: unknown) {
@@ -270,7 +285,7 @@ export class CodexAdapter implements AgentAdapter {
         try {
           sessionAny.codexThreadId = undefined;
           const r2 = await runViaAppServer(cwd, effectiveText, input.chatId, session, true, overrideSystemPrompt,
-            async (t: string) => { try { await input.sendProgress?.(t); } catch {} }, input.cancelSignal);
+            async (t: string) => { try { await input.sendProgress?.(t); } catch {} }, input.cancelSignal, input.toolResults);
           response = r2.response;
           execServerUsage = r2.usage;
           console.error(`[CodexAdapter] app-server thread rebuilt successfully`);
@@ -299,6 +314,157 @@ export class CodexAdapter implements AgentAdapter {
     return {
       text: response || '✅ Completed',
       usage: execServerUsage || undefined,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // /model 命令拦截器
+  // 用法：/model              — 查看当前模型
+  //       /model provider/model  — 切换模型
+  //       /model list           — 列出可用模型
+  // ═══════════════════════════════════════════════════════════
+  private handleModelCommand(text: string): string | null {
+    const trimmed = text.trim();
+    // 匹配 /model 命令（不区分大小写，允许前后空格）
+    const modelMatch = trimmed.match(/^\/model\b(.*)$/i);
+    if (!modelMatch) return null;
+
+    const args = modelMatch[1].trim();
+
+    try {
+      // 读取 config.json 获取当前配置
+      const configPath = path.join(getDataDir(), 'config.json');
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const currentActiveModel = raw.activeModel || '(未设置)';
+      const providers = raw.providers || {};
+      const modelAliases = raw.modelAliases || {};
+
+      if (!args) {
+        // /model — 显示当前模型
+        return `🤖 当前模型：${currentActiveModel}`;
+      }
+
+      if (args.toLowerCase() === 'list' || args.toLowerCase() === 'ls') {
+        // /model list — 列出所有可用模型
+        const lines: string[] = [`📋 可用模型：`, `\n当前：${currentActiveModel}`];
+        for (const [provName, provCfg] of Object.entries(providers)) {
+          const cfg = provCfg as Record<string, unknown>;
+          const models = (cfg.models as string[]) || [];
+          const apiKey = (cfg.apiKey as string) || '';
+          if (models.length > 0) {
+            lines.push(`\n${provName}:`);
+            for (const m of models) {
+              lines.push(`  - ${m}${apiKey ? ' ✅' : ' ❌ (无 key)'}`);
+            }
+          } else {
+            lines.push(`\n${provName}: (未配置模型列表)${apiKey ? ' ✅' : ' ❌ (无 key)'}`);
+          }
+        }
+        if (Object.keys(modelAliases).length > 0) {
+          lines.push('\n🏷️ 别名：');
+          for (const [alias, target] of Object.entries(modelAliases)) {
+            lines.push(`  ${alias} → ${target}`);
+          }
+        }
+        return lines.join('\n');
+      }
+
+      // /model provider/model 或 /model alias — 切换模型
+      const targetSpec = args;
+
+      // 先检查是否是 alias
+      let resolvedSpec = targetSpec;
+      if (modelAliases[targetSpec]) {
+        resolvedSpec = modelAliases[targetSpec];
+      }
+
+      // 验证 provider 是否存在
+      const slashIdx = resolvedSpec.indexOf('/');
+      if (slashIdx < 0) {
+        // 没有 provider 前缀，尝试从 provider 中匹配
+        let found = false;
+        for (const [provName, provCfg] of Object.entries(providers)) {
+          const cfg = provCfg as Record<string, unknown>;
+          const provModels = (cfg.models as string[]) || [];
+          if (provModels.includes(targetSpec) || (cfg.model as string) === targetSpec) {
+            resolvedSpec = `${provName}/${targetSpec}`;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          return `❌ 未知模型：${targetSpec}\n使用 /model list 查看可用模型`;
+        }
+      }
+
+      const providerName = resolvedSpec.slice(0, slashIdx);
+      if (!providers[providerName]) {
+        return `❌ 未知供应商：${providerName}\n使用 /model list 查看可用供应商`;
+      }
+
+      // 持久化到 bot-config.json（唯一真相源）
+      const botCfgPath = getBotConfigPath(this.ctx.botName);
+      const botDir = path.dirname(botCfgPath);
+      if (!fs.existsSync(botDir)) {
+        fs.mkdirSync(botDir, { recursive: true });
+      }
+      let botCfg: Record<string, unknown> = {};
+      if (fs.existsSync(botCfgPath)) {
+        botCfg = JSON.parse(fs.readFileSync(botCfgPath, 'utf-8'));
+      }
+      botCfg.activeModel = resolvedSpec;
+      fs.writeFileSync(botCfgPath, JSON.stringify(botCfg, null, 2));
+
+      console.log(`[CodexAdapter] /model command: ${currentActiveModel} → ${resolvedSpec}`);
+      console.log(`[CodexAdapter] 已写入 bot-config.json: ${botCfgPath}`);
+
+      return `✅ 模型已切换：${resolvedSpec}`;
+    } catch (e: unknown) {
+      console.error(`[CodexAdapter] /model command failed: ${(e as Error).message}`);
+      return `❌ 切换模型失败：${(e as Error).message}`;
+    }
+  }
+
+  // Tool support for AgentLoop — 从 Codex 响应中提取工具调用并注入结果。
+  // Codex (OpenAI 兼容格式) 返回的 response 文本中包含结构化信息。
+  // 当前实现：文本模式解析，识别本地工具调用（imtoagent_ 和 goal_ 前缀、get_weather）。
+  getToolSupport(): AgentToolSupport | null {
+    return {
+      extractToolCalls: (output: AgentOutput): ParsedToolCall[] => {
+        if (!output.text) return [];
+        const calls: ParsedToolCall[] = [];
+        // Codex 响应中工具调用通常以 JSON 或特定格式出现
+        // 匹配 {"name": "imtoagent_xxx", "arguments": {...}} 模式
+        const jsonRe = /\{\s*"name"\s*:\s*"(imtoagent_\w+|goal_\w+|get_weather)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}/g;
+        let m: RegExpExecArray | null;
+        while ((m = jsonRe.exec(output.text!)) !== null) {
+          try {
+            calls.push({ name: m[1], args: JSON.parse(m[2]) });
+          } catch {}
+        }
+        // 也匹配 tool_call 事件格式的残留文本
+        const toolCallRe = /(?:tool_call|function_call)[^{]*name["':\s]+(imtoagent_\w+|goal_\w+|get_weather)[^\n]*arguments?["':\s]+(\{[^\n]*\})/gi;
+        while ((m = toolCallRe.exec(output.text!)) !== null) {
+          try {
+            calls.push({ name: m[1], args: JSON.parse(m[2]) });
+          } catch {}
+        }
+        return calls;
+      },
+      appendToolResults: (input: AgentInput, toolCalls: ParsedToolCall[], results: string[]): AgentInput => {
+        // 构造结构化 toolResults，由 sendPrompt 以 function_call_output 格式发送
+        const toolResults = toolCalls.map((tc, i) => ({
+          toolCallId: tc.rawId || `call_${tc.name}_${Date.now()}_${i}`,
+          name: tc.name,
+          result: results[i],
+        }));
+        return {
+          ...input,
+          text: '', // 不拼接文本，工具结果通过 toolResults 字段传递
+          toolResults,
+          session: { ...input.session, startFresh: false },
+        };
+      },
     };
   }
 }

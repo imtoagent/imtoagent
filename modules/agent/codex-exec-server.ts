@@ -19,7 +19,7 @@ let _config: ExecServerConfig = {
   enabled: true,
   startupTimeoutMs: 15000,
   fallbackToExec: true,
-  maxToolCallsPerTurn: 80,
+  maxToolCallsPerTurn: 20,
 };
 
 
@@ -30,6 +30,7 @@ export interface AgentEvent {
   type: 'text_delta' | 'tool_call' | 'turn_result' | 'error';
   textDelta?: string;
   toolName?: string;
+  toolCallId?: string;
   toolInput?: Record<string, unknown>;
   threadId?: string;
   usage?: { inputTokens: number; outputTokens: number };
@@ -105,6 +106,7 @@ export class CodexAppServerClient {
     });
     const threadId = result?.thread?.id || '';
     if (!threadId) throw new Error('thread/start did not return thread.id');
+    getAppServerManager().registerThread(threadId, this.chatId);
     console.log(`[app-server] thread started=${threadId.slice(-8)} chat=${this.chatId.slice(-8)}`);
     return threadId;
   }
@@ -112,6 +114,7 @@ export class CodexAppServerClient {
   async resumeThread(threadId: string): Promise<void> {
     // app-server v2: thread/resume 用于跨进程恢复
     const result: Record<string, unknown> = await this._sendRequest('thread/resume', { threadId });
+    getAppServerManager().registerThread(threadId, this.chatId);
     console.log(`[app-server] thread resumed=${threadId.slice(-8)} chat=${this.chatId.slice(-8)}`);
   }
 
@@ -119,11 +122,37 @@ export class CodexAppServerClient {
   // 发送消息
   // ================================================================
 
-  async sendPrompt(threadId: string, prompt: string, cwd: string, systemPrompt?: string): Promise<void> {
+  async sendPrompt(
+    threadId: string,
+    prompt: string,
+    cwd: string,
+    systemPrompt?: string,
+    toolResults?: Array<{ toolCallId: string; result: string; isError?: boolean }>
+  ): Promise<void> {
     this.notifyTurnStart();
+    
+    // 构造 input items：文本 + 工具结果
+    const input: Array<Record<string, unknown>> = [];
+    
+    // 如果有文本内容，添加文本消息
+    if (prompt.trim()) {
+      input.push({ type: 'text', text: prompt });
+    }
+    
+    // 添加工具执行结果（OpenAI function_call_output 格式）
+    if (toolResults && toolResults.length > 0) {
+      for (const tr of toolResults) {
+        input.push({
+          type: 'function_call_output',
+          call_id: tr.toolCallId,
+          output: tr.result,
+        });
+      }
+    }
+    
     const req: Record<string, unknown> = {
       threadId,
-      input: [{ type: 'text', text: prompt }],
+      input,
       cwd,
       model: 'gpt-5.5',
       effort: 'medium',
@@ -230,6 +259,7 @@ class CodexAppServerManager {
   private readLoopRunning = false;
   private _initialized = false;  // app-server 只接受一次 initialize
   private _generation = 0;       // 每次进程重启递增，用于判断 thread 是否过期
+  private _threadChatMap: Map<string, string> = new Map(); // threadId → chatId 路由映射
 
   async ensureRunning(): Promise<void> {
     if (this._shuttingDown) throw new Error('app-server is shutting down');
@@ -266,10 +296,19 @@ class CodexAppServerManager {
     return client;
   }
 
+  /** 记录 threadId → chatId 映射（供 _processLine 路由用） */
+  registerThread(threadId: string, chatId: string): void {
+    this._threadChatMap.set(threadId, chatId);
+  }
+
   removeClient(chatId: string): void {
     const client = this.clients.get(chatId);
     if (client) { client.close(); this.clients.delete(chatId); }
     if (this.activeChatId === chatId) this.activeChatId = null;
+    // 清理该 chat 的所有 thread 映射
+    for (const [tid, cid] of this._threadChatMap) {
+      if (cid === chatId) this._threadChatMap.delete(tid);
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -335,12 +374,14 @@ class CodexAppServerManager {
           this._startPromise = null;
         }
 
-        // 安全关闭所有客户端
+        // 通知崩溃，然后清理
+        this._notifyCrash();
         for (const [, c] of this.clients) {
           try { c.close(); } catch {}
         }
         this.clients.clear();
         this.activeChatId = null;
+        this._threadChatMap.clear();
       })
       .catch((err) => {
         console.error(`[app-server] process.exited handler error: ${err.message}`);
@@ -389,8 +430,12 @@ class CodexAppServerManager {
       const active = this.clients.get(this.activeChatId || '');
       if (active) active.dispatchResponse(msg.id, msg.result, msg.error);
     } else if (msg.method) {
-      const active = this.clients.get(this.activeChatId || '');
-      if (active) this._handleNotification(active, msg.method, msg.params || {});
+      // 优先用 params.threadId 路由到正确的 chat，fallback activeChatId
+      const params = (msg.params || {}) as Record<string, unknown>;
+      const threadId = params.threadId as string | undefined;
+      const chatId = (threadId && this._threadChatMap.get(threadId)) || this.activeChatId || '';
+      const target = this.clients.get(chatId);
+      if (target) this._handleNotification(target, msg.method as string, params);
     }
   }
 
@@ -420,7 +465,16 @@ class CodexAppServerManager {
           const itemType = params.item?.type;
           if (itemType === 'tool_use' || itemType === 'function_call') {
             const toolName = params.item?.name || params.item?.function_name || 'unknown';
+            const toolCallId = params.item?.call_id || params.item?.id || '';
+            
+            // 派发 tool_call 事件，带上 call_id
             if (method === 'item/completed') {
+              client.dispatchEvent({
+                type: 'tool_call',
+                toolName,
+                toolCallId,
+              });
+              
               const ok = client.recordToolCall(toolName);
               if (!ok) {
                 // 超限，发送 error 事件强制终止本轮
@@ -443,6 +497,53 @@ class CodexAppServerManager {
         case 'item/agentMessage/delta':
           if (params.delta) client.dispatchEvent({ type: 'text_delta', textDelta: params.delta });
           break;
+
+        case 'item/toolCallOutput/delta': {
+          // 工具执行 stdout 增量 — 通过 text_delta 回传
+          const delta = (params as Record<string, unknown>).delta as string | undefined;
+          if (delta) {
+            console.log(`[app-server] tool output delta: ${delta.slice(0, 120)}`);
+            client.dispatchEvent({ type: 'text_delta', textDelta: delta });
+          }
+          break;
+        }
+
+        case 'item/toolCallOutput/completed': {
+          // 工具执行 stdout 完成
+          const output = (params as Record<string, unknown>).output as string | undefined;
+          if (output !== undefined && output.length > 0) {
+            console.log(`[app-server] tool output completed: ${output.slice(0, 200)}`);
+            client.dispatchEvent({ type: 'text_delta', textDelta: output });
+          }
+          break;
+        }
+
+        case 'item/toolCallOutput/stderrDelta': {
+          // stderr 增量 → 回传给 client（和 stdout 一样）
+          const delta = (params as Record<string, unknown>).delta as string | undefined;
+          if (delta) {
+            console.log(`[app-server] tool stderr: ${delta.slice(0, 200)}`);
+            client.dispatchEvent({ type: 'text_delta', textDelta: delta });
+          }
+          break;
+        }
+
+        case 'item/commandExecution/outputDelta': {
+          // 命令执行输出流（exec_command 的实际 stdout）
+          const delta = (params as Record<string, unknown>).delta as string | undefined;
+          if (delta) {
+            console.log(`[app-server] cmd output delta: ${delta.slice(0, 200)}`);
+            client.dispatchEvent({ type: 'text_delta', textDelta: delta });
+          }
+          break;
+        }
+
+        case 'item/commandExecution/terminalInteraction': {
+          // 需要终端交互（如 sudo 密码提示），暂忽略（sandbox 模式通常不需要）
+          const stdin = (params as Record<string, unknown>).stdin as string | undefined;
+          if (stdin !== undefined) console.log(`[app-server] cmd terminal interaction, stdin=${stdin.length} chars`);
+          break;
+        }
 
         case 'turn/completed':
           client.notifyTurnEnd();
@@ -471,9 +572,10 @@ class CodexAppServerManager {
           console.warn(`[app-server] ${method}:`, params);
           break;
 
-        default:
+        default: { console.log(`[app-server] UNKNOWN notification: method=${method}, params=${JSON.stringify(params).slice(0,200)}`);
           // 静默忽略未知通知
           break;
+        }
       }
     } catch (err) {
       console.error(`[app-server] Error handling notification ${method}:`, err);
@@ -486,6 +588,19 @@ class CodexAppServerManager {
       const stderr = await new Response(this.process.stderr).text();
       if (stderr.trim()) console.error(`[app-server] stderr:`, stderr.slice(0, 500));
     } catch {}
+  }
+
+  /** 进程异常退出时通知所有活跃 client */
+  private _notifyCrash(): void {
+    for (const [, c] of this.clients) {
+      try {
+        c.dispatchEvent({
+          type: 'error',
+          error: 'app-server process crashed unexpectedly',
+        });
+        c.close();
+      } catch {}
+    }
   }
 
   // 暴露当前进程代际，codex.ts 用于判断 thread 是否过期

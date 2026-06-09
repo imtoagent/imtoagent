@@ -206,7 +206,7 @@ function extractModelIds(models: (string | {id: string})[] | undefined): string[
 }
 
 // ================================================================
-// Provider presets
+// Provider presets — loaded from data/provider-presets.json
 // ================================================================
 
 interface ProviderPreset {
@@ -217,78 +217,23 @@ interface ProviderPreset {
   hint?: string; // Additional note
 }
 
-const PROVIDER_PRESETS: ProviderPreset[] = [
-  {
-    name: 'DashScope (Alibaba Bailian)',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    format: 'openai',
-    models: ['qwen3.7-max', 'qwen3.6-plus', 'qwen3.6-flash', 'qwen3.5-omni-plus'],
-  },
-  {
-    name: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    format: 'openai',
-    models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
-  },
-  {
-    name: 'Zhipu AI (Zhipu)',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    format: 'openai',
-    models: ['glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7', 'glm-4.7-flashx', 'glm-4.6', 'glm-4.5-air', 'glm-4.5-airx', 'glm-4-long'],
-  },
-  {
-    name: 'MiniMax',
-    baseUrl: 'https://api.minimaxi.com/v1',
-    format: 'openai',
-    models: ['MiniMax-M2.7', 'MiniMax-M2.5'],
-  },
-  {
-    name: 'SiliconFlow',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    format: 'openai',
-    models: ['Qwen/Qwen3-235B-A22B', 'deepseek-ai/DeepSeek-V4', 'Qwen/Qwen3-32B'],
-  },
-  {
-    name: 'Moonshot (Moonshot AI)',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    format: 'openai',
-    models: ['kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
-  },
-  {
-    name: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    format: 'openai',
-    models: ['gpt-5', 'gpt-5-mini', 'o3', 'o4-mini'],
-    hint: 'Proxy required to access',
-  },
-  {
-    name: 'Anthropic',
-    baseUrl: 'https://api.anthropic.com',
-    format: 'anthropic',
-    models: ['claude-sonnet-4-5-20251101', 'claude-opus-4-6-20260416', 'claude-haiku-4-20250514'],
-    hint: 'Proxy required to access',
-  },
-  {
-    name: 'Gemini (Google)',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    format: 'openai',
-    models: ['gemini-3-pro', 'gemini-3-flash', 'gemini-2.5-pro'],
-    hint: 'Proxy required to access',
-  },
-  {
-    name: 'xAI (Grok)',
-    baseUrl: 'https://api.x.ai/v1',
-    format: 'openai',
-    models: ['grok-4', 'grok-4-fast', 'grok-3'],
-    hint: 'Requires proxy to access',
-  },
-  {
-    name: 'Ollama (Local)',
-    baseUrl: 'http://localhost:11434/v1',
-    format: 'openai',
-    models: ['qwen3', 'qwen2.5', 'llama3.3', 'deepseek-r1'],
-  },
-];
+/** Load provider presets from JSON file */
+let _presetsCache: ProviderPreset[] | null = null;
+function loadProviderPresets(): ProviderPreset[] {
+  if (_presetsCache) return _presetsCache;
+  try {
+    const pkgDir = getPkgDir();
+    const presetsPath = path.join(pkgDir, 'data', 'provider-presets.json');
+    const raw = JSON.parse(fs.readFileSync(presetsPath, 'utf-8'));
+    _presetsCache = Array.isArray(raw) ? raw : [];
+  } catch {
+    _presetsCache = [];
+  }
+  return _presetsCache;
+}
+
+const PROVIDER_PRESETS: ProviderPreset[] = [];
+// Lazy-loaded via loadProviderPresets() at runtime
 
 // ================================================================
 // IM platform configuration
@@ -638,7 +583,8 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     console.log('--- Add new provider ---\n');
 
     // Choose preset or custom
-    const presetOptions = PROVIDER_PRESETS.map(p => {
+    const presets = loadProviderPresets();
+    const presetOptions = presets.map(p => {
       const tag = p.hint ? ` ${p.hint}` : '';
       return `${p.name}${tag}`;
     });
@@ -649,9 +595,9 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
     let provName: string, baseUrl: string, format: 'openai' | 'anthropic', models: string[];
 
-    if (presetIdx < PROVIDER_PRESETS.length) {
+    if (presetIdx < presets.length) {
       // Use preset
-      const preset = PROVIDER_PRESETS[presetIdx];
+      const preset = presets[presetIdx];
       provName = preset.name.split('(')[0].trim().toLowerCase(); // Take short name
       baseUrl = preset.baseUrl;
       format = preset.format;
@@ -766,7 +712,14 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     defaultModel = val === null ? existingDefault : (val || existingDefault);
   } else {
     const val = await promptText('Default model (provider/model)');
-    defaultModel = val === null ? 'deepseek/deepseek-v4-pro' : (val || 'deepseek/deepseek-v4-pro');
+    // 🔧 从已选 provider 中取第一个模型作为默认提示
+    const presets = loadProviderPresets();
+    const selectedPreset = presets.find(p => p.name === selectedName);
+    const fallbackModel = selectedPreset && selectedPreset.models.length > 0
+      ? selectedPreset.name.split(' ')[0].toLowerCase() + '/' + (typeof selectedPreset.models[0] === 'string' ? selectedPreset.models[0] : selectedPreset.models[0].id)
+      : '';
+    const val2 = await promptText('Default model (provider/model)', fallbackModel);
+    defaultModel = val2 === null ? fallbackModel : (val2 || fallbackModel);
   }
 
   // ===== Step 7: Generate soul files =====
@@ -842,7 +795,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     },
     codex: existingConfig?.codex || {
       reportedModel: 'gpt-5.5',
-      model: defaultModel.split('/')[1] || 'deepseek-v4-pro',
+      model: defaultModel.split('/')[1] || 'default-model',
       upstream: (providers[defaultModel.split('/')[0]]?.baseUrl || 'https://api.deepseek.com/v1') + '/chat/completions',
     },
     opencode: existingConfig?.opencode || {
@@ -862,9 +815,9 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
 
   // Write to temp file first for atomicity
   const configTmpPath = configPath + '.tmp';
-  const providersTmpPath = path.join(dataDir, 'providers.json.tmp');
   let writeOk = true;
 
+  // 统一写入 config.json（不再写 providers.json）
   try {
     fs.writeFileSync(configTmpPath, JSON.stringify(config, null, 2) + '\n');
     fs.renameSync(configTmpPath, configPath);
@@ -872,21 +825,6 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   } catch (e: unknown) {
     console.error(`❌ Failed to write config.json: ${e.message}`);
     writeOk = false;
-  }
-
-  if (writeOk) {
-    try {
-      const providersFile: Record<string, unknown> = { providers, defaultModel, modelAliases: config.modelAliases };
-      const providersPath = path.join(dataDir, 'providers.json');
-      fs.writeFileSync(providersTmpPath, JSON.stringify(providersFile, null, 2) + '\n');
-      fs.renameSync(providersTmpPath, providersPath);
-      console.log(`✅ ${providersPath}`);
-    } catch (e: unknown) {
-      console.error(`❌ Failed to write providers.json: ${e.message}`);
-      console.error('⚠️  config.json was written successfully, but providers.json failed.');
-      console.error('   Please re-run "imtoagent setup" to fix.');
-      writeOk = false;
-    }
   }
 
   if (writeOk) {

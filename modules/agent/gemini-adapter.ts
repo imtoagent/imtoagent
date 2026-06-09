@@ -8,6 +8,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import type { AgentAdapter, AgentInput, AgentOutput } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
+import type { ParsedToolCall, AgentToolSupport } from './agent-loop';
 
 
 // ================================================================
@@ -265,5 +266,55 @@ export class GeminiAdapter implements AgentAdapter {
     for (const ctrl of this.activeControllers) {
       try { ctrl.abort(); } catch {}
     }
+  }
+
+  /**
+   * Tool support for AgentLoop — 从 Gemini CLI 文本输出中提取工具调用并注入结果。
+   * Gemini CLI 是纯文本协议，工具调用以代码块/结构化文本出现。
+   */
+  getToolSupport(): AgentToolSupport | null {
+    const isLocalTool = (name: string): boolean =>
+      name.startsWith('imtoagent_') || name.startsWith('goal_') || name === 'get_weather';
+
+    return {
+      extractToolCalls: (output: AgentOutput): ParsedToolCall[] => {
+        if (!output.text) return [];
+        const calls: ParsedToolCall[] = [];
+        // 匹配 JSON 格式的工具调用
+        const jsonRe = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:\s*(\{[^}]*\})\s*\}/g;
+        let m: RegExpExecArray | null;
+        while ((m = jsonRe.exec(output.text)) !== null) {
+          const name = m[1];
+          if (!isLocalTool(name)) continue;
+          try {
+            calls.push({ name, args: JSON.parse(m[2]) });
+          } catch {}
+        }
+        // 也匹配 Gemini CLI 的代码块模式（bash/sh 等）
+        const codeBlockRe = /```(?:bash|sh|shell)?\n([\s\S]*?)```/g;
+        while ((m = codeBlockRe.exec(output.text)) !== null) {
+          const cmd = m[1].trim().split('\n')[0].slice(0, 60);
+          if (cmd.length > 0 && !cmd.startsWith('#')) {
+            // 检查是否是本地工具命令（imtoagent_ 前缀）
+            if (cmd.startsWith('imtoagent_') || cmd.startsWith('goal_')) {
+              calls.push({ name: cmd.split(/[ (]/)[0], args: {} });
+            }
+          }
+        }
+        return calls;
+      },
+      appendToolResults: (input: AgentInput, toolCalls: ParsedToolCall[], results: string[]): AgentInput => {
+        let toolSection = '\n\n<tool_results>\n';
+        for (let i = 0; i < toolCalls.length; i++) {
+          toolSection += `[Tool: ${toolCalls[i].name}]\nResult: ${results[i]}\n\n`;
+        }
+        toolSection += '</tool_results>\n\nPlease continue with the above tool results.';
+        return {
+          ...input,
+          text: input.text + toolSection,
+          session: { ...input.session, startFresh: false },
+        };
+      },
+    };
   }
 }

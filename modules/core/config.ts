@@ -1,14 +1,16 @@
 // ================================================================
 // ConfigManager — 配置管理
 // ================================================================
-// 从 config.json 和 providers.json 读取，支持 bot 级别配置持久化
+// 从 config.json 读取统一配置，Bot 级别配置存在 bots/ 目录
+// providers.json 已废弃（迁移时自动合并到 config.json）
 // ================================================================
 
 const fs = require('fs');
 const path = require('path');
 
 import type { ConfigManager, BotConfig, ProviderConfig } from './types';
-import { getDataDir, getSessionsDir } from '../utils/paths';
+import { getDataDir, getSessionsDir, getBotConfigPath } from '../utils/paths';
+import { migrateConfigs } from '../utils/config-migration';
 
 /** 全局 config.json 结构 */
 interface RawConfig {
@@ -64,6 +66,13 @@ export class FileConfigManager implements ConfigManager {
 
   /** 加载所有配置文件 */
   private loadAll(): void {
+    // 执行配置迁移（幂等，旧版 providers.json / sessions/*_config.json → 统一结构）
+    try {
+      migrateConfigs();
+    } catch (e: unknown) {
+      console.error(`[Config] Migration failed (non-fatal): ${(e as Error).message}`);
+    }
+
     // 加载主配置
     try {
       const configPath = path.join(getDataDir(), 'config.json');
@@ -74,28 +83,10 @@ export class FileConfigManager implements ConfigManager {
       this.rawConfig = {} as RawConfig;
     }
 
-    // 加载 providers.json
-    try {
-      const provPath = path.join(getDataDir(), 'providers.json');
-      const raw = fs.readFileSync(provPath, 'utf-8');
-      const provData = JSON.parse(raw);
-
-      for (const [name, p] of Object.entries(provData.providers || {}) as [string, Record<string, unknown>][]) {
-        this.providerConfigs.set(name, {
-          baseUrl: p.baseUrl || '',
-          apiKey: p.apiKey || '',
-          model: (p.models && p.models[0]) || '',
-          format: (p.format as 'anthropic' | 'openai') || 'anthropic',
-        });
-      }
-    } catch (e: unknown) {
-      console.error(`[Config] Failed to load providers.json: ${e.message}`);
-    }
-
-    // 加载默认 providers
+    // 从 config.json.providers 加载 provider（唯一来源）
     this._loadDefaultProviders();
 
-    // 加载各 bot 的模型配置
+    // 加载各 bot 的模型配置（从 bots/ 目录）
     if (this.rawConfig?.bots) {
       for (const bot of this.rawConfig.bots) {
         this._loadBotConfig(bot.name);
@@ -119,10 +110,25 @@ export class FileConfigManager implements ConfigManager {
     }
   }
 
-  /** 加载 Bot 级别配置 */
+  /** 加载 Bot 级别配置（统一路径：bots/<Bot>/bot-config.json，fallback 到旧路径兼容） */
   private _loadBotConfig(botKey: string): void {
+    const dataDir = getDataDir();
+    const botsDir = path.join(dataDir, 'bots');
     const sessionsDir = getSessionsDir();
-    const configPath = path.join(sessionsDir, `${botKey}_config.json`);
+
+    // 优先：新统一路径 bots/<Bot>/bot-config.json
+    const newBotConfigPath = getBotConfigPath(botKey);
+    // Fallback：旧路径 bots/<Bot>.json
+    const oldBotConfigPath = path.join(botsDir, `${botKey}.json`);
+    // Fallback：更旧的 sessions/<Bot>_config.json
+    const fallbackConfigPath = path.join(sessionsDir, `${botKey}_config.json`);
+
+    let configPath = newBotConfigPath;
+    if (!fs.existsSync(configPath) && fs.existsSync(oldBotConfigPath)) {
+      configPath = oldBotConfigPath;
+    } else if (!fs.existsSync(configPath) && fs.existsSync(fallbackConfigPath)) {
+      configPath = fallbackConfigPath;
+    }
 
     try {
       if (fs.existsSync(configPath)) {
@@ -137,14 +143,14 @@ export class FileConfigManager implements ConfigManager {
     }
   }
 
-  /** 保存 Bot 级别配置 */
+  /** 保存 Bot 级别配置到统一路径：bots/<Bot>/bot-config.json */
   private _saveBotConfig(botKey: string, config: BotLevelConfig): void {
-    const sessionsDir = getSessionsDir();
-    const configPath = path.join(sessionsDir, `${botKey}_config.json`);
+    const configPath = getBotConfigPath(botKey);
+    const parentDir = path.dirname(configPath);
 
     try {
-      if (!fs.existsSync(sessionsDir)) {
-        fs.mkdirSync(sessionsDir, { recursive: true });
+      if (!fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
       }
       this.botConfigs.set(botKey, config);
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -208,7 +214,20 @@ export class FileConfigManager implements ConfigManager {
    */
   getActiveModel(): string {
     const cfg = this.rawConfig;
-    return cfg?.activeModel || cfg?.defaultModel || 'deepseek/deepseek-v4-pro';
+    // 🔧 不再硬编码默认模型，从已配置的 providers 中取第一个
+    if (cfg?.activeModel) return cfg.activeModel;
+    if (cfg?.defaultModel) return cfg.defaultModel;
+    // fallback: 取第一个 provider 的第一个模型
+    const providers = cfg?.providers || {};
+    for (const [, p] of Object.entries(providers) as [string, Record<string, unknown>][]) {
+      const models = (p.models as unknown[]) || [];
+      if (models.length > 0) {
+        const first = models[0] as Record<string, unknown>;
+        const modelId = typeof first === 'string' ? first : (first.id as string || '');
+        if (modelId) return `${p.provider || 'unknown'}/${modelId}`;
+      }
+    }
+    return '';
   }
 
   /**
@@ -255,17 +274,6 @@ export class FileConfigManager implements ConfigManager {
     const botLevel = this.botConfigs.get(botKey) || {};
     botLevel.activeModel = modelSpec;
     this._saveBotConfig(botKey, botLevel);
-
-    // 同时更新全局配置
-    if (this.rawConfig) {
-      this.rawConfig.activeModel = modelSpec;
-      try {
-        const configPath = path.join(getDataDir(), 'config.json');
-        fs.writeFileSync(configPath, JSON.stringify(this.rawConfig, null, 2) + '\n');
-      } catch (e: unknown) {
-        console.error(`[Config] Failed to save global activeModel: ${e.message}`);
-      }
-    }
   }
 
   /** 保存 Bot 模型别名 */

@@ -1302,7 +1302,21 @@ export class ContextManager {
     }
 
     const kept = keptRounds.flat();
-    const result = [...system, ...kept];
+    let result = [...system, ...kept];
+
+    // Last resort: if system messages alone exceed budget, trim them too.
+    const systemTokens = system.reduce((s, m) => s + this.estimateMessageTokens(m), 0);
+    if (systemTokens > maxInputTokens && system.length > 0) {
+      const totalKept = kept.reduce((s, m) => s + this.estimateMessageTokens(m), 0);
+      const systemBudget = Math.max(1000, maxInputTokens - totalKept);
+      result = this.trimSystemMessages(system, systemBudget).concat(kept);
+      if (this.config.debugLog) {
+        console.log(
+          `[ContextManager] System trim: system alone exceeds budget, ` +
+            `trimmed to ~${systemBudget} tokens`
+        );
+      }
+    }
 
     if (this.config.debugLog) {
       console.log(
@@ -1355,6 +1369,36 @@ export class ContextManager {
             });
           }
         }
+      }
+    }
+
+    return result;
+  }
+
+  private trimSystemMessages(
+    messages: NormalizedMessage[],
+    budgetTokens: number
+  ): NormalizedMessage[] {
+    const result: NormalizedMessage[] = [];
+    let usedTokens = 0;
+
+    for (const msg of messages) {
+      const msgTokens = this.estimateMessageTokens(msg);
+      if (usedTokens + msgTokens <= budgetTokens) {
+        result.push(msg);
+        usedTokens += msgTokens;
+      } else {
+        const remainingTokens = Math.max(0, budgetTokens - usedTokens);
+        const remainingChars = Math.max(remainingTokens * 4, 500);
+        const truncated = msg.content.length - remainingChars;
+        if (truncated > 100) {
+          result.push({
+            ...msg,
+            content: msg.content.slice(0, remainingChars) + `... [${truncated} chars trimmed from system prompt due to budget]`,
+            metadata: { ...msg.metadata, truncated: true, budgetTrimmed: true },
+          });
+        }
+        usedTokens = budgetTokens;
       }
     }
 

@@ -15,7 +15,9 @@
 
 import type { IMCapabilities } from './types';
 import { buildCapabilityPrompt } from './capabilities';
-import { getSoulDir } from './utils/paths';
+import { getSoulDir, getDataDir } from './utils/paths';
+import { getCurrentBot } from './bot-context';
+import * as path from 'path';
 
 // ================================================================
 // 默认终端能力（无 IM 模块时的 fallback）
@@ -38,10 +40,11 @@ export const DEFAULT_TERMINAL_CAPS: IMCapabilities = {
 // 加载顺序：rules → identity → profile → workspace → skills
 // ================================================================
 export function loadSoul(botKey: string): string {
-  const soulDir = getSoulDir(botKey);
   const soulOrder = ['rules.md', 'identity.md', 'profile.md', 'workspace.md', 'skills.md'];
   const parts: string[] = [];
   try {
+    if (!botKey) return '';
+    const soulDir = getSoulDir(botKey);
     const fs = require('fs');
     if (!fs.existsSync(soulDir)) return '';
     for (const file of soulOrder) {
@@ -73,6 +76,19 @@ export interface PromptBuilderContext {
   skillsInfo?: { skills: Array<{ name: string; description?: string }> };
   /** Optional: Custom prompts summary */
   promptsInfo?: { prompts: Array<{ name: string }> };
+  /** Optional: Current model identity (e.g. "deepseek/deepseek-v4-flash") — injected so model knows its own identity */
+  modelInfo?: string;
+  /** Optional: Dynamic runtime context (time, working directory, trigger source, chat type) */
+  runtimeContext?: {
+    /** Current local time string, e.g. "2026-06-07 18:30 (Asia/Shanghai, Saturday)" */
+    currentTime?: string;
+    /** Current working directory for this message */
+    workingDir?: string;
+    /** How this message was triggered: "user_message" | "heartbeat" | "scheduled_task" | "goal_reminder" */
+    trigger?: string;
+    /** Chat type context if available: "direct" | "group" | "topic" */
+    chatType?: string;
+  };
 }
 
 // ================================================================
@@ -85,6 +101,33 @@ export interface PromptBuilderContext {
 // ================================================================
 export function buildSystemPrompt(ctx: PromptBuilderContext): string {
   const sections: string[] = [];
+
+  // 0. Soul（用户定义的身份/人格/规则）— 最高优先级
+  const soul = loadSoul(ctx.botKey);
+  if (soul) {
+    sections.push('# User-Defined Instructions (IMtoAgent Soul)\n\n' + soul);
+  }
+
+  // 0.5. 模型/后端技术标识 — 让模型知道自身技术上下文
+  if (ctx.modelInfo) {
+    const parts = ctx.modelInfo.split('/');
+    const provider = parts.length >= 2 ? parts[0] : '';
+    const model = parts.length >= 2 ? parts.slice(1).join('/') : parts[0];
+    sections.push(`# Technical Context\n\n- Backend model: ${model}` + (provider ? ` (${provider})` : '') + `\n- This is your underlying reasoning engine. Your identity and behavior are defined by the Soul section above.`);
+  }
+
+  // 1. 动态运行时上下文 — 让模型知道当前时间、工作目录、触发来源等
+  if (ctx.runtimeContext) {
+    const rc = ctx.runtimeContext;
+    const lines: string[] = [];
+    if (rc.currentTime) lines.push(`- Current time: ${rc.currentTime}`);
+    if (rc.workingDir) lines.push(`- Working directory: ${rc.workingDir}\n  All file operations should be relative to this directory unless otherwise specified.`);
+    if (rc.trigger) lines.push(`- Trigger: ${rc.trigger}`);
+    if (rc.chatType) lines.push(`- Chat type: ${rc.chatType}`);
+    if (lines.length > 0) {
+      sections.push(`# Runtime Context\n\n${lines.join('\n')}`);
+    }
+  }
 
   // 1. Agent 特有指令
   if (ctx.agentInstructions) {
@@ -108,6 +151,20 @@ You can check logs to understand gateway status, troubleshoot issues, and detect
 - \`grep -i "online\|connected\|disconnected" ~/.imtoagent/logs/imtoagent.log | tail -n 10\` — Bot connection status
 
 Note: Your first message after startup may have lost conversation memory (if the gateway restarted). Check logs first to understand the context.`);
+
+  // 3.2. Self-Query (Agent can introspect IMtoAgent status/config)
+  sections.push(`# IMtoAgent Self-Query
+
+You can use the \`imtoagent\` CLI to introspect your own runtime:
+- \`imtoagent status\` — Gateway running status (PID, config, bots)
+- \`imtoagent config list\` — List all configured Bots
+- \`imtoagent config show <name>\` — Show Bot details (IM, backend, heartbeat, etc.)
+- \`imtoagent stats\` / \`imtoagent stats --today\` / \`imtoagent stats --week\` — Usage statistics
+- \`imtoagent logs -n N\` — Last N log lines (equivalent to \`tail -n N ~/.imtoagent/logs/imtoagent.log\`)
+- \`imtoagent doctor\` — Diagnose & fix configuration issues
+- \`imtoagent health\` — Run comprehensive health check
+
+These commands let you answer user questions like "what model am I using?" or "show me recent activity" without guessing.`);
 
   // 3.5. Scheduled Tasks
   sections.push(`# Scheduled Tasks
@@ -146,12 +203,6 @@ For operational procedures (startup, restart, upgrade, troubleshooting), refer t
     sections.push('# Available Resources\n\n' + resourceSections.join('\n\n'));
   }
 
-  // 5. Soul
-  const soul = loadSoul(ctx.botName);
-  if (soul) {
-    sections.push('# User-Defined Instructions (IMtoAgent Soul)\n\n' + soul);
-  }
-
   return sections.join('\n\n---\n\n');
 }
 
@@ -163,4 +214,71 @@ export function resolveCapabilities(
   fallback?: IMCapabilities | null
 ): IMCapabilities {
   return imModule?.getCapabilities() ?? fallback ?? DEFAULT_TERMINAL_CAPS;
+}
+
+// ================================================================
+// 统一上下文构建 — 消除 index.ts 和 codex-proxy.ts 的参数组装重复
+// ================================================================
+
+const _WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** 获取当前模型标识（config.json activeModel） */
+function _getActiveModel(): string | undefined {
+  try {
+    const fs = require('fs');
+    const configPath = path.join(getDataDir(), 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    return cfg.activeModel;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 格式化当前时间为 "YYYY-MM-DD HH:MM (Asia/Shanghai, DayOfWeek)" */
+function _formatShanghaiTime(): string {
+  const tz = require('./core/timezone');
+  const parts = tz.getShanghaiDateParts();
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')} ${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')} (${tz.TZ}, ${_WEEKDAYS[parts.weekday]})`;
+}
+
+/** 从原始请求文本中提取工作目录（Codex 代理的 <cwd> 标记） */
+function _extractCwdFromRawText(rawText?: string): string | undefined {
+  if (!rawText) return undefined;
+  const m = rawText.match(/<cwd>(.*?)<\/cwd>/s);
+  return m?.[1];
+}
+
+export interface UnifiedPromptOptions {
+  /** 工作目录 */
+  workingDir?: string;
+  /** 触发来源：user_message | heartbeat | scheduled_task | goal_reminder */
+  trigger?: string;
+  /** 聊天类型：direct | group | topic */
+  chatType?: string;
+  /** 原始请求文本（用于提取 cwd，仅 Codex 路径） */
+  rawText?: string;
+}
+
+/**
+ * 统一构建 PromptBuilderContext。
+ * 两条路径（index.ts / codex-proxy.ts）都调用此函数，不再各自拼参数。
+ */
+export function buildPromptContext(
+  base: Omit<PromptBuilderContext, 'modelInfo' | 'runtimeContext'>,
+  opts: UnifiedPromptOptions = {},
+): PromptBuilderContext {
+  // modelInfo 统一从 Bot 上下文内部获取，调用方无需关心
+  const currentBot = getCurrentBot();
+  const modelInfo = currentBot?.activeModel || _getActiveModel();
+  const workingDir = opts.workingDir || _extractCwdFromRawText(opts.rawText);
+  return {
+    ...base,
+    modelInfo,
+    runtimeContext: {
+      currentTime: _formatShanghaiTime(),
+      ...(workingDir ? { workingDir } : {}),
+      trigger: opts.trigger || 'user_message',
+      chatType: opts.chatType || 'direct',
+    },
+  };
 }

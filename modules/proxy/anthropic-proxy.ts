@@ -11,11 +11,12 @@
 //   - Anthropic 格式供应商（小米、DeepSeek）：直接透传
 //   - OpenAI 格式供应商（百炼、极速）：自动双向转换
 
+import { existsSync } from 'fs';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getCurrentBot } from '../bot-context';
-import { buildSystemPrompt } from '../prompt-builder';
+import { buildSystemPrompt, buildPromptContext, resolveCapabilities, DEFAULT_TERMINAL_CAPS } from '../prompt-builder';
 import { handleCodexRequest } from './codex-proxy';
 import { getDataDir, getSessionsDir } from '../utils/paths';
 import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
@@ -40,6 +41,36 @@ import type {
   AnthropicResponseUsage,
   AnthropicToolChoice,
 } from './proxy-types';
+
+/** Map HTTP status code to user-friendly error message */
+function statusToUserMessage(status: number): string {
+  switch (status) {
+    case 401: return '⚠️ API 认证失败，请检查密钥配置';
+    case 402: return '⚠️ API 余额不足，请充值后重试';
+    case 403: return '⚠️ API 权限不足，请检查配置';
+    case 429: return '⚠️ 请求过于频繁，请稍后重试';
+    default:
+      if (status >= 500) return '⚠️ 服务暂时不可用，请稍后重试';
+      return '⚠️ 处理消息时出错，请稍后重试';
+  }
+}
+
+/** Cooldown tracker: prevents spamming the user with repeated error messages */
+const errorCooldowns = new Map<string, number>();
+const ERROR_COOLDOWN_MS = 30_000; // 30 秒
+
+/** Notify user of proxy-layer error via IM (if notifyUser is available) */
+function notifyUserError(status: number) {
+  const bot = getCurrentBot();
+  if (!bot?.notifyUser) return;
+  const msg = statusToUserMessage(status);
+  const key = `${status}:${msg}`;
+  const now = Date.now();
+  const last = errorCooldowns.get(key) || 0;
+  if (now - last < ERROR_COOLDOWN_MS) return; // still in cooldown
+  errorCooldowns.set(key, now);
+  bot.notifyUser(msg).catch(e => console.error(`[Proxy] notifyUser failed: ${e.message}`));
+}
 
 // ===== 共享状态 =====
 export interface ModelAliases {
@@ -74,7 +105,6 @@ interface ProviderConfig {
 
 let providers = new Map<string, ProviderConfig>();
 
-const CONFIG_PATH = path.join(getDataDir(), 'providers.json');
 
 // ===== Circuit Breaker Manager =====
 let circuitManager: CircuitBreakerManager | null = null;
@@ -94,45 +124,79 @@ function getCircuitManager(): CircuitBreakerManager {
   return circuitManager;
 }
 
+/**
+ * 加载供应商配置（唯一来源：config.json.providers）
+ * providers.json 已废弃，迁移工具会在首次启动时自动合并。
+ */
 export function loadProviders(): { providers: Map<string, ProviderConfig>; defaultModel: string } {
   providers = new Map<string, ProviderConfig>();
-  let defaultModel = 'xiaomi/mimo-v2.5-pro';
+  let defaultModel = '';
+
   try {
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    const configPath = path.join(getDataDir(), 'config.json');
+    if (!existsSync(configPath)) {
+      console.log(`[Proxy] config.json not found, no default model configured`);
+      return { providers, defaultModel };
+    }
+    const raw = fs.readFileSync(configPath, 'utf-8');
     const cfg = JSON.parse(raw);
-    // activeModel 优先于 defaultModel（持久化的用户选择）
+
+    // 🔧 从已配置的 providers 动态推导默认模型
     if (cfg.activeModel) defaultModel = cfg.activeModel;
     else if (cfg.defaultModel) defaultModel = cfg.defaultModel;
+    else {
+      // 取第一个 provider 的第一个模型作为 fallback
+      const provs = cfg.providers || {};
+      for (const [name, p] of Object.entries(provs) as [string, Record<string, unknown>][]) {
+        const models = (p.models as unknown[]) || [];
+        if (models.length > 0) {
+          const first = models[0] as Record<string, unknown>;
+          const modelId = typeof first === 'string' ? first : (first.id as string || '');
+          if (modelId) {
+            defaultModel = `${name}/${modelId}`;
+            break;
+          }
+        }
+      }
+    }
+
     const provs = cfg.providers || {};
     for (const [name, p] of Object.entries(provs) as [string, Record<string, unknown>][]) {
+      const rawModels = (p.models as unknown[]) || [];
+      const modelIds = rawModels.map(m => typeof m === 'string' ? m : (m as Record<string, unknown>).id as string || '').filter(Boolean);
       providers.set(name, {
         baseUrl: (p.baseUrl as string) || '',
         apiKey: (p.apiKey as string) || '',
-        models: (p.models as string[]) || [],
+        models: modelIds,
         format: (p.format as string) || 'anthropic',
       });
     }
-    console.log(`[Proxy] Loaded ${providers.size} provider(s): ${[...providers.keys()].join(', ')}`);
+    console.log(`[Proxy] Loaded ${providers.size} provider(s) from config.json: ${[...providers.keys()].join(', ')}`);
   } catch (e: unknown) {
-    console.error(`[Proxy] Failed to read providers.json: ${e.message}`);
+    console.error(`[Proxy] Failed to load providers from config.json: ${(e as Error).message}`);
   }
+  console.log(`[Proxy] Default model: ${defaultModel}`);
   return { providers, defaultModel };
 }
 
-/** 持久化当前模型选择到 providers.json */
+/**
+ * 持久化当前模型选择到 config.json.activeModel（唯一持久化位置）
+ * providers.json 已废弃。
+ */
 export function saveActiveModel(modelSpec: string): void {
+  // 写入 config.json.activeModel，供 codex-proxy getConfig() 实时读取
   try {
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-    const cfg = JSON.parse(raw);
-    cfg.activeModel = modelSpec;
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n');
-    console.log(`[Proxy] activeModel persisted: ${modelSpec}`);
+    const configPath = path.join(getDataDir(), 'config.json');
+    if (!fs.existsSync(configPath)) return;
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    raw.activeModel = modelSpec;
+    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
+    console.log(`[saveActiveModel] config.json.activeModel → ${modelSpec}`);
   } catch (e: unknown) {
-    console.error(`[Proxy] Failed to save activeModel: ${e.message}`);
+    console.error(`[saveActiveModel] Failed: ${(e as Error).message}`);
   }
 }
 
-// ===== 会话级模型映射 =====
 const SESSIONS_DIR = () => getSessionsDir();
 
 // ===== reasoning_content 缓存（跨请求持久化，用于下游 client 丢失 thinking 块时注入） =====
@@ -156,12 +220,13 @@ function conversationFingerprint(messages: (AnthropicMessage | OpenAIMessage)[])
 /** 加载用户会话配置 */
 export function loadSessionConfig(customPath?: string): { activeModel: string; modelAliases: ModelAliases } {
   const sessionPath = customPath || `${SESSIONS_DIR()}/_default.json`;
+  // 🔧 不再硬编码默认模型 alias，从已配置 provider 动态推导
   const defaultAliases: ModelAliases = {
-    default: 'deepseek/deepseek-v4-pro[1m]',
-    sonnet: 'deepseek/deepseek-v4-flash[1m]',
-    opus: 'deepseek/deepseek-v4-pro[1m]',
-    haiku: 'deepseek/deepseek-v4-flash[1m]',
-    best: 'deepseek/deepseek-v4-pro[1m]',
+    default: '',
+    sonnet: '',
+    opus: '',
+    haiku: '',
+    best: '',
   };
 
   try {
@@ -746,6 +811,7 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
 
   openAIStream.on('error', (err) => {
     console.error(`[Proxy] OpenAI stream error: ${err.message}`);
+    notifyUserError(502);
     if (!res.writableEnded) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `Stream error: ${err.message}`, type: 'api_error' }));
@@ -809,7 +875,23 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     return;
   }
 
-  const cfg = sharedState.activeConfig;
+  // 优先从 Bot 上下文解析模型配置（与 Codex Proxy 对齐）
+  const botCtx = getCurrentBot();
+  let cfg: ProxyConfig | null = null;
+
+  if (botCtx?.activeModel) {
+    // Bot 级别 activeModel 优先（如 deepseek/deepseek-v4-flash）
+    cfg = getProviderConfig(botCtx.activeModel);
+    if (!cfg) {
+      console.warn(`[Proxy] ⚠️ Bot activeModel '${botCtx.activeModel}' not found in providers, falling back to global`);
+    }
+  }
+
+  // 回退到全局 activeConfig
+  if (!cfg) {
+    cfg = sharedState.activeConfig;
+  }
+
   if (!cfg) {
     res.writeHead(503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'No active provider configured. Use /model to set one.' }));
@@ -870,7 +952,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   // 收集请求体
   const chunks: Buffer[] = [];
   req.on('data', (chunk: Buffer) => chunks.push(chunk));
-  req.on('end', () => {
+  req.on('end', async () => {
     let bodyStr = Buffer.concat(chunks).toString('utf-8');
     let originalModel = '';
     let parsedBody: AnthropicRequestBody | OpenAIRequestBody = {} as AnthropicRequestBody;
@@ -883,13 +965,14 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     // 🧠 动态注入 imtoagent system prompt（IM能力/心跳/Soul/MCP/Skills/Prompts）
     const ctx = getCurrentBot();
     if (ctx) {
-      const injected = buildSystemPrompt({
+      const injectedCtx = buildPromptContext({
         caps: ctx.caps || null,
-        botKey: ctx.botName || 'CodexBot',
+        botName: ctx.botName || 'CodexBot',
         mcpInfo: ctx.mcpInfo,
         skillsInfo: ctx.skillsInfo,
         promptsInfo: ctx.promptsInfo,
-      });
+      }, {});
+      const injected = buildSystemPrompt(injectedCtx);
       const existing = parsedBody.system;
       if (typeof existing === 'string') {
         parsedBody.system = existing + '\n\n---\n\n' + injected;
@@ -970,6 +1053,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         const fbBreaker = cm.get(fallbackName);
         if (fbBreaker) breaker = fbBreaker;
       } else {
+        notifyUserError(503);
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Provider ${targetProviderName} is temporarily unavailable (circuit breaker open, no fallback)` }));
         return;
@@ -1035,6 +1119,60 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         }
       }
       parsedBody = anthropicToOpenAI(parsedBody, targetModelName, originalModel);
+    }
+
+    // ===== Tool-Call Loop 共享层 =====
+    // 在 http.request 之前，注入本地工具并检查是否有需要执行的
+    const toolRegistry = getCurrentBot()?.toolRegistry;
+    if (toolRegistry && !targetIsAnthropic) {
+      const localTools = toolRegistry.getOpenAIFormat();
+      if (localTools.length > 0) {
+        if (!(parsedBody as any).tools) (parsedBody as any).tools = [];
+        const existingNames = new Set(((parsedBody as any).tools || []).map((t: any) => t.function?.name || t.name));
+        let added = 0;
+        for (const lt of localTools) {
+          const name = (lt as any).function?.name;
+          if (name && !existingNames.has(name)) {
+            (parsedBody as any).tools.push(lt);
+            added++;
+          }
+        }
+        if (added > 0) {
+          console.log(`[Proxy] 🔧 Injected ${added} IMtoAgent local tools: ${localTools.map((t: any) => t.function?.name).join(', ')}`);
+        }
+      }
+    }
+
+    const toolsList = (parsedBody as any).tools as { type: string; function: { name: string } }[] | undefined;
+    const hasLocal = toolsList?.some(t => {
+      const n = t.function?.name || '';
+      return n.startsWith('imtoagent_') || n.startsWith('goal_') || n === 'get_weather';
+    });
+
+    if (hasLocal && toolRegistry) {
+      console.log(`[Proxy] 🔧 Tool-Call Loop: ${toolsList?.map(t => t.function?.name).join(', ')} — entering shared loop`);
+      const { executeToolCallLoop } = await import('./tool-call-loop');
+      const { createHttpRequestAdapter } = await import('./http-request-adapter');
+
+      const httpRequest = createHttpRequestAdapter(targetUpstreamProto, targetUrlObj, targetProvider.apiKey, targetIsAnthropic);
+      const loopResult = await executeToolCallLoop(
+        (parsedBody as any).messages || [],
+        '', // URL 由 adapter 内部处理
+        targetProvider.apiKey,
+        targetModelName,
+        toolsList,
+        toolRegistry,
+        new AbortController().signal,
+        (parsedBody as any).max_tokens,
+        httpRequest,
+        // 保留原始请求中的额外字段
+        (parsedBody as any).thinking ? { thinking: (parsedBody as any).thinking } : undefined,
+      );
+
+      if (loopResult.hadLocalTools) {
+        console.log(`[Proxy] ✅ Tool-Call Loop completed (${loopResult.loops} loops, messages modified)`);
+      }
+      // 用 loop 后的最终 messages 重建请求体
       finalBody = JSON.stringify(parsedBody);
     }
 
@@ -1119,6 +1257,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
           if (upstreamRes.statusCode !== 200) {
             console.error(`[Proxy] Upstream error ${upstreamRes.statusCode}: ${respStr.slice(0, 500)}`);
             if (breaker) breaker.recordFailure();
+            notifyUserError(upstreamRes.statusCode || 500);
             res.writeHead(upstreamRes.statusCode || 500, { 'Content-Type': 'application/json' });
             res.end(respStr);
             return;
@@ -1196,6 +1335,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       console.error(`[Proxy] Request timeout (${REQUEST_TIMEOUT}ms)`);
       logEvent({ event: 'proxy_upstream_error', provider: targetProviderName, error: 'timeout' });
       if (breaker) breaker.recordFailure();
+      notifyUserError(504);
       if (!res.writableEnded) {
         res.writeHead(504, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Upstream request timeout', type: 'api_error' }));
@@ -1206,6 +1346,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       console.error(`[Proxy] Upstream request failed: ${err.message}`);
       logEvent({ event: 'proxy_upstream_error', provider: targetProviderName, error: err.message });
       if (breaker) breaker.recordFailure();
+      notifyUserError(502);
       if (!res.writableEnded) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Upstream error: ${err.message}`, type: 'api_error' }));

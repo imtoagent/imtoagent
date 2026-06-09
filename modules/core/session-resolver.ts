@@ -37,6 +37,14 @@ export class SessionResolver {
   }
 
   /**
+   * Get the last active IM chatId for this bot.
+   * Returns undefined if no real conversation has happened yet.
+   */
+  getLastActiveChatId(): string | undefined {
+    return this.lastActiveChatIds.get(this.botKey);
+  }
+
+  /**
    * 解析心跳 session 的目标
    * L1: 优先使用追踪的真实 IM chatId
    */

@@ -1,252 +1,189 @@
 // ================================================================
-// Config Migration — 配置结构平滑升级
+// Config Migration — 从旧配置结构迁移到统一 config.json
 // ================================================================
-// 职责：
-//   1. 检测 config.json 版本（通过 `_meta.version` 或内容推断）
-//   2. 按版本号逐步执行迁移脚本
-//   3. 迁移前备份原文件（安全优先）
-//   4. 迁移后写入版本标记
-// ================================================================
-// 使用方式：
-//   - 启动时调用一次：migrateConfig()
-//   - 需要变更结构时：在 MIGRATIONS 数组末尾追加新条目
-//   - 每条迁移都是幂等的，可安全重试
+// 迁移逻辑（首次启动时执行一次）：
+//   1. providers.json → 合并到 config.json.providers（若 providers.json 更新）
+//   2. sessions/<name>_config.json → bots/<name>.json
+//   3. 完成后重命名旧文件为 .migrated
 // ================================================================
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getDataDir, getConfigPath } from './paths';
+import { getDataDir, getConfigPath, getSessionsDir, getBotsDir, getBotConfigPath } from './paths';
 
-/** config.json 顶层元数据 */
-interface ConfigMeta {
-  version: number;
-  migratedAt?: string;
-  lastVersion?: number;
-}
+const BOTS_DIR_NAME = 'bots';
 
-interface RawConfig {
-  _meta?: ConfigMeta;
-  [key: string]: unknown;
-}
+/** 执行配置迁移（幂等，已迁移则跳过） */
+export function migrateConfigs(): void {
+  const dataDir = getDataDir();
+  let migrated = false;
 
-interface MigrationStep {
-  fromVersion: number;
-  toVersion: number;
-  description: string;
-  migrate: (config: RawConfig) => RawConfig;
-}
+  // 1. providers.json → config.json
+  if (migrateProviders(dataDir)) migrated = true;
 
-// ================================================================
-// 迁移定义
-// ================================================================
-// 规则：
-//   - fromVersion 必须是上一个版本号
-//   - 第一条迁移的 fromVersion 应为 0（无版本标记 = 版本 0）
-//   - 每条迁移只做一件事，方便回滚和调试
-// ================================================================
+  // 2. sessions/*_config.json → bots/*.json
+  if (migrateBotConfigs(dataDir)) migrated = true;
 
-const CURRENT_VERSION = 2;
-
-const MIGRATIONS: MigrationStep[] = [
-  // ─── v0 → v1: 添加 _meta 版本标记 + bots[].im 字段规范化 ───
-  // 适用：0.4.5 之前的老用户，config.json 没有 _meta 字段
-  {
-    fromVersion: 0,
-    toVersion: 1,
-    description: 'Add config version marker + normalize bot IM/backend fields',
-    migrate: (config: RawConfig): RawConfig => {
-      const c = { ...config };
-
-      // 确保 bots 数组存在
-      if (!c.bots) {
-        c.bots = [];
-      }
-
-      // 规范化 bots[].im 字段（如果之前不存在，设为空字符串）
-      if (Array.isArray(c.bots)) {
-        c.bots = (c.bots as unknown[]).map((bot: unknown) => {
-          const b = bot as Record<string, unknown>;
-          return {
-            ...b,
-            im: b.im || '',
-            isAdmin: b.isAdmin || false,
-          };
-        });
-      }
-
-      // 添加 system 默认值
-      if (!c.system) {
-        c.system = {};
-      }
-
-      return c;
-    },
-  },
-
-  // ─── v1 → v2: 添加 providers 结构迁移 ───
-  // 适用：未来 providers 结构变化时的迁移
-  {
-    fromVersion: 1,
-    toVersion: 2,
-    description: 'Migrate providers structure (if needed)',
-    migrate: (config: RawConfig): RawConfig => {
-      // 当前版本无需变更，占位用
-      // 未来 providers 结构变化时在这里添加逻辑
-      return config;
-    },
-  },
-
-  // ─── 添加新迁移示例 ───
-  // {
-  //   fromVersion: 2,
-  //   toVersion: 3,
-  //   description: 'Rename bots[].appId to bots[].clientId',
-  //   migrate: (config) => {
-  //     const c = { ...config };
-  //     if (Array.isArray(c.bots)) {
-  //       c.bots = (c.bots as any[]).map(b => ({
-  //         ...b,
-  //         clientId: b.appId,
-  //       }));
-  //       delete (c.bots as any)[0]?.appId; // 逐个清理
-  //     }
-  //     return c;
-  //   },
-  // },
-];
-
-// ================================================================
-// 核心逻辑
-// ================================================================
-
-/**
- * 获取当前配置版本。
- * 无 _meta.version = 版本 0（老用户首次升级）。
- */
-function detectVersion(config: RawConfig): number {
-  return config._meta?.version ?? 0;
+  if (migrated) {
+    console.log('[Config Migration] Configs migrated to unified structure');
+  }
 }
 
 /**
- * 主入口：检测并执行配置迁移。
- * 应在应用启动时调用一次（早于 config 加载）。
- * 返回迁移摘要，可用于日志输出。
+ * 迁移 providers.json 到 config.json
+ * - 如果 providers.json 存在且 config.json 也存在
+ * - 将 providers.json 的 providers 合并到 config.json（优先 providers.json 的数据）
+ * - 将 providers.json.activeModel 合并到 config.json.activeModel（如果 config.json 没有）
+ * - 完成后重命名 providers.json 为 providers.json.migrated
  */
-export function migrateConfig(): {
-  migrated: boolean;
-  fromVersion: number;
-  toVersion: number;
-  steps: string[];
-  backupPath?: string;
-  error?: string;
-} {
+function migrateProviders(dataDir: string): boolean {
+  const providersPath = path.join(dataDir, 'providers.json');
   const configPath = getConfigPath();
 
-  // config 不存在 → 无需迁移
-  if (!fs.existsSync(configPath)) {
-    return { migrated: false, fromVersion: 0, toVersion: CURRENT_VERSION, steps: [] };
-  }
+  if (!fs.existsSync(providersPath)) return false;
+  if (!fs.existsSync(configPath)) return false;
 
-  let config: RawConfig;
+  const migratedMarker = providersPath + '.migrated';
+  if (fs.existsSync(migratedMarker)) return false;
+
   try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    config = JSON.parse(raw);
-  } catch (e: unknown) {
-    return {
-      migrated: false,
-      fromVersion: 0,
-      toVersion: CURRENT_VERSION,
-      steps: [],
-      error: `Failed to parse config.json: ${e.message}`,
-    };
-  }
+    const providersRaw = fs.readFileSync(providersPath, 'utf-8');
+    const configRaw = fs.readFileSync(configPath, 'utf-8');
+    const providersJson = JSON.parse(providersRaw);
+    const configJson = JSON.parse(configRaw);
 
-  const fromVersion = detectVersion(config);
+    let changed = false;
 
-  // 已是最新版本 → 跳过
-  if (fromVersion >= CURRENT_VERSION) {
-    return { migrated: false, fromVersion, toVersion: CURRENT_VERSION, steps: [] };
-  }
-
-  // 需要迁移 → 先备份
-  const backupPath = backupConfig(configPath);
-
-  const steps: string[] = [];
-  let currentConfig = config;
-  let currentVersion = fromVersion;
-
-  // 逐步执行迁移
-  for (const migration of MIGRATIONS) {
-    if (currentVersion < migration.fromVersion) continue;
-    if (currentVersion >= migration.toVersion) continue;
-
-    try {
-      currentConfig = migration.migrate(currentConfig);
-      currentConfig._meta = {
-        ...((currentConfig._meta as ConfigMeta) || {}),
-        version: migration.toVersion,
-        migratedAt: new Date().toISOString(),
-        lastVersion: migration.fromVersion,
-      };
-      currentVersion = migration.toVersion;
-      steps.push(`v${migration.fromVersion} → v${migration.toVersion}: ${migration.description}`);
-    } catch (e: unknown) {
-      // 迁移失败 → 恢复备份并报错
-      restoreBackup(configPath, backupPath);
-      return {
-        migrated: false,
-        fromVersion,
-        toVersion: currentVersion,
-        steps,
-        backupPath,
-        error: `Migration failed at v${migration.fromVersion}→v${migration.toVersion}: ${e.message}`,
-      };
+    // 合并 providers（providers.json 优先）
+    if (providersJson.providers) {
+      configJson.providers = { ...configJson.providers, ...providersJson.providers };
+      changed = true;
     }
-  }
 
-  // 写入迁移后的配置
-  try {
-    fs.writeFileSync(configPath, JSON.stringify(currentConfig, null, 2) + '\n');
+    // 合并 activeModel（config.json 优先，保留用户选择）
+    if (!configJson.activeModel && providersJson.activeModel) {
+      configJson.activeModel = providersJson.activeModel;
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(configPath, JSON.stringify(configJson, null, 2) + '\n');
+      console.log('[Config Migration] providers.json merged into config.json');
+    }
+
+    // 重命名旧文件
+    fs.renameSync(providersPath, migratedMarker);
+    console.log('[Config Migration] providers.json → providers.json.migrated');
+    return true;
   } catch (e: unknown) {
-    restoreBackup(configPath, backupPath);
-    return {
-      migrated: false,
-      fromVersion,
-      toVersion: currentVersion,
-      steps,
-      backupPath,
-      error: `Failed to write migrated config: ${e.message}`,
-    };
+    console.error(`[Config Migration] Failed to migrate providers: ${(e as Error).message}`);
+    return false;
   }
-
-  return { migrated: true, fromVersion, toVersion: CURRENT_VERSION, steps, backupPath };
 }
 
-// ================================================================
-// 备份/恢复
-// ================================================================
+/**
+ * 迁移 sessions/<name>_config.json → bots/<name>.json
+ * - 扫描 sessions/ 目录下所有 *_config.json
+ * - 拷贝到 bots/ 目录
+ * - 完成后重命名旧文件为 *_config.json.migrated
+ */
+function migrateBotConfigs(dataDir: string): boolean {
+  const sessionsDir = path.join(dataDir, 'sessions');
+  const botsDir = path.join(dataDir, BOTS_DIR_NAME);
 
-/** 备份当前配置文件，返回备份路径 */
-function backupConfig(configPath: string): string {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = `${configPath}.backup.${timestamp}`;
+  if (!fs.existsSync(sessionsDir)) return false;
+
+  let migrated = false;
+
   try {
-    fs.copyFileSync(configPath, backupPath);
-    console.error(`[ConfigMigration] Backup created: ${backupPath}`);
-  } catch {
-    // 备份失败不阻塞迁移，但记录日志
-    console.error(`[ConfigMigration] Failed to create backup`);
+    const files = fs.readdirSync(sessionsDir);
+    const botConfigFiles = files.filter(f => f.endsWith('_config.json') && !f.endsWith('.migrated'));
+
+    if (botConfigFiles.length === 0) return false;
+
+    if (!fs.existsSync(botsDir)) {
+      fs.mkdirSync(botsDir, { recursive: true });
+    }
+
+    for (const file of botConfigFiles) {
+      const srcPath = path.join(sessionsDir, file);
+      const botName = file.replace('_config.json', '');
+      const dstPath = path.join(botsDir, `${botName}.json`);
+      const migratedMarker = srcPath + '.migrated';
+
+      // 目标已存在则跳过
+      if (fs.existsSync(dstPath)) continue;
+      if (fs.existsSync(migratedMarker)) continue;
+
+      fs.copyFileSync(srcPath, dstPath);
+      fs.renameSync(srcPath, migratedMarker);
+      console.log(`[Config Migration] sessions/${file} → bots/${botName}.json`);
+      migrated = true;
+    }
+  } catch (e: unknown) {
+    console.error(`[Config Migration] Failed to migrate bot configs: ${(e as Error).message}`);
   }
-  return backupPath;
+
+  return migrated;
 }
 
-/** 从备份恢复配置文件 */
-function restoreBackup(configPath: string, backupPath: string): void {
-  if (!backupPath || !fs.existsSync(backupPath)) return;
+/**
+ * 迁移 sessions/<name>/_bot.json → bots/<name>.json
+ * - 扫描 sessions/ 下的所有子目录，查找 _bot.json
+ * - 合并到 bots/<name>.json（目标已存在时，保留已有字段，新字段追加）
+ * - 完成后重命名旧文件为 _bot.json.migrated
+ */
+export function migrateBotJsonConfigs(): void {
+  const sessionsDir = getSessionsDir();
+  const botsDir = getBotsDir();
+
+  if (!fs.existsSync(sessionsDir)) return;
+
+  let migrated = false;
+
   try {
-    fs.copyFileSync(backupPath, configPath);
-    console.error(`[ConfigMigration] Config restored from backup`);
-  } catch (e) {
-    console.error(`[ConfigMigration] CRITICAL: Failed to restore backup: ${e.message}`);
+    const dirs = fs.readdirSync(sessionsDir);
+
+    for (const dirName of dirs) {
+      const srcPath = path.join(sessionsDir, dirName, '_bot.json');
+      if (!fs.existsSync(srcPath)) continue;
+
+      const migratedMarker = srcPath + '.migrated';
+      if (fs.existsSync(migratedMarker)) continue;
+
+      if (!fs.existsSync(botsDir)) {
+        fs.mkdirSync(botsDir, { recursive: true });
+      }
+
+      const dstPath = getBotConfigPath(dirName);
+      const dstDir = path.dirname(dstPath);
+
+      try {
+        if (fs.existsSync(dstPath)) {
+          // 目标已存在：合并（目标优先，保留已有字段）
+          const existing = JSON.parse(fs.readFileSync(dstPath, 'utf-8'));
+          const incoming = JSON.parse(fs.readFileSync(srcPath, 'utf-8'));
+          const merged = { ...incoming, ...existing };
+          if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+          fs.writeFileSync(dstPath, JSON.stringify(merged, null, 2));
+          console.log(`[Config Migration] sessions/${dirName}/_bot.json merged into bots/${dirName}/bot-config.json`);
+        } else {
+          if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+          fs.copyFileSync(srcPath, dstPath);
+          console.log(`[Config Migration] sessions/${dirName}/_bot.json → bots/${dirName}/bot-config.json`);
+        }
+
+        fs.renameSync(srcPath, migratedMarker);
+        migrated = true;
+      } catch (e: unknown) {
+        console.error(`[Config Migration] Failed to migrate ${dirName}/_bot.json: ${(e as Error).message}`);
+      }
+    }
+  } catch (e: unknown) {
+    console.error(`[Config Migration] Failed to scan sessions dir: ${(e as Error).message}`);
+  }
+
+  if (migrated) {
+    console.log('[Config Migration] Bot configs (_bot.json) migrated');
   }
 }

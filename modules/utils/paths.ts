@@ -115,12 +115,10 @@ export function initDataDir(dotDir: string, envHome: string): string {
   if (sourceDir && sourceLabel === 'cwd') {
     // 开发模式：直接拷贝项目目录下的配置
     copyIfExists(sourceDir, target, 'config.json');
-    copyIfExists(sourceDir, target, 'providers.json');
     copyIfExists(sourceDir, target, 'opencode.json');
   } else if (sourceDir && sourceLabel === 'package template') {
     // npm 安装：从模板拷贝（去掉 .template 后缀）
     copyTemplateIfExists(sourceDir, target, 'config.template.json', 'config.json');
-    copyTemplateIfExists(sourceDir, target, 'providers.template.json', 'providers.json');
     copyTemplateIfExists(sourceDir, target, 'opencode.template.json', 'opencode.json');
     // 拷贝 soul 模板
     const soulSrc = path.join(sourceDir, 'soul.template');
@@ -185,8 +183,18 @@ export function getConfigPath(): string {
   return path.join(getDataDir(), 'config.json');
 }
 
+/** @deprecated providers.json 已废弃，统一使用 config.json.providers */
 export function getProvidersPath(): string {
   return path.join(getDataDir(), 'providers.json');
+}
+
+export function getBotsDir(): string {
+  return path.join(getDataDir(), 'bots');
+}
+
+/** Bot 级别配置文件路径：~/.imtoagent/bots/<botId>/bot-config.json */
+export function getBotConfigPath(botId: string): string {
+  return path.join(getDataDir(), 'bots', botId, 'bot-config.json');
 }
 
 export function getOpencodeConfigPath(): string {
