@@ -1084,12 +1084,12 @@ export async function handleCodexRequest(
             const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
             const hasLocalCalls = localCalls.length > 0;
 
-            if (toolCallInfo.toolCalls.length > 0) {
-              // 有 tool_calls → 执行本地工具 + 合并结果 → 二次请求
+            if (hasLocalCalls) {
+              // 有本地工具调用 → 执行本地工具 + 合并结果 → 二次请求
               console.log(`[Codex] 🔧 intercepted ${localCalls.length} local, ${remoteCalls.length} remote tool_calls`);
 
-              // 并行执行本地工具（如果有）
-              const localResults = localCalls.length > 0 && interceptRegistry
+              // 并行执行本地工具
+              const localResults = interceptRegistry
                 ? await executeLocalTools(localCalls, interceptRegistry)
                 : [];
 
@@ -1120,7 +1120,7 @@ export async function handleCodexRequest(
                 messages: finalMessages,
                 stream: true,
               };
-              // 保留 tools 定义，让模型理解 tool_call 上下文（不删除）
+              // 保留 tools 定义，让模型理解 tool_call 上下文
 
               // 如果有 reasoning_content，保留 thinking
               if (toolCallInfo.reasoningContent) {
@@ -1133,8 +1133,23 @@ export async function handleCodexRequest(
                 body: JSON.stringify(reFetchBody),
                 signal: ac.signal,
               });
-              cameFromIntercept = true; // Suppress tool_call emission in streamResponse
+              cameFromIntercept = true;
             } else {
+              // 只有远端工具调用 → 回填 placeholder 没有意义，直接 re-fetch 不带 tool 结果
+              console.log(`[Codex] 🔧 ${remoteCalls.length} remote-only tool_calls, re-fetching without tool results`);
+              const reFetchBody: Record<string, unknown> = {
+                ...chatReq,
+                messages: chatReq.messages,
+                stream: true,
+              };
+              upstreamRes = await fetch(UPSTREAM(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+                body: JSON.stringify(reFetchBody),
+                signal: ac.signal,
+              });
+              cameFromIntercept = true;
+            }
               // 无 tool_calls（纯文本）→ 第一次流已消费，需要重新 fetch 来输出
               console.log('[Codex] ✅ no tool_calls in stream, re-fetching for streaming output');
               upstreamRes = await fetch(UPSTREAM(), {
