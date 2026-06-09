@@ -2,13 +2,43 @@
 // Codex 请求处理器（已合并到 18899） · 可作为模块导入或被 Bun 直接运行
 
 import { getCurrentBot } from '../bot-context';
-import { buildSystemPrompt, resolveCapabilities, DEFAULT_TERMINAL_CAPS } from '../prompt-builder';
+import { buildSystemPrompt, buildPromptContext, resolveCapabilities, DEFAULT_TERMINAL_CAPS } from '../prompt-builder';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getDataDir } from '../utils/paths';
+import { getDataDir, getBotConfigPath } from '../utils/paths';
 import { logUsage } from './usage-logger';
 import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
+
+/** Map HTTP status code to user-friendly error message */
+function statusToUserMessage(status: number): string {
+  switch (status) {
+    case 401: return '⚠️ API 认证失败，请检查密钥配置';
+    case 402: return '⚠️ API 余额不足，请充值后重试';
+    case 403: return '⚠️ API 权限不足，请检查配置';
+    case 429: return '⚠️ 请求过于频繁，请稍后重试';
+    default:
+      if (status >= 500) return '⚠️ 服务暂时不可用，请稍后重试';
+      return '⚠️ 处理消息时出错，请稍后重试';
+  }
+}
+
+/** Cooldown tracker: prevents spamming the user with repeated error messages */
+const errorCooldowns = new Map<string, number>();
+const ERROR_COOLDOWN_MS = 30_000; // 30 秒
+
+/** Notify user of proxy-layer error via IM (if notifyUser is available) */
+function notifyUserError(status: number) {
+  const bot = getCurrentBot();
+  if (!bot?.notifyUser) return;
+  const msg = statusToUserMessage(status);
+  const key = `${status}:${msg}`;
+  const now = Date.now();
+  const last = errorCooldowns.get(key) || 0;
+  if (now - last < ERROR_COOLDOWN_MS) return; // still in cooldown
+  errorCooldowns.set(key, now);
+  bot.notifyUser(msg).catch(e => console.error(`[Codex] notifyUser failed: ${e.message}`));
+}
 
 // ================================================================
 // 配置（从 config.json 读取，不再硬编码）
@@ -18,6 +48,7 @@ interface CodexProxyConfig {
   reportedModel: string;
   upstream: string;
   apiKey: string;
+  activeModelProvider?: string;  // 当前 activeModel 对应的 provider 名称
   supportedInputTypes?: string[];  // e.g. ["text"], ["text","image_url"]
 }
 
@@ -25,32 +56,59 @@ let _codexConfig: CodexProxyConfig | null = null;
 
 // ================================================================
 // P2: ContextManager singleton — token budget + tool output compression + semantic compression
-// ================================================================
-const codexContextManager = new ContextManager({
-  backend: 'openai',
-  budget: {
-    maxTokens: 64000,
-    reservedForResponse: 8000,
-    maxInputTokens: 48000,
-  },
-  keepRecentRounds: 2,
-  maxToolOutputChars: 2000,
-  truncateToolOutput: true,
-  simplifySuccessOutputs: true,
-  preserveSystemPrompt: true,
-  preserveReasoning: true,
-  debugLog: true,
-  semanticCompression: {
-    model: 'deepseek-ai/DeepSeek-V3',
-    apiBase: 'https://api.siliconflow.cn/v1',
-    apiKey: process.env.SILICONFLOW_API_KEY || '',
-    thresholdRatio: 0.5,
-    maxOutputTokens: 4096,
-    timeoutMs: 10000,
-    enableCache: true,
-    cacheSize: 200,
-  },
-});
+// 延迟初始化：首次请求时从 getConfig() 拿当前 provider 的 apiKey，跟随 bot 切换
+let _codexContextManager: ContextManager | null = null;
+let _codexContextManagerProvider: string | null = null;  // 追踪创建时的 provider
+
+function getCodexContextManager(): ContextManager {
+  const cfg = getConfig();
+  const currentProvider = cfg.activeModelProvider || 'deepseek';
+  const apiKey = cfg.apiKey || '';
+
+  // provider 变了或第一次创建 → 重建
+  if (!_codexContextManager || _codexContextManagerProvider !== currentProvider) {
+    // 🔧 从 config.json 动态读取当前 provider 的 baseUrl，不再硬编码
+    let providerBaseUrl = '';
+    try {
+      const configPath = path.join(getDataDir(), 'config.json');
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const providers = raw.providers || {};
+      providerBaseUrl = (providers[currentProvider] as Record<string, unknown>)?.baseUrl as string || '';
+    } catch { /* fallback: leave providerBaseUrl empty */ }
+
+    _codexContextManager = new ContextManager({
+      backend: 'openai',
+      budget: {
+        maxTokens: 64000,
+        reservedForResponse: 8000,
+        maxInputTokens: 48000,
+      },
+      keepRecentRounds: 2,
+      maxToolOutputChars: 5000,
+      truncateToolOutput: true,
+      simplifySuccessOutputs: true,
+      preserveSystemPrompt: true,
+      preserveReasoning: true,
+      debugLog: true,
+      ...(apiKey && providerBaseUrl
+        ? { semanticCompression: {
+            model: cfg.model || 'default-model',
+            apiBase: providerBaseUrl,
+            apiKey,
+            thresholdRatio: 0.5,
+            maxOutputTokens: 4096,
+            timeoutMs: 10000,
+            enableCache: true,
+            cacheSize: 200,
+          }}
+        : {}),
+    });
+    _codexContextManagerProvider = currentProvider;
+    console.log(`[ContextManager] Initialized (provider=${currentProvider}, baseUrl=${providerBaseUrl ? 'configured' : 'none'}, apiKey=${apiKey ? 'yes' : 'no'})`);
+  }
+
+  return _codexContextManager;
+}
 
 export function initCodexProxyConfig(cfg: CodexProxyConfig) {
   _codexConfig = cfg;
@@ -59,7 +117,7 @@ export function initCodexProxyConfig(cfg: CodexProxyConfig) {
 
 /**
  * 热切换模型：在 /model 命令中调用，更新内存中的 _codexConfig。
- * 需同时持久化到 config.json（调用方负责），确保重启后不丢失。
+ * 现在 activeModel 已统一到 config.json，实时解析即可。
  */
 export function updateCodexConfig(modelSpec: string) {
   if (_codexConfig) {
@@ -70,31 +128,136 @@ export function updateCodexConfig(modelSpec: string) {
   }
 }
 
+/**
+ * 解析 activeModel 规格为 provider + model 纯名
+ * 例如 "deepseek/deepseek-v4-flash" → { provider: "deepseek", model: "deepseek-v4-flash" }
+ */
+function parseActiveModel(activeModel: string): { provider: string; model: string } {
+  const parts = activeModel.split('/');
+  if (parts.length >= 2) {
+    return { provider: parts[0], model: parts.slice(1).join('/') };
+  }
+  return { provider: '', model: activeModel };
+}
+
+/** 从配置构建 CodexProxyConfig（可复用） */
+function _buildConfig(overrides?: Partial<CodexProxyConfig>): CodexProxyConfig {
+  const configPath = path.join(getDataDir(), 'config.json');
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  const codex = raw.codex || {};
+  const providers = raw.providers || {};
+
+  // 优先从 activeModel 解析（统一模型选择），fallback 到 codex.model（旧版兼容）
+  // 🔧 不再硬编码默认模型，从已配置的 providers 中动态获取
+  let modelId = codex.model || '';
+  let providerName = '';
+  if (raw.activeModel) {
+    const parsed = parseActiveModel(raw.activeModel);
+    if (parsed.model) {
+      modelId = parsed.model;
+      providerName = parsed.provider;
+    }
+  }
+
+  let apiKey = '';
+  // 优先用解析出的 provider 名称找 apiKey
+  if (providerName && providers[providerName]) {
+    apiKey = (providers[providerName] as Record<string, unknown>).apiKey as string || '';
+  }
+  // fallback：取第一个有 apiKey 的 provider
+  if (!apiKey) {
+    for (const name of Object.keys(providers)) {
+      apiKey = (providers[name] as Record<string, unknown>).apiKey as string || '';
+      if (apiKey) break;
+    }
+  }
+
+  const base: CodexProxyConfig = {
+    model: modelId,
+    reportedModel: codex.reportedModel || 'gpt-5.5',
+    upstream: codex.upstream || 'https://api.deepseek.com/v1/chat/completions',
+    apiKey,
+    activeModelProvider: providerName || undefined,
+    supportedInputTypes: resolveSupportedInputTypes(providers, modelId),
+  };
+  return overrides ? { ...base, ...overrides } : base;
+}
+
 function getConfig(): CodexProxyConfig {
-  if (!_codexConfig) {
-    // Fallback: 尝试从 config.json 读取
-    try {
-      
-      const configPath = path.join(getDataDir(), 'config.json');
-      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      const codex = raw.codex || {};
-      const providers = raw.providers || {};
-      const modelId = codex.model || 'deepseek-v4-pro';
-      let apiKey = '';
-      for (const name of Object.keys(providers)) {
-        apiKey = providers[name].apiKey || '';
-        if (apiKey) break;
+  // Bot 独立配置文件作为唯一真相源 — 每次实时读取
+  const botCtx = getCurrentBot();
+  const botId = botCtx?.botId || 'CodexBot';
+  const botConfigPath = getBotConfigPath(botId);
+
+  let activeModel: string | undefined;
+
+  // 优先读 bot-config.json（唯一真相源）
+  try {
+    if (fs.existsSync(botConfigPath)) {
+      const botCfg = JSON.parse(fs.readFileSync(botConfigPath, 'utf-8'));
+      activeModel = botCfg.activeModel;
+    }
+  } catch (e: unknown) {
+    console.error(`[Codex Proxy] Failed to read bot-config.json: ${(e as Error).message}`);
+  }
+
+  // Fallback: 用 botCtx.activeModel（内存变量）或 config.json.activeModel
+  if (!activeModel) {
+    if (botCtx?.activeModel) {
+      activeModel = botCtx.activeModel;
+    } else {
+      try {
+        const configPath = path.join(getDataDir(), 'config.json');
+        const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        activeModel = raw.activeModel;
+      } catch {
+        // 最终 fallback 到 _codexConfig
+        if (!_codexConfig) _codexConfig = _buildConfig();
+        return _codexConfig!;
       }
-      _codexConfig = {
-        model: modelId,
+    }
+  }
+
+  // 用 activeModel 构建配置
+  if (activeModel) {
+    const parsed = parseActiveModel(activeModel);
+    const providersPath = path.join(getDataDir(), 'config.json');
+    try {
+      const raw = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
+      const providers = raw.providers || {};
+      const codex = raw.codex || {};
+
+      let apiKey = '';
+      if (parsed.provider && providers[parsed.provider]) {
+        apiKey = (providers[parsed.provider] as Record<string, unknown>).apiKey as string || '';
+      }
+      if (!apiKey) {
+        for (const name of Object.keys(providers)) {
+          apiKey = (providers[name] as Record<string, unknown>).apiKey as string || '';
+          if (apiKey) break;
+        }
+      }
+
+      return {
+        model: parsed.model,
         reportedModel: codex.reportedModel || 'gpt-5.5',
         upstream: codex.upstream || 'https://api.deepseek.com/v1/chat/completions',
         apiKey,
-        supportedInputTypes: resolveSupportedInputTypes(providers, modelId),
+        activeModelProvider: parsed.provider || undefined,
+        supportedInputTypes: resolveSupportedInputTypes(providers, parsed.model),
       };
-      console.log('[Codex Proxy] Loaded config from config.json');
     } catch (e: unknown) {
-      console.error(`[Codex Proxy] Unable to load config: ${e.message}`);
+      console.error(`[Codex Proxy] Failed to build Bot-level config: ${(e as Error).message}`);
+    }
+  }
+
+  // fallback：用 _codexConfig（启动时 initCodexProxyConfig 设置的全局配置）
+  if (!_codexConfig) {
+    try {
+      _codexConfig = _buildConfig();
+      console.log(`[Codex Proxy] Loaded config from config.json (activeModel → model=${_codexConfig.model})`);
+    } catch (e: unknown) {
+      console.error(`[Codex Proxy] Unable to load config: ${(e as Error).message}`);
     }
   }
   return _codexConfig!;
@@ -359,7 +522,7 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
 // ================================================================
 // 1.5 工具消息配对验证
 // 确保每个 assistant(tool_calls) 后面紧跟对应数量的 tool 消息，
-// 且 tool_call_id 一一对应。deepseek-v4-pro 等严格 API 需要此验证。
+// 且 tool_call_id 一一对应。严格 API 需要此验证。
 // ================================================================
 function cleanOrphanTools(messages: ChatMessage[]): ChatMessage[] {
   // Build set of all tool_call ids from assistant messages with tool_calls
@@ -734,14 +897,18 @@ export async function handleCodexRequest(
       const ctx = getCurrentBot();
       const botName = ctx?.botName || 'CodexBot';
 
-      const systemPrompt = buildSystemPrompt({
+      const rawText = body?.input?.[0]?.content?.[0]?.text;
+      const systemPromptCtx = buildPromptContext({
         caps: ctx?.caps || null,
         botName,
         mcpInfo: ctx?.mcpInfo,
         skillsInfo: ctx?.skillsInfo,
         promptsInfo: ctx?.promptsInfo,
+      }, {
+        rawText,
       });
-      console.log(`[Codex] 📝 System prompt built (${systemPrompt.length} chars, bot=${botName})`);
+      const systemPrompt = buildSystemPrompt(systemPromptCtx);
+      console.log(`[Codex] 📝 System prompt built (${systemPrompt.length} chars, bot=${botName}, model=${systemPromptCtx.modelInfo})`);
 
       let sysMsg = chatReq.messages.find((m: ChatMessage) => m.role === 'system');
       if (!sysMsg) {
@@ -754,32 +921,155 @@ export async function handleCodexRequest(
       // P2: ContextManager — four-layer progressive compression
       const preMsgs = chatReq.messages.length;
       const preEst = chatReq.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
-      const processed = await codexContextManager.processAsync(chatReq) as typeof chatReq;
+      const processed = await getCodexContextManager().processAsync(chatReq) as typeof chatReq;
       const postMsgs = processed.messages.length;
       const postEst = processed.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
       const savings = preEst - postEst;
-      // Always log to verify processAsync is running
+      // Always log and always apply — processAsync may restructure messages (normalizeToolOutputs,
+      // enforceMessageCap) even when char savings are zero.
       console.log(`[Codex] 🔧 ContextManager: ${preMsgs}→${postMsgs} msgs, ~${preEst.toLocaleString()}→~${postEst.toLocaleString()} chars (saved ${savings.toLocaleString()})`);
-      if (savings > 0) {
-        Object.assign(chatReq, processed);
+      Object.assign(chatReq, processed);
+
+      // 🔧 Inject IMtoAgent local tools into the request
+      const toolRegistry = getCurrentBot()?.toolRegistry;
+      if (toolRegistry) {
+        const localTools = toolRegistry.getOpenAIFormat();
+        if (localTools.length > 0) {
+          const existingNames = new Set((chatReq.tools || []).map((t: any) => t.function?.name));
+          let added = 0;
+          for (const lt of localTools) {
+            const name = (lt as any).function?.name;
+            if (name && !existingNames.has(name)) {
+              chatReq.tools = chatReq.tools || [];
+              chatReq.tools.push(lt as any);
+              added++;
+            }
+          }
+          if (added > 0) {
+            console.log(`[Codex] 🔧 Injected ${added} IMtoAgent local tools: ${localTools.map((t: any) => t.function?.name).join(', ')}`);
+          }
+        }
       }
 
       const roles = chatReq.messages?.map((m: ChatMessage) => m.role).join(',');
       console.log(`[Codex] → ${chatReq.model} [${roles}] tools:${chatReq.tools?.length || 0}`);
 
+      // ---- Tool-Call Loop: 拦截本地工具调用 ----
+      const { hasLocalTools } = await import('./tool-call-loop');
+      const hasLocal = hasLocalTools(chatReq.tools);
+
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), 180_000);
 
       let upstreamRes: Response;
+      let finalMessages: ChatMessage[] | null = null; // tool-call-loop 返回的最终 messages
+
       try {
-        upstreamRes = await fetch(UPSTREAM(), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-          body: JSON.stringify(chatReq),
-          signal: ac.signal,
-        });
+        if (hasLocal) {
+          // 有本地工具 → 走 tool-call loop
+          const toolRegistry = getCurrentBot()?.toolRegistry;
+          if (!toolRegistry) {
+            console.warn('[Codex] ⚠️ local tools in request but no toolRegistry in bot context, falling back to direct streaming');
+            // 无 registry → 降级到直接流式
+            upstreamRes = await fetch(UPSTREAM(), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+              body: JSON.stringify(chatReq),
+              signal: ac.signal,
+            });
+          } else {
+            console.log('[Codex] 🔧 local tools detected, entering tool-call loop');
+            const { executeToolCallLoop } = await import('./tool-call-loop');
+
+            const loopResult = await executeToolCallLoop(
+              chatReq.messages,
+              UPSTREAM(),
+              API_KEY(),
+              chatReq.model,
+              chatReq.tools,
+              toolRegistry,
+              ac.signal,
+              chatReq.max_tokens,
+              undefined, // httpRequest — use default fetch adapter
+              { thinking: body.thinking }, // extraBodyFields — 保留 thinking 等原始字段
+            );
+
+            if (loopResult.loops === 0) {
+              // loop 第一步就失败（网络错误等），降级到直接流式
+              console.log('[Codex] ⚠️ tool-call loop failed on first fetch, falling back to direct streaming');
+              try {
+                upstreamRes = await fetch(UPSTREAM(), {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+                  body: JSON.stringify(chatReq),
+                  signal: ac.signal,
+                });
+              } catch (e: unknown) {
+                console.error(`[Codex] ❌ fallback fetch also failed: ${(e as Error).message}`);
+                notifyUserError(502);
+                res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
+              }
+            } else if (!loopResult.hadLocalTools) {
+              // loop 跑完了但没调本地工具（上游直接返回文本）→ 需要重新 fetch stream 模式
+              console.log(`[Codex] ✅ tool-call loop completed (${loopResult.loops} loops), no local tools called, re-fetching for streaming`);
+              try {
+                upstreamRes = await fetch(UPSTREAM(), {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+                  body: JSON.stringify({ ...chatReq, messages: loopResult.messages, stream: true }),
+                  signal: ac.signal,
+                });
+              } catch (e: unknown) {
+                console.error(`[Codex] ❌ post-loop stream fetch failed: ${(e as Error).message}`);
+                notifyUserError(502);
+                res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
+              }
+            } else {
+              // loop 执行了本地工具 → 用最终 messages 重新 fetch stream 模式
+              finalMessages = loopResult.messages;
+              console.log(`[Codex] ✅ tool-call loop executed local tools (${loopResult.loops} loops), re-fetching for streaming`);
+              try {
+                // 🔧 re-fetch 时保留工具定义但跳过 tool-call-loop（工具已执行完毕）
+                // 如果 finalMessages 有 reasoning_content，必须带上 thinking 否则 DeepSeek 400
+                const hasReasoningInFinal = finalMessages.some(
+                  (m: any) => m.reasoning_content !== undefined && m.reasoning_content !== null && m.reasoning_content !== ''
+                );
+                const reFetchBody: Record<string, unknown> = {
+                  ...chatReq,
+                  messages: finalMessages,
+                  stream: true,
+                };
+                // 跳过 tools 定义——工具已执行完，re-fetch 只需 AI 生成文本
+                delete reFetchBody.tools;
+                if (hasReasoningInFinal) {
+                  reFetchBody.thinking = { type: 'enabled' };
+                  console.log(`[Codex] 🔧 finalMessages has reasoning_content, adding thinking to re-fetch`);
+                }
+                upstreamRes = await fetch(UPSTREAM(), {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+                  body: JSON.stringify(reFetchBody),
+                  signal: ac.signal,
+                });
+              } catch (e: unknown) {
+                console.error(`[Codex] ❌ post-loop stream fetch failed: ${(e as Error).message}`);
+                notifyUserError(502);
+                res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
+              }
+            }
+          }
+        } else {
+          // 无本地工具 → 直接流式调用（原有路径）
+          upstreamRes = await fetch(UPSTREAM(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+            body: JSON.stringify(chatReq),
+            signal: ac.signal,
+          });
+        }
       } catch (e: unknown) {
-        console.error(`[Codex] ❌ fetch failed: ${e.message}`);
+        console.error(`[Codex] ❌ fetch failed: ${(e as Error).message}`);
+        notifyUserError(502);
         res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
       } finally {
         clearTimeout(timeout);
@@ -803,6 +1093,7 @@ export async function handleCodexRequest(
           if (!retryRes.ok) {
             const retryErrText = await retryRes.text();
             console.error(`[Codex] ❌ Retry also failed ${retryRes.status}: ${retryErrText.slice(0, 200)}`);
+            notifyUserError(retryRes.status);
             res.writeHead(retryRes.status, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: `Upstream rejected request twice: ${retryErrText.slice(0, 500)}` }));
             return;
@@ -820,6 +1111,7 @@ export async function handleCodexRequest(
           }).finally(() => { try { writer.close(); } catch {} });
           return;
         }
+        notifyUserError(upstreamRes.status);
         res.writeHead(upstreamRes.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: errText.slice(0, 500) })); return;
       }
 
