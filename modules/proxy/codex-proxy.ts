@@ -1120,7 +1120,7 @@ export async function handleCodexRequest(
                 messages: finalMessages,
                 stream: true,
               };
-              delete reFetchBody.tools;
+              // 保留 tools 定义，让模型理解 tool_call 上下文（不删除）
 
               // 如果有 reasoning_content，保留 thinking
               if (toolCallInfo.reasoningContent) {
