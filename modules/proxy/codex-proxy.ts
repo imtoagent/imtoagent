@@ -9,7 +9,7 @@ import { getDataDir, getBotConfigPath } from '../utils/paths';
 import { logUsage } from './usage-logger';
 import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
-import { hasLocalTool, isLocalTool, parseToolCalls, executeLocalTools, generateRemotePlaceholders, buildToolMessages } from './tool-interceptor';
+import { hasLocalTool, isLocalTool, parseToolCalls, executeLocalTools, generateRemotePlaceholders, buildToolMessages, type ToolExecutionResult } from './tool-interceptor';
 import type { ToolRegistry } from '../agent/tool-registry';
 
 /** Map HTTP status code to user-friendly error message */
@@ -688,11 +688,19 @@ async function parseStreamToolCalls(upstreamRes: Response): Promise<StreamToolCa
 }
 
 // ================================================================
+// Phase 3: StreamResponseResult — what streamResponse returns after finishing
+// ================================================================
+interface StreamResponseResult {
+  collectedToolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+}
+
+// ================================================================
 // 2. 响应翻译: Chat SSE → Responses SSE
 // ================================================================
-async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>, reqBody?: OpenAIRequestBody, opts?: { suppressToolCalls?: boolean }): Promise<void> {
+async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>, reqBody?: OpenAIRequestBody, opts?: { suppressToolCalls?: boolean }): Promise<StreamResponseResult> {
   const suppressToolCalls = opts?.suppressToolCalls ?? false;
   if (suppressToolCalls) console.log('[Codex] 🔇 streamResponse: suppressing tool_call emission (post-intercept mode)');
+  const collectedToolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }> = [];
   const enc = new TextEncoder();
   let accumulatedText = '';
   let accumulatedReasoning = '';
@@ -771,42 +779,52 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
             // Post-intercept re-fetch: model may still emit tool_calls due to history context.
             // Silently discard them — we already handled all tools in the intercept phase.
             console.log(`[Codex] 🔇 Suppressed ${delta.tool_calls.length} tool_call(s) from re-fetch response`);
-            continue;
+          } else {
+            ensureStarted();
+            for (const tc of delta.tool_calls) {
+              const idx: number = tc.index ?? 0;
+              let pending = pendingToolCalls.get(idx);
+              if (!pending) {
+                pending = {
+                  id: tc.id || ('call_' + Date.now() + '_' + idx),
+                  name: '',
+                  arguments: '',
+                  outputIndex: outputIndex++,
+                  itemId: 'fcal_' + Date.now() + '_' + idx,
+                  started: false,
+                };
+                pendingToolCalls.set(idx, pending);
+              }
+              if (tc.id) pending.id = tc.id;
+              if (tc.function?.name) {
+                // Reverse translation: map DeepSeek response tool names back to upstream names
+                pending.name = tc.function.name;
+              }
+              if (tc.function?.arguments) {
+                pending.arguments += tc.function.arguments;
+                if (!pending.started) {
+                  pending.started = true;
+                  emit('response.output_item.added', {
+                    output_index: pending.outputIndex,
+                    item: { id: pending.itemId, type: 'function_call', call_id: pending.id, name: pending.name, arguments: '', status: 'in_progress' }
+                  });
+                  items.push({ id: pending.itemId, type: 'function_call', call_id: pending.id, name: pending.name, arguments: '', status: 'completed' });
+                }
+                emit('response.function_call_arguments.delta', {
+                  item_id: pending.itemId, output_index: pending.outputIndex, delta: tc.function.arguments
+                });
+              }
+            }
           }
-          ensureStarted();
+          // Always collect tool_calls for Phase 3 analysis (even when suppressed)
           for (const tc of delta.tool_calls) {
             const idx: number = tc.index ?? 0;
-            let pending = pendingToolCalls.get(idx);
-            if (!pending) {
-              pending = {
-                id: tc.id || ('call_' + Date.now() + '_' + idx),
-                name: '',
-                arguments: '',
-                outputIndex: outputIndex++,
-                itemId: 'fcal_' + Date.now() + '_' + idx,
-                started: false,
-              };
-              pendingToolCalls.set(idx, pending);
+            while (collectedToolCalls.length <= idx) {
+              collectedToolCalls.push({ id: '', type: 'function', function: { name: '', arguments: '' } });
             }
-            if (tc.id) pending.id = tc.id;
-            if (tc.function?.name) {
-              // Reverse translation: map DeepSeek response tool names back to upstream names
-              pending.name = tc.function.name;
-            }
-            if (tc.function?.arguments) {
-              pending.arguments += tc.function.arguments;
-              if (!pending.started) {
-                pending.started = true;
-                emit('response.output_item.added', {
-                  output_index: pending.outputIndex,
-                  item: { id: pending.itemId, type: 'function_call', call_id: pending.id, name: pending.name, arguments: '', status: 'in_progress' }
-                });
-                items.push({ id: pending.itemId, type: 'function_call', call_id: pending.id, name: pending.name, arguments: '', status: 'completed' });
-              }
-              emit('response.function_call_arguments.delta', {
-                item_id: pending.itemId, output_index: pending.outputIndex, delta: tc.function.arguments
-              });
-            }
+            if (tc.id) collectedToolCalls[idx].id = tc.id;
+            if (tc.function?.name) collectedToolCalls[idx].function.name = tc.function.name;
+            if (tc.function?.arguments) collectedToolCalls[idx].function.arguments += tc.function.arguments;
           }
         }
 
@@ -903,6 +921,7 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
   } finally {
     try { reader.cancel(); } catch {}
   }
+  return { collectedToolCalls };
 }
 
 // ================================================================
@@ -913,6 +932,110 @@ let _proxyUsage = { inputTokens: 0, outputTokens: 0 };
 export function accumulateProxyUsage(inputTokens: number, outputTokens: number) {
   _proxyUsage.inputTokens += inputTokens;
   _proxyUsage.outputTokens += outputTokens;
+}
+
+// ================================================================
+// Phase 3: pending local tool results cache
+// Keyed by sessionKey (derived from thread/request identity).
+// Auto-cleaned after timeout (5 min).
+// ================================================================
+
+interface PendingLocalEntry {
+  results: ToolExecutionResult[];
+  timestamp: number;
+  toolCallIds: string[];
+}
+
+const pendingLocalResults = new Map<string, PendingLocalEntry>();
+const PENDING_LOCAL_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function getPendingLocalResults(sessionKey: string): PendingLocalEntry | null {
+  const entry = pendingLocalResults.get(sessionKey);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > PENDING_LOCAL_TTL_MS) {
+    console.log(`[Codex] 🗑️ Cleared expired pending local results for session=${sessionKey}`);
+    pendingLocalResults.delete(sessionKey);
+    return null;
+  }
+  return entry;
+}
+
+function setPendingLocalResults(sessionKey: string, results: ToolExecutionResult[]) {
+  pendingLocalResults.set(sessionKey, {
+    results,
+    timestamp: Date.now(),
+    toolCallIds: results.map(r => r.toolCallId),
+  });
+  console.log(`[Codex] 💾 Cached ${results.length} local tool result(s) for session=${sessionKey}`);
+}
+
+/**
+ * Derive a sessionKey from the request for isolating pending local results.
+ * Uses the last assistant message's tool_call ids as a stable fingerprint.
+ */
+function deriveSessionKey(chatReq: { messages: ChatMessage[] }): string {
+  // Find the last assistant message with tool_calls
+  for (let i = chatReq.messages.length - 1; i >= 0; i--) {
+    const m = chatReq.messages[i];
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      return m.tool_calls.map(tc => tc.id).join(',');
+    }
+  }
+  // Fallback: hash of all message roles+content preview
+  return chatReq.messages.slice(-3).map(m => `${m.role}:${(m.content || '').slice(0, 50)}`).join('|');
+}
+
+/**
+ * Merge pending local tool results into the messages array.
+ * Returns the possibly-modified messages array and removes matched entries.
+ */
+function mergePendingLocalResults(
+  messages: ChatMessage[],
+  pending: PendingLocalEntry,
+): { messages: ChatMessage[]; used: boolean } {
+  // Check if the incoming messages contain tool responses for the remote tool calls
+  // that accompanied our pending local results.
+  // The remote tool results should be in the messages; we need to insert local ones.
+  const incomingToolCallIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      incomingToolCallIds.add(m.tool_call_id || '');
+    }
+  }
+
+  // Only merge if the incoming messages contain tool responses (meaning client executed remote tools)
+  if (incomingToolCallIds.size === 0) {
+    return { messages, used: false };
+  }
+
+  // Filter out local tool results that already have a matching tool message
+  const toMerge = pending.results.filter(r => !incomingToolCallIds.has(r.toolCallId));
+  if (toMerge.length === 0) {
+    return { messages, used: true }; // already merged or all present
+  }
+
+  // Insert local tool results into messages
+  // Find the first tool message position to insert before/after
+  const localToolMessages: ChatMessage[] = toMerge.map(r => ({
+    role: 'tool' as const,
+    tool_call_id: r.toolCallId,
+    content: r.content,
+  }));
+
+  // Insert right after the last assistant message (which should have tool_calls)
+  let insertIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') {
+      insertIdx = i + 1;
+      break;
+    }
+  }
+  if (insertIdx >= 0) {
+    messages.splice(insertIdx, 0, ...localToolMessages);
+    console.log(`[Codex] ✅ Merged ${localToolMessages.length} pending local tool result(s) into messages`);
+  }
+
+  return { messages, used: true };
 }
 
 // 3. 请求处理器（供主代理端口 18899 按路径分发调用）
@@ -1047,119 +1170,90 @@ export async function handleCodexRequest(
       const roles = chatReq.messages?.map((m: ChatMessage) => m.role).join(',');
       console.log(`[Codex] → ${chatReq.model} [${roles}] tools:${chatReq.tools?.length || 0}`);
 
-      // ---- Tool Intercept: 流式拦截所有工具调用 ----
-      // 设计原则：只要 body 里有 tools 定义，LLM 就可能返回 tool_calls。
-      // 所有 tool_calls 都必须被拦截（本地执行 / 远端占位），不能泄漏到客户端。
+      // ---- Phase 3 Tool Intercept ----
+      // 本地工具：IMtoAgent 拦截执行 → 缓存结果 → 下次请求合并
+      // 远端工具：直接转发给客户端 → 客户端自己执行
       const hasAnyTools = !!(chatReq.tools && chatReq.tools.length > 0);
       const hasLocal = hasLocalTool(chatReq.tools);
       const interceptRegistry = hasLocal ? getCurrentBot()?.toolRegistry : undefined;
+
+      // --- Step 3a: Check for pending local tool results from previous round ---
+      const sessionKey = deriveSessionKey(chatReq);
+      const pending = getPendingLocalResults(sessionKey);
+      if (pending) {
+        const mergeResult = mergePendingLocalResults(chatReq.messages, pending);
+        if (mergeResult.used) {
+          console.log(`[Codex] 🔄 Merged ${pending.results.length} pending local tool result(s) into this request`);
+          // Clear the pending entry after successful merge
+          pendingLocalResults.delete(sessionKey);
+        }
+      }
 
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), 180_000);
 
       let upstreamRes: Response;
       let cameFromIntercept = false; // Track if we're in post-intercept re-fetch mode
+      let alreadyStreamed = false; // Phase 3: already forwarded stream inside intercept block
 
       try {
         if (hasAnyTools) {
-          // 有任何工具定义 → 流式拦截模式（防止远端 tool_calls 泄漏到客户端）
-          console.log(`[Codex] 🔧 tools detected (${chatReq.tools!.length} defined, ${hasLocal ? 'has local' : 'remote only'}), using streaming intercept`);
+          // 有任何工具定义 → 流式转发 + 收集 tool_calls 用于判断
+          console.log(`[Codex] 🔧 tools detected (${chatReq.tools!.length} defined, ${hasLocal ? 'has local' : 'remote only'}), streaming with tool analysis`);
 
-          // 第一次流式请求（收集 tool_calls）
-          const firstFetchBody = { ...chatReq, stream: true };
+          // 单次流式请求（边收边转发）
           upstreamRes = await fetch(UPSTREAM(), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-            body: JSON.stringify(firstFetchBody),
+            body: JSON.stringify({ ...chatReq, stream: true }),
             signal: ac.signal,
           });
 
           if (upstreamRes.ok) {
-            // 解析第一次响应，提取 tool_calls（流已被完全消费，无法回退）
-            const toolCallInfo = await parseStreamToolCalls(upstreamRes);
+            // Phase 3: forward SSE headers first, then stream
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
 
-            // 判断是否有本地工具调用
-            const allParsed = parseToolCalls(toolCallInfo.toolCalls);
-            const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
-            const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
-            const hasLocalCalls = localCalls.length > 0;
-
-            if (hasLocalCalls) {
-              // 有本地工具调用 → 执行本地工具 + 合并结果 → 二次请求
-              console.log(`[Codex] 🔧 intercepted ${localCalls.length} local, ${remoteCalls.length} remote tool_calls`);
-
-              // 并行执行本地工具
-              const localResults = interceptRegistry
-                ? await executeLocalTools(localCalls, interceptRegistry)
-                : [];
-
-              // 远端工具占位
-              const remoteResults = generateRemotePlaceholders(remoteCalls);
-
-              // 合并所有结果
-              const allResults = [...localResults, ...remoteResults];
-              const toolMessages = buildToolMessages(allResults);
-
-              // 构建 assistant 消息（包含 tool_calls 引用）
-              const assistantMsg: any = {
-                role: 'assistant',
-                content: toolCallInfo.assistantText,
-                tool_calls: toolCallInfo.toolCalls,
-              };
-              if (toolCallInfo.reasoningContent) {
-                assistantMsg.reasoning_content = toolCallInfo.reasoningContent;
-              }
-
-              // 拼接最终 messages
-              const finalMessages = [...chatReq.messages, assistantMsg, ...toolMessages];
-              console.log(`[Codex] ✅ tool results merged (${allResults.length} total), re-fetching for streaming response`);
-
-              // 二次流式请求（带完整 tool 结果）
-              const reFetchBody: Record<string, unknown> = {
-                ...chatReq,
-                messages: finalMessages,
-                stream: true,
-              };
-              // 保留 tools 定义，让模型理解 tool_call 上下文
-
-              // 如果有 reasoning_content，保留 thinking
-              if (toolCallInfo.reasoningContent) {
-                reFetchBody.thinking = { type: 'enabled' };
-              }
-
-              upstreamRes = await fetch(UPSTREAM(), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                body: JSON.stringify(reFetchBody),
-                signal: ac.signal,
-              });
-              cameFromIntercept = true;
-            } else {
-              // 只有远端工具调用 → 回填 placeholder 没有意义，直接 re-fetch 不带 tool 结果
-              console.log(`[Codex] 🔧 ${remoteCalls.length} remote-only tool_calls, re-fetching without tool results`);
-              const reFetchBody: Record<string, unknown> = {
-                ...chatReq,
-                messages: chatReq.messages,
-                stream: true,
-              };
-              upstreamRes = await fetch(UPSTREAM(), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                body: JSON.stringify(reFetchBody),
-                signal: ac.signal,
-              });
-              cameFromIntercept = true;
-            }
-          } else {
-            // 无 tool_calls（纯文本）→ 第一次流已消费，需要重新 fetch 来输出
-            console.log('[Codex] ✅ no tool_calls in stream, re-fetching for streaming output');
-            upstreamRes = await fetch(UPSTREAM(), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-              body: JSON.stringify({ ...chatReq, stream: true }),
-              signal: ac.signal,
+            // Create a WritableStream to forward to client AND collect tool_calls
+            const collectWriter = new WritableStream({
+              write(chunk: Uint8Array) { res.write(Buffer.from(chunk)); },
+              close() { res.end(); },
+              abort(_err: unknown) { res.end(); },
             });
+
+            // Stream to client while collecting tool_calls
+            const streamResult = await streamResponse(upstreamRes, collectWriter.getWriter(), body);
+
+            // Analyze collected tool_calls
+            const collectedToolCalls = streamResult.collectedToolCalls;
+            if (collectedToolCalls.length > 0) {
+              const allParsed = parseToolCalls(collectedToolCalls);
+              const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
+              const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
+              const hasLocalCalls = localCalls.length > 0;
+
+              if (hasLocalCalls) {
+                console.log(`[Codex] 🔧 Phase 3: ${localCalls.length} local, ${remoteCalls.length} remote tool_calls detected in forwarded stream`);
+
+                // Execute local tools and cache results for next round
+                const localResults = interceptRegistry
+                  ? await executeLocalTools(localCalls, interceptRegistry)
+                  : [];
+
+                setPendingLocalResults(sessionKey, localResults);
+                console.log(`[Codex] 💾 Cached ${localResults.length} local tool result(s), waiting for client to return remote tool results`);
+              }
+              // If only remote tools → nothing to do, client will handle them
+            }
           }
+          alreadyStreamed = true; // stream already forwarded to client
+        } else {
+          // No tools defined → simple pass-through fetch
+          upstreamRes = await fetch(UPSTREAM(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+            body: JSON.stringify({ ...chatReq, stream: true }),
+            signal: ac.signal,
+          });
         }
       } catch (e: unknown) {
         console.error(`[Codex] ❌ fetch failed: ${(e as Error).message}`);
@@ -1209,7 +1303,12 @@ export async function handleCodexRequest(
         res.writeHead(upstreamRes.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: errText.slice(0, 500) })); return;
       }
 
-      // 流式：streamResponse 转换格式后写入 Node response
+      // Phase 3: if already streamed inside intercept block, skip re-stream
+      if (alreadyStreamed) {
+        return;
+      }
+
+      // Fallback: if no tools or first request failed, stream normally
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
 
       // 创建 WritableStream 桥接到 Node res
