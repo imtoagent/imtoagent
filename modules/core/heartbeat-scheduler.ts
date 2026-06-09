@@ -14,7 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { AgentRuntime, SessionManager, MessageContext, Session, ScheduledTask } from './types';
+import type { AgentRuntime, SessionManager, MessageContext, Session, ScheduledTask, AgentInput } from './types';
 import type { AgentAdapter } from './types';
 import { parseInterval, getPhaseOffset, removeTaskFromHeartbeatFile } from './heartbeat';
 import { formatShanghaiTimeShort } from './timezone';
@@ -25,7 +25,11 @@ import { GoalStore } from './goal-store';
 import { GoalManager } from './goal-manager';
 import { ToolRegistry } from '../agent/tool-registry';
 import { weatherTool } from '../tools/weather';
+import { createGoalTools } from '../tools/goal-task-tools';
+import { createTaskTools } from '../tools/task-tools';
+import { TaskManager } from './task-manager';
 import { TaskLogger } from './task-logger';
+import { AgentLoop } from '../agent/agent-loop';
 
 /** Cron/heartbeat session 会话轮次上限，超过后自动新建 thread 防止上下文爆炸 */
 const MAX_CRON_ROUNDS = 10;
@@ -60,6 +64,8 @@ export class HeartbeatScheduler {
   private runtime: AgentRuntime;
   private adapter: AgentAdapter;
   private sessionManager: SessionManager;
+  /** AgentLoop 包装 — 为定时任务/Goal 执行提供本地工具循环 */
+  private agentLoop: AgentLoop;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private _resolver: SessionResolver;
@@ -87,6 +93,10 @@ export class HeartbeatScheduler {
     this.adapter = adapter;
     this.sessionManager = sessionManager;
     this._resolver = new SessionResolver(sessionManager, config.botId);
+
+    // 构造 AgentLoop（adapter 级工具支持）
+    const toolSupport = (adapter as any).getToolSupport?.() ?? null;
+    this.agentLoop = new AgentLoop(adapter, this.toolRegistry, toolSupport);
 
     this.taskPoller = new TaskPoller({
       tickMs: 1000,
@@ -119,9 +129,25 @@ export class HeartbeatScheduler {
     this.goalStore = new GoalStore();
     // Phase 2: 初始化工具注册中心
     this.toolRegistry = new ToolRegistry();
+    // Phase 2: 注册 weather 工具并注入
     this.toolRegistry.register(weatherTool);
+    this.toolRegistry.injectNeeded([weatherTool.name]);
     // Phase 2: 初始化 Goal 管理协议
     this.goalManager = new GoalManager(this.goalStore);
+    // Phase 3: 初始化 Task 管理器并注册 Task 工具
+    const heartbeatPath = path.join(
+      this.config.workspaceDir || path.join(os.homedir(), '.imtoagent', 'workspaces', this.config.botId || 'default'),
+      'HEARTBEAT.md',
+    );
+    this.taskManager = new TaskManager(heartbeatPath);
+    const taskTools = createTaskTools(this.taskManager);
+    // Phase 3: 注册 Goal 工具（resolveChatId 动态获取当前活跃 chatId）
+    const goalTools = createGoalTools(this.goalManager, this.goalStore, () => this._resolver.getLastActiveChatId());
+    this.toolRegistry.register(...taskTools, ...goalTools);
+    // 显式注入所有工具到当前 session
+    this.toolRegistry.injectNeeded(
+      [...taskTools, ...goalTools, weatherTool].map(t => t.name),
+    );
     this.goalEngine = new GoalEngine(this.goalStore, {
       executeAgent: async (prompt, options) => {
         return this.executeGoalAgent(prompt, options);
@@ -269,6 +295,23 @@ export class HeartbeatScheduler {
   }
 
   /**
+   * 构建 AgentInput，从 MessageContext 转换
+   */
+  private _buildAgentInput(ctx: MessageContext, session: Session): AgentInput {
+    return {
+      chatId: ctx.chatId,
+      text: ctx.text,
+      attachments: ctx.attachments,
+      session,
+      workingDir: ctx.workingDir,
+      systemPrompt: ctx.systemPrompt,
+      model: ctx.model,
+      cancelSignal: ctx.cancelSignal,
+      sendProgress: ctx.sendProgress,
+    };
+  }
+
+  /**
    * Phase 1 精确触发：为 30 分钟内的活跃 Goal 注册 setTimeout
    * 心跳作为兜底：即使 setTimeout 丢失（进程重启），心跳也会检查 getDue() 并执行
    */
@@ -343,7 +386,7 @@ export class HeartbeatScheduler {
 
   /**
    * Phase 1 Goal Engine: 用 Agent 执行 Goal prompt
-   * 复用现有 runtime.processMessage 流程
+   * 走 AgentLoop 包装路径，支持本地工具循环
    */
   private async executeGoalAgent(
     prompt: string,
@@ -375,7 +418,11 @@ export class HeartbeatScheduler {
     };
 
     try {
-      await this.runtime.processMessage(ctx, this.adapter, this.config.botName);
+      // 走 AgentLoop：adapter 带本地工具循环
+      const input = this._buildAgentInput(ctx, session);
+      const output = await this.agentLoop.execute(input);
+      if (output.error) throw new Error(output.error);
+      reply = output.text || '✅ Goal completed';
       this.sessionManager.persist(this.config.botId, session);
     } catch (e: any) {
       throw new Error(`Goal agent execution failed: ${e.message}`);
@@ -556,7 +603,9 @@ export class HeartbeatScheduler {
     };
 
     console.log(`[Cron] Running task: ${task.name} prompt=${task.prompt.slice(0, 80)} timeout=${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`);
-    const result = await Promise.race([this.runtime.processMessage(ctx, this.adapter, this.config.botName), timeoutPromise]);
+    // 走 AgentLoop：adapter 带本地工具循环
+    const taskInput = this._buildAgentInput(ctx, taskSession);
+    const result = await Promise.race([this.agentLoop.execute(taskInput), timeoutPromise]);
     settled = true; // prevent late timeout callback from firing
     this.sessionManager.persist(this.config.botId, taskSession);
 
