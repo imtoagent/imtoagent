@@ -811,17 +811,15 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
         }
 
         if (delta.content) {
-          // Filter out DSML XML tool_call hallucinations in post-intercept mode
+          // Always filter out DSML XML tool_call hallucinations (DeepSeek sometimes emits tool_call XML in content)
           let contentToEmit = delta.content;
-          if (suppressToolCalls) {
-            // Strip any text that looks like tool_call XML: <｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls>
-            contentToEmit = contentToEmit.replace(/<[^>]*DSML[^>]*tool_calls[^>]*>[\s\S]*?<\/[^>]*tool_calls[^>]*>/g, '');
-            // Also strip partial fragments that might accumulate
-            contentToEmit = contentToEmit.replace(/<[^>]*DSML[\s\S]*$/g, '');
-            contentToEmit = contentToEmit.replace(/^[\s\S]*?<\/[^>]*tool_calls[^>]*>/g, '');
-            if (contentToEmit !== delta.content) {
-              console.log(`[Codex] 🔇 Filtered DSML XML from content delta (${delta.content.length} → ${contentToEmit.length} chars)`);
-            }
+          // Strip any text that looks like tool_call XML: <｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls>
+          contentToEmit = contentToEmit.replace(/<[^>]*DSML[^>]*tool_calls[^>]*>[\s\S]*?<\/[^>]*tool_calls[^>]*>/g, '');
+          // Also strip partial fragments that might accumulate
+          contentToEmit = contentToEmit.replace(/<[^>]*DSML[\s\S]*$/g, '');
+          contentToEmit = contentToEmit.replace(/^[\s\S]*?<\/[^>]*tool_calls[^>]*>/g, '');
+          if (contentToEmit !== delta.content) {
+            console.log(`[Codex] 🔇 Filtered DSML XML from content delta (${delta.content.length} → ${contentToEmit.length} chars)`);
           }
           
           if (contentToEmit) {
