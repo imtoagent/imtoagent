@@ -40,13 +40,35 @@ export function createGoalTools(
     },
     handler: async (params) => {
       try {
+        const triggerType = params.triggerType as TriggerType;
+        const triggerTime = params.triggerTime as string;
+        const triggerCron = params.triggerCron as string;
+        const triggerInterval = params.triggerInterval as number;
+        const repeat = (params.repeat as RepeatStrategy) || "once";
+
+        // 计算 nextRunAt — goal 能被 isGoalDue() 检测到的关键
+        let nextRunAt: string | undefined;
+        const now = new Date();
+
+        if (triggerType === "interval" && triggerInterval > 0) {
+          nextRunAt = new Date(now.getTime() + triggerInterval * 1000).toISOString();
+        } else if (triggerType === "time" && triggerTime) {
+          const [h, m] = triggerTime.split(":").map(Number);
+          const target = new Date(now);
+          target.setHours(h, m, 0, 0);
+          if (target <= now) target.setDate(target.getDate() + 1);
+          nextRunAt = target.toISOString();
+        } else if (triggerType === "cron" && triggerCron) {
+          nextRunAt = new Date(now.getTime() + 60_000).toISOString();
+        }
+
         const goal = createGoal({
           type: (params.type as GoalType) || "reminder",
           trigger: {
-            type: params.triggerType as TriggerType,
-            time: params.triggerTime as string,
-            cron: params.triggerCron as string,
-            intervalSeconds: params.triggerInterval as number,
+            type: triggerType,
+            time: triggerTime,
+            cron: triggerCron,
+            intervalSeconds: triggerInterval,
           },
           action: {
             type: params.actionType as ActionType,
@@ -54,7 +76,7 @@ export function createGoalTools(
             tool: params.actionTool as string,
             toolParams: params.actionToolParams as Record<string, unknown>,
           },
-          lifecycle: { repeat: (params.repeat as RepeatStrategy) || "once" },
+          lifecycle: { repeat, nextRunAt },
           metadata: {
             createdBy: "agent",
             sourceChatId: resolveChatId(),
@@ -64,7 +86,7 @@ export function createGoalTools(
         });
         const result = goalStore.add(goal);
         return result.success
-          ? { success: true, goalId: goal.id, message: `Goal created: ${goal.id}` }
+          ? { success: true, goalId: goal.id, nextRunAt, message: `Goal created: ${goal.id}, next run: ${nextRunAt || "N/A"}` }
           : { success: false, message: result.message };
       } catch (e: unknown) {
         return { success: false, message: `Failed: ${(e as Error).message}` };
