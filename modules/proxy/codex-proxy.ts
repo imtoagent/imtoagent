@@ -1086,6 +1086,103 @@ function filterUnsupportedTypes(chatReq: { messages: ChatMessage[]; [key: string
   return { ...chatReq, messages: filtered };
 }
 
+// ================================================================
+// Phase 3 Fix: Helper — build synthetic SSE stream for cached text
+// Used when there are no tool_calls; Codex receives final text only
+// ================================================================
+function buildSyntheticStream(text: string, reasoning: string, model: string): string {
+  const respId = `resp_${Date.now()}`;
+  const chunks: string[] = [];
+
+  // response.created
+  chunks.push(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: respId, object: 'response', model, status: 'in_progress', output: [] } })}\n\n`);
+  // response.in_progress
+  chunks.push(`event: response.in_progress\ndata: ${JSON.stringify({ type: 'response.in_progress', response: { id: respId, object: 'response', model, status: 'in_progress' } })}\n\n`);
+
+  let outputIndex = 0;
+
+  if (reasoning) {
+    // reasoning
+    chunks.push(`event: response.output_item.added\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: 'rsn_0', type: 'reasoning', summary: [], status: 'in_progress' } })}\n\n`);
+    for (const ch of reasoning) {
+      chunks.push(`event: response.reasoning_text.delta\ndata: ${JSON.stringify({ item_id: 'rsn_0', output_index: outputIndex, delta: ch })}\n\n`);
+    }
+    chunks.push(`event: response.output_item.done\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: 'rsn_0', type: 'reasoning', summary: [{ type: 'summary_text', text: reasoning }], status: 'completed' } })}\n\n`);
+    outputIndex++;
+  }
+
+  if (text) {
+    // message
+    const msgId = `msg_${Date.now()}`;
+    chunks.push(`event: response.output_item.added\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: msgId, type: 'message', role: 'assistant', content: [], status: 'in_progress' } })}\n\n`);
+    chunks.push(`event: response.content_part.added\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: 'output_text', text: '' } })}\n\n`);
+    chunks.push(`event: response.output_text.delta\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, delta: text })}\n\n`);
+    chunks.push(`event: response.output_text.done\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, text: text })}\n\n`);
+    chunks.push(`event: response.content_part.done\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: 'output_text', text: text } })}\n\n`);
+    chunks.push(`event: response.output_item.done\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: text }], status: 'completed' } })}\n\n`);
+  }
+
+  // response.completed
+  chunks.push(`event: response.completed\ndata: ${JSON.stringify({ response: { id: respId, object: 'response', model, status: 'completed', output: [], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } })}\n\n`);
+
+  return chunks.join('');
+}
+
+// ================================================================
+// Phase 3 Fix: Helper — build SSE stream for tool_calls response
+// Used when remote tools exist; Codex receives tool_calls to execute
+// ================================================================
+function buildToolCallsResponseStream(
+  toolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }>,
+  text: string,
+  reasoning: string,
+  model: string,
+): string {
+  const respId = `resp_${Date.now()}`;
+  const chunks: string[] = [];
+
+  chunks.push(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: respId, object: 'response', model, status: 'in_progress', output: [] } })}\n\n`);
+  chunks.push(`event: response.in_progress\ndata: ${JSON.stringify({ type: 'response.in_progress', response: { id: respId, object: 'response', model, status: 'in_progress' } })}\n\n`);
+
+  let outputIndex = 0;
+
+  if (reasoning) {
+    chunks.push(`event: response.output_item.added\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: 'rsn_0', type: 'reasoning', summary: [], status: 'in_progress' } })}\n\n`);
+    for (const ch of reasoning) {
+      chunks.push(`event: response.reasoning_text.delta\ndata: ${JSON.stringify({ item_id: 'rsn_0', output_index: outputIndex, delta: ch })}\n\n`);
+    }
+    chunks.push(`event: response.output_item.done\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: 'rsn_0', type: 'reasoning', summary: [{ type: 'summary_text', text: reasoning }], status: 'completed' } })}\n\n`);
+    outputIndex++;
+  }
+
+  if (text) {
+    const msgId = `msg_${Date.now()}`;
+    chunks.push(`event: response.output_item.added\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: msgId, type: 'message', role: 'assistant', content: [], status: 'in_progress' } })}\n\n`);
+    chunks.push(`event: response.content_part.added\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: 'output_text', text: '' } })}\n\n`);
+    chunks.push(`event: response.output_text.delta\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, delta: text })}\n\n`);
+    chunks.push(`event: response.output_text.done\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, text: text })}\n\n`);
+    chunks.push(`event: response.content_part.done\ndata: ${JSON.stringify({ item_id: msgId, output_index: outputIndex, content_index: 0, part: { type: 'output_text', text: text } })}\n\n`);
+    chunks.push(`event: response.output_item.done\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: text }], status: 'completed' } })}\n\n`);
+    outputIndex++;
+  }
+
+  // Emit each tool_call as a separate function_call output item
+  for (const tc of toolCalls) {
+    const itemId = `fcal_${Date.now()}_${outputIndex}`;
+    chunks.push(`event: response.output_item.added\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: itemId, type: 'function_call', call_id: tc.id, name: tc.function.name, arguments: '', status: 'in_progress' } })}\n\n`);
+    // Emit arguments as a single delta
+    if (tc.function.arguments) {
+      chunks.push(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ item_id: itemId, output_index: outputIndex, delta: tc.function.arguments })}\n\n`);
+    }
+    chunks.push(`event: response.output_item.done\ndata: ${JSON.stringify({ output_index: outputIndex, item: { id: itemId, type: 'function_call', call_id: tc.id, name: tc.function.name, arguments: tc.function.arguments || '{}', status: 'completed' } })}\n\n`);
+    outputIndex++;
+  }
+
+  chunks.push(`event: response.completed\ndata: ${JSON.stringify({ response: { id: respId, object: 'response', model, status: 'completed', output: [], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } })}\n\n`);
+
+  return chunks.join('');
+}
+
 export async function handleCodexRequest(
   reqBody: string,
   reqPath: string,
@@ -1193,15 +1290,12 @@ export async function handleCodexRequest(
       const timeout = setTimeout(() => ac.abort(), 180_000);
 
       let upstreamRes: Response;
-      let cameFromIntercept = false; // Track if we're in post-intercept re-fetch mode
-      let alreadyStreamed = false; // Phase 3: already forwarded stream inside intercept block
 
       try {
         if (hasAnyTools) {
-          // 有任何工具定义 → 流式转发 + 收集 tool_calls 用于判断
-          console.log(`[Codex] 🔧 tools detected (${chatReq.tools!.length} defined, ${hasLocal ? 'has local' : 'remote only'}), streaming with tool analysis`);
+          // ---- Phase 3 Tool Intercept (fixed): 完全缓存，不转发 ----
+          console.log(`[Codex] 🔧 tools detected (${chatReq.tools!.length} defined, ${hasLocal ? 'has local' : 'remote only'}), Phase 3 intercept: caching round-1 stream`);
 
-          // 单次流式请求（边收边转发）
           upstreamRes = await fetch(UPSTREAM(), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
@@ -1209,43 +1303,122 @@ export async function handleCodexRequest(
             signal: ac.signal,
           });
 
-          if (upstreamRes.ok) {
-            // Phase 3: forward SSE headers first, then stream
+          if (!upstreamRes.ok) {
+            throw new Error(`upstream ${upstreamRes.status}`);
+          }
+
+          // 完全缓存第一轮 SSE（text_delta + tool_calls），不转发给客户端
+          const parsed = await parseStreamToolCalls(upstreamRes);
+          const collectedToolCalls = parsed.toolCalls;
+          const collectedText = parsed.assistantText;
+          const collectedReasoning = parsed.reasoningContent;
+
+          console.log(`[Codex] 🔧 Round-1 cached: text=${collectedText.length} chars, reasoning=${collectedReasoning.length} chars, tool_calls=${collectedToolCalls.length}`);
+
+          if (collectedToolCalls.length === 0) {
+            // ---- 无 tool_calls：直接返回缓存的 text ----
+            console.log('[Codex] ✅ No tool_calls, returning cached text directly');
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+            const syntheticChunk = buildSyntheticStream(collectedText, collectedReasoning, REPORTED_MODEL());
+            res.end(syntheticChunk);
+            return;
+          }
 
-            // Create a WritableStream to forward to client AND collect tool_calls
-            const collectWriter = new WritableStream({
-              write(chunk: Uint8Array) { res.write(Buffer.from(chunk)); },
-              close() { res.end(); },
-              abort(_err: unknown) { res.end(); },
-            });
+          // 分析 tool_calls 类型
+          const allParsed = parseToolCalls(collectedToolCalls);
+          const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
+          const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
+          const hasLocalCalls = localCalls.length > 0;
+          const hasRemoteCalls = remoteCalls.length > 0;
 
-            // Stream to client while collecting tool_calls
-            const streamResult = await streamResponse(upstreamRes, collectWriter.getWriter(), body);
+          console.log(`[Codex] 🔧 Analysis: ${localCalls.length} local, ${remoteCalls.length} remote tool_calls`);
 
-            // Analyze collected tool_calls
-            const collectedToolCalls = streamResult.collectedToolCalls;
-            if (collectedToolCalls.length > 0) {
-              const allParsed = parseToolCalls(collectedToolCalls);
-              const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
-              const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
-              const hasLocalCalls = localCalls.length > 0;
+          if (hasLocalCalls && !hasRemoteCalls) {
+            // ---- 纯本地工具：自闭环 ----
+            console.log(`[Codex] 🔧 Pure local tools (${localCalls.length}), self-contained loop`);
 
-              if (hasLocalCalls) {
-                console.log(`[Codex] 🔧 Phase 3: ${localCalls.length} local, ${remoteCalls.length} remote tool_calls detected in forwarded stream`);
+            // 1. 执行本地工具
+            const localResults = interceptRegistry
+              ? await executeLocalTools(localCalls, interceptRegistry)
+              : [];
 
-                // Execute local tools and cache results for next round
-                const localResults = interceptRegistry
-                  ? await executeLocalTools(localCalls, interceptRegistry)
-                  : [];
+            // 2. 构造第二轮请求的 messages
+            const round2Messages: ChatMessage[] = [...chatReq.messages];
 
-                setPendingLocalResults(sessionKey, localResults);
-                console.log(`[Codex] 💾 Cached ${localResults.length} local tool result(s), waiting for client to return remote tool results`);
+            // 3. 加 assistant 消息（必须包含 tool_calls，否则 tool 消息会被拒绝）
+            const asstMsg: ChatMessage = { 
+              role: 'assistant', 
+              content: collectedText || null,
+              tool_calls: collectedToolCalls.map(tc => ({
+                id: tc.id,
+                type: 'function' as const,
+                function: { name: tc.function.name, arguments: tc.function.arguments }
+              }))
+            };
+            if (collectedReasoning) asstMsg.reasoning_content = collectedReasoning;
+            round2Messages.push(asstMsg);
+
+            // 4. 加 tool results
+            for (const r of localResults) {
+              round2Messages.push({ role: 'tool', tool_call_id: r.toolCallId, content: r.content });
+            }
+
+            console.log(`[Codex] 🔧 Round-2 messages: ${round2Messages.length} items (${round2Messages.map(m => m.role).join(',')})`);
+
+            // 5. 发第二轮请求给 LLM（流式转发给客户端）
+            const round2Ac = new AbortController();
+            const round2Timeout = setTimeout(() => round2Ac.abort(), 180_000);
+
+            try {
+              const round2Res = await fetch(UPSTREAM(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+                body: JSON.stringify({ ...chatReq, messages: round2Messages, stream: true }),
+                signal: round2Ac.signal,
+              });
+
+              if (!round2Res.ok) {
+                const errText = await round2Res.text();
+                console.error(`[Codex] ❌ Round-2 upstream ${round2Res.status}: ${errText.slice(0, 200)}`);
+                notifyUserError(round2Res.status);
+                res.writeHead(round2Res.status, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: errText.slice(0, 500) }));
+                return;
               }
-              // If only remote tools → nothing to do, client will handle them
+
+              // 流式转发第二轮 response 给客户端
+              res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+              const round2Writer = new WritableStream({
+                write(chunk: Uint8Array) { res.write(Buffer.from(chunk)); },
+                close() { res.end(); },
+                abort(_err: unknown) { res.end(); },
+              }).getWriter();
+
+              await streamResponse(round2Res, round2Writer, body).catch((e: unknown) => {
+                console.error(`[Codex] streamResponse error: ${e?.message || e}`);
+              }).finally(() => { try { round2Writer.close(); } catch {} });
+              return;
+            } finally {
+              clearTimeout(round2Timeout);
             }
           }
-          alreadyStreamed = true; // stream already forwarded to client
+
+          if (hasRemoteCalls) {
+            // ---- 有远端工具：返回 tool_calls 给客户端，缓存本地结果 ----
+            console.log(`[Codex] 🔧 Has remote tools, returning tool_calls to client`);
+
+            if (hasLocalCalls && interceptRegistry) {
+              const localResults = await executeLocalTools(localCalls, interceptRegistry);
+              setPendingLocalResults(sessionKey, localResults);
+              console.log(`[Codex] 💾 Cached ${localResults.length} local tool result(s) for merge with remote results`);
+            }
+
+            // 把缓存的 tool_calls 构造为 OpenAI response 格式返回给客户端
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+            const toolCallsChunk = buildToolCallsResponseStream(collectedToolCalls, collectedText, collectedReasoning, REPORTED_MODEL());
+            res.end(toolCallsChunk);
+            return;
+          }
         } else {
           // No tools defined → simple pass-through fetch
           upstreamRes = await fetch(UPSTREAM(), {
@@ -1303,15 +1476,9 @@ export async function handleCodexRequest(
         res.writeHead(upstreamRes.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: errText.slice(0, 500) })); return;
       }
 
-      // Phase 3: if already streamed inside intercept block, skip re-stream
-      if (alreadyStreamed) {
-        return;
-      }
-
-      // Fallback: if no tools or first request failed, stream normally
+      // Fallback: if no tools defined, stream normally
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
 
-      // 创建 WritableStream 桥接到 Node res
       const writable = new WritableStream({
         write(chunk: Uint8Array) {
           res.write(Buffer.from(chunk));
@@ -1324,7 +1491,7 @@ export async function handleCodexRequest(
         },
       });
       const writer = writable.getWriter();
-      await streamResponse(upstreamRes, writer, body, { suppressToolCalls: cameFromIntercept }).catch((e: unknown) => {
+      await streamResponse(upstreamRes, writer, body).catch((e: unknown) => {
         console.error(`[Codex] streamResponse error: ${e?.message || e}`);
       }).finally(() => {
         try { writer.close(); } catch {}
