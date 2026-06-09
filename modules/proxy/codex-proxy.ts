@@ -9,6 +9,8 @@ import { getDataDir, getBotConfigPath } from '../utils/paths';
 import { logUsage } from './usage-logger';
 import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
+import { hasLocalTool, isLocalTool, parseToolCalls, executeLocalTools, generateRemotePlaceholders, buildToolMessages } from './tool-interceptor';
+import type { ToolRegistry } from '../agent/tool-registry';
 
 /** Map HTTP status code to user-friendly error message */
 function statusToUserMessage(status: number): string {
@@ -616,6 +618,75 @@ function validateToolPairing(messages: ChatMessage[]): ChatMessage[] {
 }
 
 // ================================================================
+// 1.6 流式工具调用解析（用于拦截模式）
+// 解析第一次流式响应，收集 tool_calls 但不输出给用户
+// ================================================================
+interface StreamToolCallInfo {
+  toolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+  assistantText: string;
+  reasoningContent: string;
+}
+
+async function parseStreamToolCalls(upstreamRes: Response): Promise<StreamToolCallInfo> {
+  const result: StreamToolCallInfo = { toolCalls: [], assistantText: '', reasoningContent: '' };
+
+  if (!upstreamRes.body) return result;
+
+  const reader = upstreamRes.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') continue;
+
+        let chunk: OpenAIStreamChunk;
+        try { chunk = JSON.parse(data); } catch { continue; }
+
+        const delta = chunk.choices?.[0]?.delta || {};
+
+        if (delta.reasoning_content) {
+          result.reasoningContent += delta.reasoning_content;
+        }
+        if (delta.content) {
+          result.assistantText += delta.content;
+        }
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx: number = tc.index ?? 0;
+            if (!result.toolCalls[idx]) {
+              result.toolCalls[idx] = {
+                id: tc.id || `call_${Date.now()}_${idx}`,
+                type: 'function',
+                function: { name: '', arguments: '' },
+              };
+            }
+            if (tc.id) result.toolCalls[idx].id = tc.id;
+            if (tc.function?.name) result.toolCalls[idx].function.name = tc.function.name;
+            if (tc.function?.arguments) result.toolCalls[idx].function.arguments += tc.function.arguments;
+          }
+        }
+      }
+    }
+  } catch {
+    // stream broken — return what we have
+  } finally {
+    reader.releaseLock();
+  }
+
+  return result;
+}
+
+// ================================================================
 // 2. 响应翻译: Chat SSE → Responses SSE
 // ================================================================
 async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>, reqBody?: OpenAIRequestBody): Promise<void> {
@@ -954,108 +1025,95 @@ export async function handleCodexRequest(
       const roles = chatReq.messages?.map((m: ChatMessage) => m.role).join(',');
       console.log(`[Codex] → ${chatReq.model} [${roles}] tools:${chatReq.tools?.length || 0}`);
 
-      // ---- Tool-Call Loop: 拦截本地工具调用 ----
-      const { hasLocalTools } = await import('./tool-call-loop');
-      const hasLocal = hasLocalTools(chatReq.tools);
+      // ---- Tool Intercept: 流式拦截本地工具 ----
+      const hasLocal = hasLocalTool(chatReq.tools);
+      const interceptRegistry = hasLocal ? getCurrentBot()?.toolRegistry : undefined;
 
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), 180_000);
 
       let upstreamRes: Response;
-      let finalMessages: ChatMessage[] | null = null; // tool-call-loop 返回的最终 messages
 
       try {
-        if (hasLocal) {
-          // 有本地工具 → 走 tool-call loop
-          const toolRegistry = getCurrentBot()?.toolRegistry;
-          if (!toolRegistry) {
-            console.warn('[Codex] ⚠️ local tools in request but no toolRegistry in bot context, falling back to direct streaming');
-            // 无 registry → 降级到直接流式
-            upstreamRes = await fetch(UPSTREAM(), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-              body: JSON.stringify(chatReq),
-              signal: ac.signal,
-            });
-          } else {
-            console.log('[Codex] 🔧 local tools detected, entering tool-call loop');
-            const { executeToolCallLoop } = await import('./tool-call-loop');
+        if (hasLocal && interceptRegistry) {
+          // 有本地工具 + 有 registry → 流式拦截模式
+          console.log('[Codex] 🔧 local tools detected, using streaming intercept');
 
-            const loopResult = await executeToolCallLoop(
-              chatReq.messages,
-              UPSTREAM(),
-              API_KEY(),
-              chatReq.model,
-              chatReq.tools,
-              toolRegistry,
-              ac.signal,
-              chatReq.max_tokens,
-              undefined, // httpRequest — use default fetch adapter
-              { thinking: body.thinking }, // extraBodyFields — 保留 thinking 等原始字段
-            );
+          // 第一次流式请求（收集 tool_calls）
+          const firstFetchBody = { ...chatReq, stream: true };
+          upstreamRes = await fetch(UPSTREAM(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+            body: JSON.stringify(firstFetchBody),
+            signal: ac.signal,
+          });
 
-            if (loopResult.loops === 0) {
-              // loop 第一步就失败（网络错误等），降级到直接流式
-              console.log('[Codex] ⚠️ tool-call loop failed on first fetch, falling back to direct streaming');
-              try {
-                upstreamRes = await fetch(UPSTREAM(), {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                  body: JSON.stringify(chatReq),
-                  signal: ac.signal,
-                });
-              } catch (e: unknown) {
-                console.error(`[Codex] ❌ fallback fetch also failed: ${(e as Error).message}`);
-                notifyUserError(502);
-                res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
+          if (upstreamRes.ok) {
+            // 解析第一次响应，提取 tool_calls（流已被完全消费，无法回退）
+            const toolCallInfo = await parseStreamToolCalls(upstreamRes);
+
+            // 判断是否有本地工具调用
+            const allParsed = parseToolCalls(toolCallInfo.toolCalls);
+            const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
+            const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
+            const hasLocalCalls = localCalls.length > 0;
+
+            if (toolCallInfo.toolCalls.length > 0) {
+              // 有 tool_calls → 执行本地工具 + 合并结果 → 二次请求
+              console.log(`[Codex] 🔧 intercepted ${localCalls.length} local, ${remoteCalls.length} remote tool_calls`);
+
+              // 并行执行本地工具
+              const localResults = await executeLocalTools(localCalls, interceptRegistry);
+
+              // 远端工具占位
+              const remoteResults = generateRemotePlaceholders(remoteCalls);
+
+              // 合并所有结果
+              const allResults = [...localResults, ...remoteResults];
+              const toolMessages = buildToolMessages(allResults);
+
+              // 构建 assistant 消息（包含 tool_calls 引用）
+              const assistantMsg: any = {
+                role: 'assistant',
+                content: toolCallInfo.assistantText,
+                tool_calls: toolCallInfo.toolCalls,
+              };
+              if (toolCallInfo.reasoningContent) {
+                assistantMsg.reasoning_content = toolCallInfo.reasoningContent;
               }
-            } else if (!loopResult.hadLocalTools) {
-              // loop 跑完了但没调本地工具（上游直接返回文本）→ 需要重新 fetch stream 模式
-              console.log(`[Codex] ✅ tool-call loop completed (${loopResult.loops} loops), no local tools called, re-fetching for streaming`);
-              try {
-                upstreamRes = await fetch(UPSTREAM(), {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                  body: JSON.stringify({ ...chatReq, messages: loopResult.messages, stream: true }),
-                  signal: ac.signal,
-                });
-              } catch (e: unknown) {
-                console.error(`[Codex] ❌ post-loop stream fetch failed: ${(e as Error).message}`);
-                notifyUserError(502);
-                res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
+
+              // 拼接最终 messages
+              const finalMessages = [...chatReq.messages, assistantMsg, ...toolMessages];
+              console.log(`[Codex] ✅ tool results merged (${allResults.length} total), re-fetching for streaming response`);
+
+              // 二次流式请求（带完整 tool 结果）
+              const reFetchBody: Record<string, unknown> = {
+                ...chatReq,
+                messages: finalMessages,
+                stream: true,
+              };
+              delete reFetchBody.tools;
+
+              // 如果有 reasoning_content，保留 thinking
+              if (toolCallInfo.reasoningContent) {
+                reFetchBody.thinking = { type: 'enabled' };
               }
+
+              upstreamRes = await fetch(UPSTREAM(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+                body: JSON.stringify(reFetchBody),
+                signal: ac.signal,
+              });
             } else {
-              // loop 执行了本地工具 → 用最终 messages 重新 fetch stream 模式
-              finalMessages = loopResult.messages;
-              console.log(`[Codex] ✅ tool-call loop executed local tools (${loopResult.loops} loops), re-fetching for streaming`);
-              try {
-                // 🔧 re-fetch 时保留工具定义但跳过 tool-call-loop（工具已执行完毕）
-                // 如果 finalMessages 有 reasoning_content，必须带上 thinking 否则 DeepSeek 400
-                const hasReasoningInFinal = finalMessages.some(
-                  (m: any) => m.reasoning_content !== undefined && m.reasoning_content !== null && m.reasoning_content !== ''
-                );
-                const reFetchBody: Record<string, unknown> = {
-                  ...chatReq,
-                  messages: finalMessages,
-                  stream: true,
-                };
-                // 跳过 tools 定义——工具已执行完，re-fetch 只需 AI 生成文本
-                delete reFetchBody.tools;
-                if (hasReasoningInFinal) {
-                  reFetchBody.thinking = { type: 'enabled' };
-                  console.log(`[Codex] 🔧 finalMessages has reasoning_content, adding thinking to re-fetch`);
-                }
-                upstreamRes = await fetch(UPSTREAM(), {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
-                  body: JSON.stringify(reFetchBody),
-                  signal: ac.signal,
-                });
-              } catch (e: unknown) {
-                console.error(`[Codex] ❌ post-loop stream fetch failed: ${(e as Error).message}`);
-                notifyUserError(502);
-                res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
-              }
+              // 无 tool_calls（纯文本）→ 第一次流已消费，需要重新 fetch 来输出
+              console.log('[Codex] ✅ no tool_calls in stream, re-fetching for streaming output');
+              upstreamRes = await fetch(UPSTREAM(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
+                body: JSON.stringify({ ...chatReq, stream: true }),
+                signal: ac.signal,
+              });
             }
           }
         } else {
