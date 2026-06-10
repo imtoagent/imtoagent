@@ -25,9 +25,6 @@ import { GoalStore } from './goal-store';
 import { GoalManager } from './goal-manager';
 import { ToolRegistry } from '../agent/tool-registry';
 import { discoverTools, type ToolLoadContext } from './tool-discovery';
-import { weatherTool } from '../tools/weather';
-import { createGoalTools } from '../tools/goal-task-tools';
-import { createTaskTools } from '../tools/task-tools';
 import { TaskManager } from './task-manager';
 import { TaskLogger } from './task-logger';
 import { AgentLoop } from '../agent/agent-loop';
@@ -139,16 +136,10 @@ export class HeartbeatScheduler {
     );
     this.taskManager = new TaskManager(heartbeatPath);
 
-    // Phase 4: 自动发现并注册工具
+    // Phase 4: 自动发现并注册工具（唯一工具注册入口）
     this.autoRegisterTools();
 
-    // 向后兼容：手动注册内置工具（autoRegisterTools 会覆盖同名的）
-    this.toolRegistry.register(weatherTool);
-    const taskTools = createTaskTools(this.taskManager);
-    const goalTools = createGoalTools(this.goalManager, this.goalStore, () => this._resolver.getLastActiveChatId());
-    this.toolRegistry.register(...taskTools, ...goalTools);
-
-    // 显式注入所有工具到当前 session
+    // 显式注入所有已发现工具到当前 session
     this.toolRegistry.injectNeeded(this.toolRegistry.list());
     this.goalEngine = new GoalEngine(this.goalStore, {
       executeAgent: async (prompt, options) => {
