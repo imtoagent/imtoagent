@@ -24,6 +24,7 @@ import { GoalEngine } from './goal-engine';
 import { GoalStore } from './goal-store';
 import { GoalManager } from './goal-manager';
 import { ToolRegistry } from '../agent/tool-registry';
+import { discoverTools, type ToolLoadContext } from './tool-discovery';
 import { weatherTool } from '../tools/weather';
 import { createGoalTools } from '../tools/goal-task-tools';
 import { createTaskTools } from '../tools/task-tools';
@@ -129,25 +130,26 @@ export class HeartbeatScheduler {
     this.goalStore = new GoalStore();
     // Phase 2: 初始化工具注册中心
     this.toolRegistry = new ToolRegistry();
-    // Phase 2: 注册 weather 工具并注入
-    this.toolRegistry.register(weatherTool);
-    this.toolRegistry.injectNeeded([weatherTool.name]);
     // Phase 2: 初始化 Goal 管理协议
     this.goalManager = new GoalManager(this.goalStore);
-    // Phase 3: 初始化 Task 管理器并注册 Task 工具
+    // Phase 3: 初始化 Task 管理器
     const heartbeatPath = path.join(
       this.config.workspaceDir || path.join(os.homedir(), '.imtoagent', 'workspaces', this.config.botId || 'default'),
       'HEARTBEAT.md',
     );
     this.taskManager = new TaskManager(heartbeatPath);
+
+    // Phase 4: 自动发现并注册工具
+    this.autoRegisterTools();
+
+    // 向后兼容：手动注册内置工具（autoRegisterTools 会覆盖同名的）
+    this.toolRegistry.register(weatherTool);
     const taskTools = createTaskTools(this.taskManager);
-    // Phase 3: 注册 Goal 工具（resolveChatId 动态获取当前活跃 chatId）
     const goalTools = createGoalTools(this.goalManager, this.goalStore, () => this._resolver.getLastActiveChatId());
     this.toolRegistry.register(...taskTools, ...goalTools);
+
     // 显式注入所有工具到当前 session
-    this.toolRegistry.injectNeeded(
-      [...taskTools, ...goalTools, weatherTool].map(t => t.name),
-    );
+    this.toolRegistry.injectNeeded(this.toolRegistry.list());
     this.goalEngine = new GoalEngine(this.goalStore, {
       executeAgent: async (prompt, options) => {
         return this.executeGoalAgent(prompt, options);
@@ -182,6 +184,49 @@ export class HeartbeatScheduler {
   /** Phase 2: 暴露工具注册中心 */
   getToolRegistry() {
     return this.toolRegistry;
+  }
+
+  /**
+   * Phase 4: 自动发现并注册工具
+   *
+   * 扫描规则：
+   * 1. 用户工具目录 ~/.imtoagent/tools/
+   * 2. 内置工具目录 modules/tools/
+   * 同名工具用户版本覆盖内置版本
+   *
+   * 依赖注入：taskManager, goalManager, goalStore, resolveChatId
+   */
+  private autoRegisterTools(): void {
+    const dataDir = path.join(os.homedir(), '.imtoagent');
+    const userToolsDir = path.join(dataDir, 'tools');
+    // 内置工具目录（相对于模块路径）
+    const builtInToolsDir = path.join(__dirname, '..', 'tools');
+
+    // 构建依赖注入上下文
+    const context: ToolLoadContext = {
+      deps: {
+        taskManager: this.taskManager,
+        goalManager: this.goalManager,
+        goalStore: this.goalStore,
+        resolveChatId: () => this._resolver.getLastActiveChatId(),
+      },
+    };
+
+    // 扫描：先内置，后用户（用户覆盖内置）
+    discoverTools([builtInToolsDir, userToolsDir], context)
+      .then(discovered => {
+        for (const tool of discovered) {
+          this.toolRegistry.register(tool.definition);
+          console.log(
+            `[ToolDiscovery] Registered: ${tool.name} (${tool.sourceType}) ` +
+            `[${tool.sourceFile.replace(dataDir, '~/.imtoagent')}]`,
+          );
+        }
+        console.log(`[ToolDiscovery] Total discovered: ${discovered.length}`);
+      })
+      .catch(err => {
+        console.error(`[ToolDiscovery] Discovery failed: ${(err as Error).message}`);
+      });
   }
 
   /**
