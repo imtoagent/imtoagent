@@ -9,17 +9,11 @@
 
 import type { ToolRegistry } from './tool-registry';
 import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/types';
+import type { HookRunner } from '../core/hook-runner';
+import { getCurrentBot } from '../bot-context';
 
 const MAX_LOOPS = 10;
 const TOOL_EXEC_TIMEOUT_MS = 30_000;
-
-function isLocalTool(name: string): boolean {
-  return (
-    name.startsWith('imtoagent_') ||
-    name.startsWith('goal_') ||
-    name === 'get_weather'
-  );
-}
 
 export interface ParsedToolCall {
   name: string;
@@ -32,7 +26,7 @@ export interface ParsedToolCall {
  * 实现了才能参与本地工具循环；不实现则直接透传。
  */
 export interface AgentToolSupport {
-  extractToolCalls(output: AgentOutput): ParsedToolCall[];
+  extractToolCalls(output: AgentOutput, registry: ToolRegistry): ParsedToolCall[];
   appendToolResults(
     input: AgentInput,
     toolCalls: ParsedToolCall[],
@@ -80,13 +74,13 @@ export class AgentLoop {
 
       lastOutput = output;
 
-      const parsedCalls = this.toolSupport.extractToolCalls(output);
+      const parsedCalls = this.toolSupport.extractToolCalls(output, this.toolRegistry);
       if (parsedCalls.length === 0) {
         return output;
       }
 
-      const localCalls = parsedCalls.filter(tc => isLocalTool(tc.name));
-      const remoteCalls = parsedCalls.filter(tc => !isLocalTool(tc.name));
+      const localCalls = parsedCalls.filter(tc => this.toolRegistry.isRegistered(tc.name));
+      const remoteCalls = parsedCalls.filter(tc => !this.toolRegistry.isRegistered(tc.name));
 
       if (localCalls.length === 0) {
         // 只有远端工具，adapter/后端已自行处理
@@ -95,13 +89,29 @@ export class AgentLoop {
 
       console.log(`[AgentLoop] loop ${loops}: ${localCalls.length} local tool call(s)`);
 
-      // 执行本地工具
+      // 执行本地工具（带 Hook 支持）
+      const hookRunner = getCurrentBot()?.hookRunner;
       const results: string[] = [];
       for (const tc of localCalls) {
         const argsPreview = JSON.stringify(tc.args).slice(0, 200);
         console.log(`[AgentLoop] 🔧 executing: ${tc.name}(${argsPreview})`);
 
+        // before_tool_call hook
+        if (hookRunner) {
+          const beforeResult = await hookRunner.runBeforeToolCall({
+            toolName: tc.name,
+            args: tc.args,
+            chatId: getCurrentBot()?.lastChatId || '',
+          });
+          if (beforeResult.blocked) {
+            results.push(`Blocked by hook: ${beforeResult.error}`);
+            hadLocalTools = true;
+            continue;
+          }
+        }
+
         let result: string;
+        let success = true;
         try {
           const execPromise = this.toolRegistry.execute(tc.name, tc.args);
           const timeoutPromise = new Promise<never>((_, reject) =>
@@ -111,7 +121,19 @@ export class AgentLoop {
           result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
         } catch (e: unknown) {
           result = `Error executing ${tc.name}: ${(e as Error).message}`;
+          success = false;
           console.error(`[AgentLoop] ❌ tool failed: ${tc.name} → ${result}`);
+        }
+
+        // after_tool_call hook
+        if (hookRunner) {
+          result = await hookRunner.runAfterToolCall({
+            toolName: tc.name,
+            args: tc.args,
+            result,
+            success,
+            chatId: getCurrentBot()?.lastChatId || '',
+          });
         }
 
         results.push(result);

@@ -111,6 +111,10 @@ export function initDataDir(dotDir: string, envHome: string): string {
   fs.mkdirSync(target, { recursive: true });
   fs.mkdirSync(path.join(target, 'logs'), { recursive: true });
   fs.mkdirSync(path.join(target, 'sessions'), { recursive: true });
+  // 基础设施目录 — 让 ToolDiscovery / SkillsManager / HookDiscovery 启动时不报错
+  fs.mkdirSync(path.join(target, 'tools'), { recursive: true });
+  fs.mkdirSync(path.join(target, 'skills'), { recursive: true });
+  fs.mkdirSync(path.join(target, 'hooks'), { recursive: true });
 
   if (sourceDir && sourceLabel === 'cwd') {
     // 开发模式：直接拷贝项目目录下的配置

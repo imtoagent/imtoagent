@@ -228,10 +228,11 @@ export class ToolRegistry {
   }
 
   /**
-   * 检查工具是否已注册
+   * 检查工具是否已注册（含别名解析）
+   * 别名工具如 imtoagent_remove_goal → imtoagent_delete_goal 也能被识别
    */
   isRegistered(name: string): boolean {
-    return this.registry.has(name);
+    return this.resolveToolName(name) !== null;
   }
 
   /**

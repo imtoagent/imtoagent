@@ -10,6 +10,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/types';
 import { buildAttachmentHint } from '../core/types';
 import type { ParsedToolCall, AgentToolSupport } from './agent-loop';
+import type { ToolRegistry } from './tool-registry';
 
 
 // ================================================================
@@ -281,21 +282,15 @@ export class ClaudeAdapter implements AgentAdapter {
   // Claude SDK 使用 Anthropic 原生格式：tool_use 和 tool_result 内容块。
   // 这个方法给 AgentLoop 用，只关心本地工具（imtoagent_ 和 goal_ 前缀、get_weather）。
   getToolSupport(): AgentToolSupport | null {
-    const isLocalTool = (name: string): boolean =>
-      name.startsWith('imtoagent_') || name.startsWith('goal_') || name === 'get_weather';
-
     return {
-      extractToolCalls: (output: AgentOutput): ParsedToolCall[] => {
-        // Claude adapter 已经在 toolCalls 字段里存了结构化工具调用
-        // 但 AgentLoop 需要的是 ParsedToolCall（含 args）
-        // 这里退而求其次：从 output.text 中找本地工具的 JSON 模式
+      extractToolCalls: (output: AgentOutput, registry: ToolRegistry): ParsedToolCall[] => {
         if (!output.text) return [];
         const calls: ParsedToolCall[] = [];
         const jsonRe = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"input"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
         let m: RegExpExecArray | null;
         while ((m = jsonRe.exec(output.text)) !== null) {
           const name = m[1];
-          if (!isLocalTool(name)) continue;
+          if (!registry.isRegistered(name)) continue;
           try {
             calls.push({ name, args: JSON.parse(m[2]) });
           } catch {}

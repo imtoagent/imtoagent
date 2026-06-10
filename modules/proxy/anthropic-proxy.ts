@@ -1146,7 +1146,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const toolsList = (parsedBody as any).tools as { type: string; function: { name: string } }[] | undefined;
     const hasLocal = toolsList?.some(t => {
       const n = t.function?.name || '';
-      return n.startsWith('imtoagent_') || n.startsWith('goal_') || n === 'get_weather';
+      return toolRegistry?.isRegistered(n) ?? (n.startsWith('imtoagent_') || n.startsWith('goal_') || n === 'get_weather');
     });
 
     if (hasLocal && toolRegistry) {

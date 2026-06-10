@@ -25,6 +25,8 @@ import { GoalStore } from './goal-store';
 import { GoalManager } from './goal-manager';
 import { ToolRegistry } from '../agent/tool-registry';
 import { discoverTools, type ToolLoadContext } from './tool-discovery';
+import { discoverHooks } from './hook-discovery';
+import { HookRunner } from './hook-runner';
 import { TaskManager } from './task-manager';
 import { TaskLogger } from './task-logger';
 import { AgentLoop } from '../agent/agent-loop';
@@ -55,6 +57,9 @@ export interface HeartbeatSchedulerConfig {
     max_retries?: number;
     timeout?: string;
   };
+  /** Skills manager（用于 read_skill / list_skills 工具） */
+  systemSkills?: any;
+  botSkills?: any;
 }
 
 export class HeartbeatScheduler {
@@ -76,11 +81,13 @@ export class HeartbeatScheduler {
   private goalManager: GoalManager;
   /** Phase 2: 工具注册中心 */
   private toolRegistry: ToolRegistry;
+  /** Hook runner for before/after lifecycle hooks */
+  hookRunner = new HookRunner();
   /** Phase 1 精确触发：setTimeout 精确触发 + 心跳兜底 */
   private preciseTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly PRECISE_WINDOW_MS = 30 * 60 * 1000; // 30 分钟内注册 setTimeout
 
-  constructor(
+  private constructor(
     config: HeartbeatSchedulerConfig,
     runtime: AgentRuntime,
     adapter: AgentAdapter,
@@ -91,6 +98,19 @@ export class HeartbeatScheduler {
     this.adapter = adapter;
     this.sessionManager = sessionManager;
     this._resolver = new SessionResolver(sessionManager, config.botId);
+
+    // Phase 1: 初始化 Goal Engine
+    this.goalStore = new GoalStore();
+    // Phase 2: 初始化工具注册中心
+    this.toolRegistry = new ToolRegistry();
+    // Phase 2: 初始化 Goal 管理协议
+    this.goalManager = new GoalManager(this.goalStore);
+    // Phase 3: 初始化 Task 管理器
+    const heartbeatPath = path.join(
+      this.config.workspaceDir || path.join(os.homedir(), '.imtoagent', 'workspaces', this.config.botId || 'default'),
+      'HEARTBEAT.md',
+    );
+    this.taskManager = new TaskManager(heartbeatPath);
 
     // 构造 AgentLoop（adapter 级工具支持）
     const toolSupport = (adapter as any).getToolSupport?.() ?? null;
@@ -122,25 +142,42 @@ export class HeartbeatScheduler {
       },
       workspaceDir: this.config.defaultCwd, // P4-4: 历史文件路径基准
     });
+  }
 
-    // Phase 1: 初始化 Goal Engine
-    this.goalStore = new GoalStore();
-    // Phase 2: 初始化工具注册中心
-    this.toolRegistry = new ToolRegistry();
-    // Phase 2: 初始化 Goal 管理协议
-    this.goalManager = new GoalManager(this.goalStore);
-    // Phase 3: 初始化 Task 管理器
-    const heartbeatPath = path.join(
-      this.config.workspaceDir || path.join(os.homedir(), '.imtoagent', 'workspaces', this.config.botId || 'default'),
-      'HEARTBEAT.md',
-    );
-    this.taskManager = new TaskManager(heartbeatPath);
+  /**
+   * 异步工厂方法：创建 HeartbeatScheduler 实例并等待工具发现完成。
+   *
+   * 原构造函数拆为 private constructor + static async create，
+   * 解决 autoRegisterTools() 异步竞态：工具未注册完就被注入（空列表）。
+   */
+  static async create(
+    config: HeartbeatSchedulerConfig,
+    runtime: AgentRuntime,
+    adapter: AgentAdapter,
+    sessionManager: SessionManager,
+  ): Promise<HeartbeatScheduler> {
+    const scheduler = new HeartbeatScheduler(config, runtime, adapter, sessionManager);
 
-    // Phase 4: 自动发现并注册工具（唯一工具注册入口）
-    this.autoRegisterTools();
+    // 等待工具发现完成（内置 + 用户工具）
+    await scheduler.autoRegisterTools();
 
-    // 显式注入所有已发现工具到当前 session
-    this.toolRegistry.injectNeeded(this.toolRegistry.list());
+    // 注入所有已发现工具到当前 session
+    scheduler.toolRegistry.injectNeeded(scheduler.toolRegistry.list());
+
+    // Load hooks
+    const hooks = await discoverHooks();
+    scheduler.hookRunner.register(hooks);
+
+    // 工具就绪后初始化 Goal Engine
+    scheduler._initGoalEngine();
+
+    return scheduler;
+  }
+
+  /**
+   * GoalEngine 初始化（工具注册/注入完成后调用）
+   */
+  private _initGoalEngine(): void {
     this.goalEngine = new GoalEngine(this.goalStore, {
       executeAgent: async (prompt, options) => {
         return this.executeGoalAgent(prompt, options);
@@ -187,7 +224,7 @@ export class HeartbeatScheduler {
    *
    * 依赖注入：taskManager, goalManager, goalStore, resolveChatId
    */
-  private autoRegisterTools(): void {
+  private async autoRegisterTools(): Promise<void> {
     const dataDir = path.join(os.homedir(), '.imtoagent');
     const userToolsDir = path.join(dataDir, 'tools');
     // 内置工具目录（相对于模块路径）
@@ -200,24 +237,21 @@ export class HeartbeatScheduler {
         goalManager: this.goalManager,
         goalStore: this.goalStore,
         resolveChatId: () => this._resolver.getLastActiveChatId(),
+        systemSkills: this.config.systemSkills,
+        botSkills: this.config.botSkills,
       },
     };
 
     // 扫描：先内置，后用户（用户覆盖内置）
-    discoverTools([builtInToolsDir, userToolsDir], context)
-      .then(discovered => {
-        for (const tool of discovered) {
-          this.toolRegistry.register(tool.definition);
-          console.log(
-            `[ToolDiscovery] Registered: ${tool.name} (${tool.sourceType}) ` +
-            `[${tool.sourceFile.replace(dataDir, '~/.imtoagent')}]`,
-          );
-        }
-        console.log(`[ToolDiscovery] Total discovered: ${discovered.length}`);
-      })
-      .catch(err => {
-        console.error(`[ToolDiscovery] Discovery failed: ${(err as Error).message}`);
-      });
+    const discovered = await discoverTools([builtInToolsDir, userToolsDir], context);
+    for (const tool of discovered) {
+      this.toolRegistry.register(tool.definition);
+      console.log(
+        `[ToolDiscovery] Registered: ${tool.name} (${tool.sourceType}) ` +
+        `[${tool.sourceFile.replace(dataDir, '~/.imtoagent')}]`,
+      );
+    }
+    console.log(`[ToolDiscovery] Total discovered: ${discovered.length}`);
   }
 
   /**

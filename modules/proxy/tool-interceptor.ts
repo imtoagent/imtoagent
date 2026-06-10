@@ -8,7 +8,9 @@
 //   4. 返回完整 tool 结果消息（供 caller 注入 messages）
 // ================================================================
 
+import { getCurrentBot } from '../bot-context';
 import type { ToolRegistry } from '../agent/tool-registry';
+import type { HookRunner } from '../core/hook-runner';
 
 export interface ParsedToolCall {
   id: string;
@@ -29,8 +31,10 @@ const TOOL_EXEC_TIMEOUT_MS = 30_000;
 
 /**
  * 判断 tool name 是否为本地工具
+ * 优先通过 ToolRegistry 动态判断；未传 registry 时回退到旧前缀匹配（向后兼容）
  */
-export function isLocalTool(name: string): boolean {
+export function isLocalTool(name: string, registry?: ToolRegistry): boolean {
+  if (registry) return registry.isRegistered(name);
   return (
     name.startsWith('imtoagent_') ||
     name.startsWith('goal_') ||
@@ -41,9 +45,9 @@ export function isLocalTool(name: string): boolean {
 /**
  * 检查工具定义列表中是否包含本地工具
  */
-export function hasLocalTool(toolDefs: Array<{ function?: { name?: string } }> | undefined): boolean {
+export function hasLocalTool(toolDefs: Array<{ function?: { name?: string } }> | undefined, registry?: ToolRegistry): boolean {
   if (!toolDefs || toolDefs.length === 0) return false;
-  return toolDefs.some(t => isLocalTool(t.function?.name || ''));
+  return toolDefs.some(t => isLocalTool(t.function?.name || '', registry));
 }
 
 /**
@@ -80,9 +84,22 @@ export function parseToolCalls(toolCalls: Array<{
 export async function executeLocalTools(
   calls: ParsedToolCall[],
   toolRegistry: ToolRegistry,
+  hookRunner?: HookRunner,
 ): Promise<ToolExecutionResult[]> {
   return Promise.all(calls.map(async (call): Promise<ToolExecutionResult> => {
     console.log(`[ToolInterceptor] 🔧 executing: ${call.name}(${JSON.stringify(call.args).slice(0, 200)})`);
+
+    // before_tool_call hook
+    if (hookRunner) {
+      const beforeResult = await hookRunner.runBeforeToolCall({
+        toolName: call.name,
+        args: call.args,
+        chatId: getCurrentBot()?.lastChatId || '',
+      });
+      if (beforeResult.blocked) {
+        return { toolCallId: call.id, name: call.name, isLocal: true, content: `Blocked by hook: ${beforeResult.error}`, success: false };
+      }
+    }
 
     try {
       const execPromise = toolRegistry.execute(call.name, call.args);
@@ -91,8 +108,21 @@ export async function executeLocalTools(
       );
       const rawResult = await Promise.race([execPromise, timeoutPromise]);
       const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
-      console.log(`[ToolInterceptor] ✅ ${call.name} done (${result.length} chars)`);
-      return { toolCallId: call.id, name: call.name, isLocal: true, content: result, success: true };
+
+      // after_tool_call hook
+      let finalResult = result;
+      if (hookRunner) {
+        finalResult = await hookRunner.runAfterToolCall({
+          toolName: call.name,
+          args: call.args,
+          result: result,
+          success: true,
+          chatId: getCurrentBot()?.lastChatId || '',
+        });
+      }
+
+      console.log(`[ToolInterceptor] ✅ ${call.name} done (${finalResult.length} chars)`);
+      return { toolCallId: call.id, name: call.name, isLocal: true, content: finalResult, success: true };
     } catch (e: unknown) {
       const errMsg = `Error executing ${call.name}: ${(e as Error).message}`;
       console.error(`[ToolInterceptor] ❌ ${call.name} failed → ${errMsg}`);

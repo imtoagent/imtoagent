@@ -11,6 +11,7 @@ import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
 import { hasLocalTool, isLocalTool, parseToolCalls, executeLocalTools, generateRemotePlaceholders, buildToolMessages, type ToolExecutionResult } from './tool-interceptor';
 import type { ToolRegistry } from '../agent/tool-registry';
+import type { HookRunner } from '../core/hook-runner';
 
 /** Map HTTP status code to user-friendly error message */
 function statusToUserMessage(status: number): string {
@@ -747,7 +748,7 @@ async function parseStreamToolCalls(upstreamRes: Response): Promise<StreamToolCa
           type: 'function',
           function: { name: call.name, arguments: JSON.stringify(call.arguments) },
         });
-        console.log(`[Codex] 📦 Parsed DSML XML tool call: ${call.name} (${isLocalTool(call.name) ? 'local' : 'remote'})`);
+        console.log(`[Codex] 📦 Parsed DSML XML tool call: ${call.name} (${isLocalTool(call.name, getCurrentBot()?.toolRegistry) ? 'local' : 'remote'})`);
       } else {
         console.log(`[Codex] ⏭️ DSML XML tool ${call.name} already in standard tool_calls, skipping`);
       }
@@ -1279,6 +1280,7 @@ export async function handleCodexRequest(
         rawText,
       });
       const systemPrompt = buildSystemPrompt(systemPromptCtx);
+      console.log(`[Codex] SkillsInfo: ${JSON.stringify(ctx?.skillsInfo)}`);
       console.log(`[Codex] 📝 System prompt built (${systemPrompt.length} chars, bot=${botName}, model=${systemPromptCtx.modelInfo})`);
 
       let sysMsg = chatReq.messages.find((m: ChatMessage) => m.role === 'system');
@@ -1329,8 +1331,8 @@ export async function handleCodexRequest(
       // 核心思路：第一轮完全缓存 SSE，不转发给客户端
       // 解析出 tool_calls 后分类本地/远端，按类型分支处理
       const hasAnyTools = !!(chatReq.tools && chatReq.tools.length > 0);
-      const hasLocal = hasLocalTool(chatReq.tools);
-      const interceptRegistry = hasLocal ? getCurrentBot()?.toolRegistry : undefined;
+      const interceptRegistry = getCurrentBot()?.toolRegistry;
+      const hasLocal = hasLocalTool(chatReq.tools, interceptRegistry);
 
       const ac = new AbortController();
       const timeout = setTimeout(() => ac.abort(), 180_000);
@@ -1456,8 +1458,8 @@ async function handleParsedResponse(
 
   // 分类 tool_calls
   const allParsed = parseToolCalls(toolCalls);
-  const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
-  const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
+  const localCalls = allParsed.filter(tc => isLocalTool(tc.name, interceptRegistry));
+  const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name, interceptRegistry));
 
   console.log(`[Codex] 🔧 Phase 3 V2: ${localCalls.length} local, ${remoteCalls.length} remote tool_calls`);
 
@@ -1473,7 +1475,8 @@ async function handleParsedResponse(
     }
 
     // 执行本地工具
-    const localResults = await executeLocalTools(localCalls, interceptRegistry);
+    const hookRunner = getCurrentBot()?.hookRunner;
+    const localResults = await executeLocalTools(localCalls, interceptRegistry, hookRunner);
     console.log(`[Codex] ✅ Phase 3 V2: executed ${localResults.length} local tool(s)`);
 
     // 构造第二轮 messages
@@ -1596,8 +1599,8 @@ async function handleParsedResponseRecursive(
 
   // 分类并处理
   const allParsed = parseToolCalls(toolCalls);
-  const localCalls = allParsed.filter(tc => isLocalTool(tc.name));
-  const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name));
+  const localCalls = allParsed.filter(tc => isLocalTool(tc.name, interceptRegistry));
+  const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name, interceptRegistry));
 
   // 纯本地工具 → 继续执行
   if (localCalls.length > 0 && remoteCalls.length === 0) {
@@ -1608,7 +1611,8 @@ async function handleParsedResponseRecursive(
       return;
     }
 
-    const localResults = await executeLocalTools(localCalls, interceptRegistry);
+    const hookRunner = getCurrentBot()?.hookRunner;
+    const localResults = await executeLocalTools(localCalls, interceptRegistry, hookRunner);
     console.log(`[Codex] ✅ Phase 3 V2: round ${round} executed ${localResults.length} local tool(s)`);
 
     // 构造下一轮 messages

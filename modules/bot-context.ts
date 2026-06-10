@@ -4,6 +4,7 @@
 import type { IMCapabilities } from './types';
 import type { ModelAliases } from './proxy/anthropic-proxy';
 import type { ToolRegistry } from './agent/tool-registry';
+import type { HookRunner } from './core/hook-runner';
 
 export type { ModelAliases };
 
@@ -24,6 +25,8 @@ export interface BotContextData {
   notifyUser?: (msg: string) => Promise<void>;
   /** Tool registry for local tool execution */
   toolRegistry?: ToolRegistry;
+  /** Hook runner for before/after lifecycle hooks */
+  hookRunner?: HookRunner;
 }
 
 let _currentBot: BotContextData | null = null;

@@ -252,6 +252,8 @@ class Bot {
   botPrompts: PromptsManager;
   /** 心跳调度器（L1 新增） */
   heartbeatScheduler: HeartbeatScheduler | null = null;
+  /** 心跳调度器异步初始化 promise（工具发现完成前为 pending） */
+  private _heartbeatInitPromise: Promise<void> | null = null;
   /** 任务管理器（Phase 3） */
   taskManager: TaskManager | null = null;
   /** 健康检查（L2） */
@@ -827,7 +829,24 @@ class Bot {
     // P3: 初始化任务管理器
     this.taskManager = new TaskManager(heartbeatFilePath);
 
-    this.heartbeatScheduler = new HeartbeatScheduler(
+    // 异步初始化 HeartbeatScheduler（工具发现 + Goal Engine 等待）
+    this._heartbeatInitPromise = this._initHeartbeatAsync(
+      interval,
+      heartbeatFilePath,
+      hbConfig,
+    );
+  }
+
+  /**
+   * 异步初始化 HeartbeatScheduler。
+   * 等待工具发现完成后注入工具，再初始化 GoalEngine。
+   */
+  private async _initHeartbeatAsync(
+    interval: string,
+    heartbeatFilePath: string,
+    hbConfig: any,
+  ): Promise<void> {
+    this.heartbeatScheduler = await HeartbeatScheduler.create(
       {
         botName: this.name,
         botId: this.id,
@@ -839,6 +858,8 @@ class Bot {
         showOk: hbConfig?.visibility?.showOk ?? hbConfig?.showOk ?? false,
         showAlerts: hbConfig?.visibility?.showAlerts ?? hbConfig?.showAlerts ?? true,
         sendMessage: async (chatId: string, text: string) => this.reply(chatId, text),
+        systemSkills: this.systemSkills,
+        botSkills: this.botSkills,
       },
       this.runtime,
       this.adapter,
@@ -993,6 +1014,15 @@ class Bot {
 
   async reply(chatId: string, text: string) {
     const maxLen = this.config.system?.maxReplyLength || 140000;
+
+    // before_reply hook
+    if (this.heartbeatScheduler?.hookRunner) {
+      text = await this.heartbeatScheduler.hookRunner.runBeforeReply({
+        text,
+        chatId,
+      });
+    }
+
     await this.im.reply(chatId, text, maxLen);
     console.log(`[${this.name}] Reply chat=${chatId.slice(-8)} len=${Math.min(text.length, maxLen)}`);
   }
@@ -1322,6 +1352,7 @@ async function main() {
         promptsInfo: { prompts: [...bot.systemPrompts.list(), ...bot.botPrompts.list()].map(p => ({ name: p.name })) },
         notifyUser: (msg: string) => bot.im.reply(capturedChatId, msg),
         toolRegistry: bot.heartbeatScheduler?.getToolRegistry(),
+        hookRunner: bot.heartbeatScheduler?.hookRunner,
       });
       bot.handleMessage(chatId, text, userId, attachments).catch((e: Error) =>
         console.error(`[${bot.name}] handleMessage unhandled:`, e.message)
@@ -1329,7 +1360,11 @@ async function main() {
     });
     console.log(`   - ${bot.name}: ${bot.backend} ✅ (appId=${bot.appId.slice(-8)}…) [SDK]`);
 
-    // L1: 启动心跳调度器（如果已初始化）
+    // L1: 等待心跳调度器异步初始化完成（工具发现 + Goal Engine）
+    if (bot._heartbeatInitPromise) {
+      await bot._heartbeatInitPromise;
+    }
+    // 启动心跳调度器（如果已初始化）
     if (bot.heartbeatScheduler) {
       bot.heartbeatScheduler.start();
     }

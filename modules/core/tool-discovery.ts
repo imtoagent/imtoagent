@@ -6,6 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ToolDefinition } from '../agent/tool-registry';
 
+
+
 export interface DiscoveredTool {
   name: string;
   definition: ToolDefinition;
@@ -159,7 +161,7 @@ async function loadDirectoryFactory(
     }
 
     const tools: DiscoveredTool[] = [];
-    for (const file of fs.readdirSync(dirPath).filter(f => f.endsWith('.ts') && f !== 'index.ts')) {
+    for (const file of fs.readdirSync(dirPath).filter(f => f.endsWith('.ts') && f !== 'index.ts' && f !== 'EXAMPLE.ts')) {
       const fileMod = await import(`file://${path.join(dirPath, file)}`);
       const def = findToolDefinition(fileMod);
       if (def) {

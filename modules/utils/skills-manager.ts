@@ -4,6 +4,7 @@
 // Storage:
 //   System-level: ~/.imtoagent/skills/<name>/SKILL.md
 //   Bot-level:    ~/.imtoagent/bots/<botId>/skills/<name>/SKILL.md
+//   Built-in:     <npm-package>/skills/<name>/SKILL.md (fallback)
 // No metadata file — skills are discovered by scanning directories.
 // No sync to backend directories — skills are injected via system prompt.
 // ================================================================
@@ -31,6 +32,7 @@ export interface SkillInfo {
 export class SkillsManager {
   private skillsDir: string;
   private level: 'system' | 'bot';
+  private builtInSkillsDir: string | null = null;
 
   /**
    * @param botId - If provided, skills are stored at bot-level.
@@ -46,20 +48,42 @@ export class SkillsManager {
       this.skillsDir = path.join(base, 'skills');
     }
     fs.mkdirSync(this.skillsDir, { recursive: true });
+
+    // Built-in skills: <npm-package>/skills/
+    try {
+      const packageDir = path.resolve(__dirname, '..', '..');
+      const candidate = path.join(packageDir, 'skills');
+      if (fs.existsSync(candidate)) {
+        this.builtInSkillsDir = candidate;
+      }
+    } catch {}
   }
 
   // ================================================================
-  // List — scan directory for skills with SKILL.md
+  // List — scan runtime directory + built-in fallback
+  // ================================================================
+  // 运行时目录优先（用户安装的覆盖内置同名 skill），
+  // 内置目录作为 fallback（新安装时自动可用）。
   // ================================================================
 
   list(): SkillInfo[] {
-    if (!fs.existsSync(this.skillsDir)) return [];
+    const builtIn = this.scanDir(this.builtInSkillsDir, 'system');
+    const runtime = this.scanDir(this.skillsDir, this.level);
 
-    const entries = fs.readdirSync(this.skillsDir);
+    // 运行时覆盖内置（同名以 runtime 为准）
+    const runtimeNames = new Set(runtime.map(s => s.name));
+    return [...runtime, ...builtIn.filter(s => !runtimeNames.has(s.name))];
+  }
+
+  private scanDir(dir: string | null, level: 'system' | 'bot'): SkillInfo[] {
+    if (!dir || !fs.existsSync(dir)) return [];
+
+    const entries = fs.readdirSync(dir);
     const result: SkillInfo[] = [];
 
     for (const entry of entries) {
-      const skillDir = path.join(this.skillsDir, entry);
+      if (entry.startsWith('_')) continue;
+      const skillDir = path.join(dir, entry);
       if (!fs.statSync(skillDir).isDirectory()) continue;
 
       const skillMdPath = path.join(skillDir, 'SKILL.md');
@@ -69,7 +93,7 @@ export class SkillsManager {
       result.push({
         name: entry,
         description,
-        level: this.level,
+        level,
         path: skillDir,
       });
     }

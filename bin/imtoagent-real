@@ -106,6 +106,15 @@ switch (command) {
   case 'task':
     await cmdTask(...process.argv.slice(3));
     break;
+  case 'tool-info':
+    await cmdToolInfo(...process.argv.slice(3));
+    break;
+  case 'skill-info':
+    await cmdSkillInfo(...process.argv.slice(3));
+    break;
+  case 'hook-info':
+    await cmdHookInfo(...process.argv.slice(3));
+    break;
   case undefined: {
     const dataDir = getDataDir();
     const configPath = path.join(dataDir, 'config.json');
@@ -203,7 +212,8 @@ Usage:
   imtoagent task add name=X prompt=P          Create scheduled task
   imtoagent task remove name=X                Delete scheduled task
   imtoagent task update name=X 字段=值         Update task fields
-  imtoagent task help                         Show task command usage
+  imtoagent skill-info list                   Show installed skills and their required tools
+  imtoagent hook-info list                    Show registered hooks and mount points
 
 Data directory: ${getDataDir()}
 `);
@@ -1863,4 +1873,28 @@ async function cmdPrompts(...args: string[]) {
 async function cmdTask(...args: string[]) {
   const { cmdTask } = await import('../modules/cli/task-cli');
   await cmdTask(...args);
+}
+
+// ================================================================
+// tool-info — list discovered/registered tools
+// ================================================================
+async function cmdToolInfo(...args: string[]) {
+  const { cmdToolInfo } = await import('../modules/cli/tool-info');
+  await cmdToolInfo(...args);
+}
+
+// ================================================================
+// skill-info — list installed skills
+// ================================================================
+async function cmdSkillInfo(...args: string[]) {
+  const { cmdSkillInfo } = await import('../modules/cli/skill-info');
+  await cmdSkillInfo(...args);
+}
+
+// ================================================================
+// hook-info — list registered hooks
+// ================================================================
+async function cmdHookInfo(...args: string[]) {
+  const { cmdHookInfo } = await import('../modules/cli/hook-info');
+  await cmdHookInfo(...args);
 }
