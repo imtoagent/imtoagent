@@ -11,35 +11,50 @@ export interface DiscoveredHook {
   sourceFile: string;
 }
 
-export async function discoverHooks(): Promise<DiscoveredHook[]> {
-  const hooksDir = path.join(os.homedir(), '.imtoagent', 'hooks');
-  if (!fs.existsSync(hooksDir)) return [];
-
+export async function discoverHooks(builtinDir?: string): Promise<DiscoveredHook[]> {
   const discovered: DiscoveredHook[] = [];
-  const entries = fs.readdirSync(hooksDir, { withFileTypes: true }).filter(e => e.isFile() && e.name.endsWith('.ts') && e.name !== 'EXAMPLE.ts');
+  const userHooksDir = path.join(os.homedir(), '.imtoagent', 'hooks');
 
-  for (const entry of entries) {
-    if (!entry.name.endsWith('.ts')) continue;
-    if (entry.name.startsWith('_') || entry.name.includes('.test.')) continue;
+  // 先扫内置目录，再扫用户目录（用户覆盖内置同名钩子）
+  const scanDirs: string[] = [];
+  if (builtinDir && fs.existsSync(builtinDir)) {
+    scanDirs.push(builtinDir);
+  }
+  if (fs.existsSync(userHooksDir)) {
+    scanDirs.push(userHooksDir);
+  }
 
-    const entryPath = path.join(hooksDir, entry.name);
-    try {
-      const mod = await import(`file://${entryPath}`);
-      const hook = mod.default;
+  if (scanDirs.length === 0) {
+    console.log('[HookDiscovery] No hooks directories found');
+    return [];
+  }
 
-      if (hook && typeof hook.name === 'string' && typeof hook.when === 'string' && typeof hook.handler === 'function') {
-        discovered.push({
-          name: hook.name,
-          when: hook.when,
-          handler: hook.handler,
-          sourceFile: entryPath,
-        });
-        console.log(`[HookDiscovery] Registered: ${hook.name} (${hook.when})`);
-      } else {
-        console.warn(`[HookDiscovery] ⚠️ ${entry.name}: 导出格式不正确，需要 { name, when, handler }`);
+  for (const scanDir of scanDirs) {
+    const entries = fs.readdirSync(scanDir, { withFileTypes: true })
+      .filter(e => e.isFile() && e.name.endsWith('.ts') && e.name !== 'EXAMPLE.ts');
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('_') || entry.name.includes('.test.')) continue;
+
+      const entryPath = path.join(scanDir, entry.name);
+      try {
+        const mod = await import(`file://${entryPath}`);
+        const hook = mod.default;
+
+        if (hook && typeof hook.name === 'string' && typeof hook.when === 'string' && typeof hook.handler === 'function') {
+          discovered.push({
+            name: hook.name,
+            when: hook.when,
+            handler: hook.handler,
+            sourceFile: entryPath,
+          });
+          console.log(`[HookDiscovery] Registered: ${hook.name} (${hook.when})`);
+        } else {
+          console.warn(`[HookDiscovery] ⚠️ ${entry.name}: 导出格式不正确，需要 { name, when, handler }`);
+        }
+      } catch (err) {
+        console.error(`[HookDiscovery] ❌ ${entry.name}: ${(err as Error).message}`);
       }
-    } catch (err) {
-      console.error(`[HookDiscovery] ❌ ${entry.name}: ${(err as Error).message}`);
     }
   }
 
