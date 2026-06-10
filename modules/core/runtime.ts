@@ -85,7 +85,8 @@ export class AgentRuntime {
   private statsPersist: StatsPersist | null = null;
 
   // Per-chatId concurrency queue — prevents race conditions on session state
-  private queues = new Map<string, Promise<void>>();
+  // Uses Promise<unknown> to support both user messages and task execution
+  private queues = new Map<string, Promise<unknown>>();
 
   constructor(config: RuntimeConfig) {
     this.config = config;
@@ -123,22 +124,24 @@ export class AgentRuntime {
   }
 
   /**
-   * Enqueue a message handler for a given chatId.
-   * Ensures messages from the same chat are processed sequentially,
-   * preventing race conditions on session state.
+   * Enqueue a handler for a given chatId.
+   * Ensures all work for the same chat (user messages + heartbeat/cron tasks)
+   * is processed sequentially, preventing race conditions on session state.
+   *
+   * @internal 供 processMessage 使用
+   * @public 供 HeartbeatScheduler 入队心跳/定时任务
    */
-  private enqueue(chatId: string, fn: () => Promise<{ restart: boolean; reason?: string }>): Promise<{ restart: boolean; reason?: string }> {
+  enqueue<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.queues.get(chatId) || Promise.resolve();
-    let result: { restart: boolean; reason?: string } = { restart: false };
     const next = prev.then(
-      () => fn().then((r) => { result = r; }),
-      () => fn().then((r) => { result = r; }), // even if prev failed, run current
+      () => fn(),
+      () => fn(), // even if prev failed, run current
     );
     this.queues.set(chatId, next);
     next.finally(() => {
       if (this.queues.get(chatId) === next) this.queues.delete(chatId);
     });
-    return next.then(() => result);
+    return next;
   }
 
   /**
@@ -155,6 +158,19 @@ export class AgentRuntime {
     botName: string
   ): Promise<{ restart: boolean; reason?: string }> {
     return this.enqueue(ctx.chatId, () => this._processMessageInternal(ctx, adapter, botName));
+  }
+
+  /**
+   * 为心跳/定时任务提供队列入口。
+   * 与用户消息共享同一把 chatId 队列锁，保证串行执行。
+   *
+   * 用法：
+   *   await runtime.enqueueForTask(chatId, async () => {
+   *     return await this.agentLoop.execute(input);
+   *   });
+   */
+  async enqueueForTask<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
+    return this.enqueue(chatId, fn);
   }
 
   private async _processMessageInternal(

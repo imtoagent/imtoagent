@@ -32,6 +32,15 @@ export class ToolRegistry {
   private registry: Map<string, ToolDefinition> = new Map();
   private injected: Set<string> = new Set();
 
+  /**
+   * 工具别名映射表
+   * 模型可能用不同的名字调用已知工具，这里做别名 → 真实名映射
+   */
+  private aliases: Map<string, string> = new Map([
+    ['imtoagent_remove_goal', 'imtoagent_delete_goal'],
+    ['imtoagent_remove_task', 'imtoagent_delete_task'],
+  ]);
+
   // ================================================================
   // 注册/注销（全局）
   // ================================================================
@@ -154,17 +163,68 @@ export class ToolRegistry {
   // ================================================================
 
   /**
+   * 解析工具名：先精确匹配，再查别名表
+   * @returns 真实工具名，如果没找到返回 null
+   */
+  resolveToolName(name: string): string | null {
+    // 精确匹配
+    if (this.registry.has(name)) return name;
+    // 别名映射
+    const alias = this.aliases.get(name);
+    if (alias && this.registry.has(alias)) return alias;
+    return null;
+  }
+
+  /**
+   * 获取候选工具名（模糊匹配提示）
+   * 用于生成 "did you mean?" 错误信息
+   */
+  getCandidates(name: string, maxResults: number = 3): string[] {
+    const candidates: Array<{ score: number; name: string }> = [];
+    const allNames = Array.from(this.registry.keys());
+
+    for (const registered of allNames) {
+      if (registered === name) return [name];
+      let score = 0;
+      // 前缀匹配（权重高）
+      if (registered.startsWith(name.slice(0, 5))) score += 10;
+      // 后缀匹配
+      if (registered.endsWith(name.split('_').pop() || '')) score += 5;
+      // 共享关键词
+      const nameParts = new Set(name.split('_'));
+      const regParts = new Set(registered.split('_'));
+      for (const part of nameParts) {
+        if (regParts.has(part)) score += 3;
+      }
+      if (score > 0) candidates.push({ score, name: registered });
+    }
+
+    return candidates
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults)
+      .map(c => c.name);
+  }
+
+  /**
    * 执行已注入的工具
+   * 先用 resolveToolName 解析别名
    */
   async execute(name: string, params: Record<string, unknown>): Promise<unknown> {
-    const tool = this.registry.get(name);
-    if (!tool) {
-      throw new Error(`Tool "${name}" not found in registry`);
+    const resolved = this.resolveToolName(name);
+    if (!resolved) {
+      const candidates = this.getCandidates(name);
+      const hint = candidates.length > 0 ? ` Did you mean: ${candidates.join(', ')}?` : '';
+      throw new Error(`Tool "${name}" not found in registry.${hint}`);
     }
-    if (!this.injected.has(name)) {
-      throw new Error(`Tool "${name}" is not injected into current session`);
+    if (!this.injected.has(resolved)) {
+      const candidates = this.getCandidates(name);
+      const hint = candidates.length > 0 ? ` Did you mean: ${candidates.join(', ')}?` : '';
+      throw new Error(`Tool "${name}" is not injected into current session.${hint}`);
     }
-    return tool.handler(params);
+    if (resolved !== name) {
+      console.log(`[ToolRegistry] Alias resolved: "${name}" → "${resolved}"`);
+    }
+    return this.registry.get(resolved)!.handler(params);
   }
 
   /**

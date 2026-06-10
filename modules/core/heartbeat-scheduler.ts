@@ -420,7 +420,11 @@ export class HeartbeatScheduler {
     try {
       // 走 AgentLoop：adapter 带本地工具循环
       const input = this._buildAgentInput(ctx, session);
-      const output = await this.agentLoop.execute(input);
+      // 通过 runtime 共享队列入队，防止与用户消息竞争同一 chatId
+      const chatId = target.chatId;
+      const output = await this.runtime.enqueueForTask(chatId, async () => {
+        return this.agentLoop.execute(input);
+      });
       if (output.error) throw new Error(output.error);
       reply = output.text || '✅ Goal completed';
       this.sessionManager.persist(this.config.botId, session);
@@ -605,7 +609,12 @@ export class HeartbeatScheduler {
     console.log(`[Cron] Running task: ${task.name} prompt=${task.prompt.slice(0, 80)} timeout=${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`);
     // 走 AgentLoop：adapter 带本地工具循环
     const taskInput = this._buildAgentInput(ctx, taskSession);
-    const result = await Promise.race([this.agentLoop.execute(taskInput), timeoutPromise]);
+    // 通过 runtime 共享队列入队，防止与用户消息竞争同一 chatId
+    const chatId = target.chatId;
+    const result = await this.runtime.enqueueForTask(chatId, async () => {
+      const raceResult = await Promise.race([this.agentLoop.execute(taskInput), timeoutPromise]);
+      return raceResult;
+    });
     settled = true; // prevent late timeout callback from firing
     this.sessionManager.persist(this.config.botId, taskSession);
 

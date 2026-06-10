@@ -1,0 +1,18 @@
+# Build artifacts
+*.bak
+*.backup
+*.broken
+*.restored
+*.safe
+
+# Runtime data (never package user privacy)
+data/goals.json
+data/cache/
+data/db/
+data/index/
+
+# Dev-only files
+dev.sh
+proxy-only.ts
+scripts/postinstall.ts
+bot-ids.json
