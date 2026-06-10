@@ -85,9 +85,20 @@ export function createGoalTools(
           },
         });
         const result = goalStore.add(goal);
-        return result.success
-          ? { success: true, goalId: goal.id, nextRunAt, message: `Goal created: ${goal.id}, next run: ${nextRunAt || "N/A"}` }
-          : { success: false, message: result.message };
+        if (result.status === 'created') {
+          return {
+            success: true,
+            goalId: goal.id,
+            nextRunAt,
+            message: `Goal created: ${goal.id}, next run: ${nextRunAt || "N/A"}`
+          };
+        }
+        // duplicate 也是成功（数据已存在）
+        return {
+          success: true,
+          goalId: result.existingId,
+          message: `Duplicate goal, using existing: ${result.existingId}`
+        };
       } catch (e: unknown) {
         return { success: false, message: `Failed: ${(e as Error).message}` };
       }
