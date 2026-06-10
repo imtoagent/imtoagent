@@ -80,3 +80,56 @@ try {
 } catch (e) {
   // Silently fail — skill install is best-effort
 }
+
+// ================================================================
+// Copy Example Templates to ~/.imtoagent/ (first install only)
+// ================================================================
+
+try {
+  const PKG_DIR = path.join(__dirname, "..");
+
+  function copyRecursive(src, dest) {
+    const stat = fs.statSync(src);
+    if (stat.isDirectory()) {
+      if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+      for (const entry of fs.readdirSync(src)) {
+        copyRecursive(path.join(src, entry), path.join(dest, entry));
+      }
+    } else {
+      fs.copyFileSync(src, dest);
+    }
+  }
+
+  // tools/EXAMPLE.ts → ~/.imtoagent/tools/EXAMPLE.ts
+  const toolTemplate = path.join(PKG_DIR, "tools", "EXAMPLE.ts");
+  if (fs.existsSync(toolTemplate)) {
+    const destDir = path.join(DATA_DIR, "tools");
+    const dest = path.join(destDir, "EXAMPLE.ts");
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(destDir, { recursive: true });
+      copyRecursive(toolTemplate, dest);
+    }
+  }
+
+  // skills/_TEMPLATE/ → ~/.imtoagent/skills/EXAMPLE/
+  const skillTemplateDir = path.join(PKG_DIR, "skills", "_TEMPLATE");
+  if (fs.existsSync(skillTemplateDir)) {
+    const destDir = path.join(DATA_DIR, "skills", "EXAMPLE");
+    if (!fs.existsSync(destDir)) {
+      copyRecursive(skillTemplateDir, destDir);
+    }
+  }
+
+  // hooks/EXAMPLE.ts → ~/.imtoagent/hooks/EXAMPLE.ts
+  const hookTemplate = path.join(PKG_DIR, "hooks", "EXAMPLE.ts");
+  if (fs.existsSync(hookTemplate)) {
+    const destDir = path.join(DATA_DIR, "hooks");
+    const dest = path.join(destDir, "EXAMPLE.ts");
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(destDir, { recursive: true });
+      copyRecursive(hookTemplate, dest);
+    }
+  }
+} catch (e) {
+  // Silently fail — template copy is best-effort
+}
