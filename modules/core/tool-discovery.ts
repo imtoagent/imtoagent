@@ -45,7 +45,7 @@ export async function discoverTools(
 
       // 跳过非 .ts 和辅助文件
       if (!entry.name.endsWith('.ts')) continue;
-      if (entry.name.startsWith('_') || entry.name.includes('.test.')) continue;
+      if (entry.name.startsWith('_') || entry.name.includes('.test.') || entry.name === 'EXAMPLE.ts') continue;
 
       try {
         const mod = await import(`file://${entryPath}`);
