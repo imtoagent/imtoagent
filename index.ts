@@ -1004,6 +1004,13 @@ class Bot {
 
     } catch (e: any) {
       console.error(`[${this.name}] handleMessage error: ${e.message}`);
+      if (this.heartbeatScheduler?.hookRunner) {
+        await this.heartbeatScheduler.hookRunner.runOnError({
+          error: e.message,
+          stack: e.stack,
+          chatId,
+        }).catch(() => {});
+      }
       await this.reply(chatId, `❌ ${e.message}`);
     } finally {
       clearTimeout(timeoutTimer);
@@ -1354,9 +1361,16 @@ async function main() {
         toolRegistry: bot.heartbeatScheduler?.getToolRegistry(),
         hookRunner: bot.heartbeatScheduler?.hookRunner,
       });
-      bot.handleMessage(chatId, text, userId, attachments).catch((e: Error) =>
-        console.error(`[${bot.name}] handleMessage unhandled:`, e.message)
-      );
+      bot.handleMessage(chatId, text, userId, attachments).catch(async (e: Error) => {
+        console.error(`[${bot.name}] handleMessage unhandled:`, e.message);
+        if (bot.heartbeatScheduler?.hookRunner) {
+          await bot.heartbeatScheduler.hookRunner.runOnError({
+            error: e.message,
+            stack: e.stack,
+            chatId,
+          }).catch(() => {});
+        }
+      });
     });
     console.log(`   - ${bot.name}: ${bot.backend} ✅ (appId=${bot.appId.slice(-8)}…) [SDK]`);
 

@@ -168,8 +168,6 @@ export class HeartbeatScheduler {
     const builtinHooksDir = path.join(__dirname, '..', 'hooks');
     const hooks = await discoverHooks(builtinHooksDir);
     scheduler.hookRunner.register(hooks);
-
-    // 工具就绪后初始化 Goal Engine
     scheduler._initGoalEngine();
 
     return scheduler;
