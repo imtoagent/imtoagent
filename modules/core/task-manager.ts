@@ -70,6 +70,9 @@ export class TaskManager {
     if (type === 'scheduled' && !task.at) {
       return { success: false, error: `scheduled 类型需要 at 字段` };
     }
+    if (type === 'cron' && !task.cron) {
+      return { success: false, error: `cron 类型需要 cron 字段` };
+    }
     if (!task.prompt) {
       return { success: false, error: `任务 "${task.name}" 缺少 prompt` };
     }
@@ -131,13 +134,15 @@ export class TaskManager {
         continue;
       }
 
-      // 正在删除目标任务，跳过所有缩进行
+      // 正在删除目标任务，跳过所有属于该任务的行
       if (inTargetTask) {
-        if (line === '' || (!line.startsWith('  ') && !line.startsWith('\t'))) {
+        // 终止条件：新任务名、新 ## 标题、或 tasks: 块结束
+        if (/^##\s/.test(trimmed) || trimmed.match(/^-\s+name:\s/)) {
           inTargetTask = false;
           result.push(line);
           continue;
         }
+        // 跳过所有其他行（包括无缩进的多行续行）
         continue;
       }
 
@@ -205,8 +210,8 @@ export class TaskManager {
 
       // 正在处理目标任务，替换对应的行
       if (inTargetTask) {
-        // 遇到非缩进行，目标任务结束
-        if (line === '' || (!line.startsWith('  ') && !line.startsWith('\t'))) {
+        // 终止条件：新任务名、新 ## 标题
+        if (/^##\s/.test(trimmed) || trimmed.match(/^-\s+name:\s/)) {
           inTargetTask = false;
           result.push(line);
           continue;
@@ -217,16 +222,17 @@ export class TaskManager {
         const fieldMap: Array<[string, (line: string) => string | null]> = [
           ['type', l => { const m = l.trim().match(/^type:\s*(.+)/); return m && updates.type ? `  type: ${updates.type}` : null; }],
           ['interval', l => { const m = l.trim().match(/^interval:\s*(.+)/); return m && updates.interval ? `  interval: ${updates.interval}` : null; }],
-          ['prompt', l => { const m = l.trim().match(/^prompt:\s*["']?(.+?)["']?\s*$/); return m && updates.prompt ? `  prompt: '${updates.prompt}'` : null; }],
+          ['prompt', l => { const m = l.trim().match(/^prompt:\s*["']?(.+?)["']?\s*$/); return m && updates.prompt ? `  prompt: '${this.indentContinuation(updates.prompt.replace(/'/g, "\\'"))}'` : null; }],
           ['at', l => { const m = l.trim().match(/^at:\s*(.+)/); return m && updates.at ? `  at: '${updates.at}'` : null; }],
           ['after', l => { const m = l.trim().match(/^after:\s*(.+)/); return m && updates.after ? `  after: '${updates.after}'` : null; }],
           ['on', l => { const m = l.trim().match(/^on:\s*(.+)/); return m && updates.on ? `  on: '${updates.on}'` : null; }],
           ['max_runs', l => { const m = l.trim().match(/^max_runs:\s*(.+)/); return m && updates.max_runs !== undefined ? `  max_runs: ${updates.max_runs}` : null; }],
           ['deadline', l => { const m = l.trim().match(/^deadline:\s*(.+)/); return m && updates.deadline ? `  deadline: '${updates.deadline}'` : null; }],
+          ['cron', l => { const m = l.trim().match(/^cron:\s*["']?(.+?)["']?\s*$/); return m && updates.cron ? `  cron: '${updates.cron}'` : null; }],
           ['on_failure', l => { const m = l.trim().match(/^on_failure:\s*(.+)/); return m && updates.on_failure ? `  on_failure: ${updates.on_failure}` : null; }],
           ['max_retries', l => { const m = l.trim().match(/^max_retries:\s*(.+)/); return m && updates.max_retries !== undefined ? `  max_retries: ${updates.max_retries}` : null; }],
           ['timeout', l => { const m = l.trim().match(/^timeout:\s*(.+)/); return m && updates.timeout ? `  timeout: ${updates.timeout}` : null; }],
-          ['condition', l => { const m = l.trim().match(/^condition:\s*(.+)/); return m && updates.condition ? `  condition: '${updates.condition}'` : null; }],
+          ['condition', l => { const m = l.trim().match(/^condition:\s*(.+)/); return m && updates.condition ? `  condition: '${this.indentContinuation(updates.condition.replace(/'/g, "\\'"))}'` : null; }],
           ['bot', l => { const m = l.trim().match(/^bot:\s*(.+)/); return m && updates.bot ? `  bot: ${updates.bot}` : null; }],
           ['on_complete', l => { const m = l.trim().match(/^on_complete:\s*(.+)/); return m && updates.on_complete ? `  on_complete: ${updates.on_complete}` : null; }],
           ['auto_stop', l => { const m = l.trim().match(/^auto_stop:\s*(.+)/); return m && updates.auto_stop ? `  auto_stop: ${updates.auto_stop}` : null; }],
@@ -276,6 +282,11 @@ export class TaskManager {
     fs.renameSync(tmpPath, this.heartbeatFilePath);
   }
 
+  /** 多行字符串续行统一加 2 空格缩进，保证 parseHeartbeatTasks 能正确识别任务边界 */
+  private indentContinuation(value: string): string {
+    return value.replace(/\n/g, '\n  ');
+  }
+
   private taskToYaml(task: ScheduledTask): string {
     const lines: string[] = [`- name: ${task.name}`];
 
@@ -283,16 +294,17 @@ export class TaskManager {
     if (type !== 'interval') lines.push(`  type: ${type}`);
 
     if (task.interval) lines.push(`  interval: ${task.interval}`);
-    if (task.prompt) lines.push(`  prompt: '${task.prompt.replace(/'/g, "\\'")}'`);
+    if (task.prompt) lines.push(`  prompt: '${this.indentContinuation(task.prompt.replace(/'/g, "\\'"))}'`);
     if (task.at) lines.push(`  at: '${task.at}'`);
     if (task.after) lines.push(`  after: '${task.after}'`);
     if (task.on) lines.push(`  on: '${task.on}'`);
     if (task.max_runs !== undefined) lines.push(`  max_runs: ${task.max_runs}`);
     if (task.deadline) lines.push(`  deadline: '${task.deadline}'`);
+    if (task.cron) lines.push(`  cron: '${task.cron}'`);
     if (task.on_failure) lines.push(`  on_failure: ${task.on_failure}`);
     if (task.max_retries !== undefined) lines.push(`  max_retries: ${task.max_retries}`);
     if (task.timeout) lines.push(`  timeout: ${task.timeout}`);
-    if (task.condition) lines.push(`  condition: '${task.condition.replace(/'/g, "\\'")}'`);
+    if (task.condition) lines.push(`  condition: '${this.indentContinuation(task.condition.replace(/'/g, "\\'"))}'`);
     if (task.bot) lines.push(`  bot: ${task.bot}`);
     if (task.on_complete) lines.push(`  on_complete: ${task.on_complete}`);
     if (task.auto_stop) lines.push(`  auto_stop: ${task.auto_stop}`);

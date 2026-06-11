@@ -16,15 +16,16 @@ export function createTaskTools(taskManager: TaskManager): ToolDefinition[] {
   // ================================================================
   const createTaskTool: ToolDefinition = {
     name: "imtoagent_create_task",
-    description: "Create a small scheduled task in HEARTBEAT.md. Supports interval, once, scheduled, countdown types.",
+    description: "Create a scheduled task in HEARTBEAT.md. For simple, deterministic scheduling: reminders, periodic reports, monitoring checks. Not for complex conditional goals.",
     parameters: {
       type: "object",
       properties: {
         name: { type: "string", description: "Unique task name" },
-        type: { type: "string", description: "Task type: interval, once, scheduled, countdown" },
+        type: { type: "string", description: "Task type: interval, once, scheduled, countdown, cron" },
         interval: { type: "string", description: "Interval format: 5m, 1h, 30s (for interval/countdown types)" },
-        at: { type: "string", description: "Scheduled time: HH:MM or ISO (for once/scheduled types)" },
+        at: { type: "string", description: "Scheduled time: HH:MM or YYYY-MM-DD HH:MM (for once/scheduled types)" },
         after: { type: "string", description: "Delay before execution: 10m, 1h (for once type)" },
+        cron: { type: "string", description: "Cron expression: 分 时 日 月 星期, e.g. '0 9 * * 1' (Monday 9AM)" },
         prompt: { type: "string", description: "Task prompt/instruction for the Agent" },
         maxRuns: { type: "number", description: "Max runs for countdown type" },
         onFailure: { type: "string", description: "On failure strategy: ignore, alert, retry" },
@@ -38,6 +39,7 @@ export function createTaskTools(taskManager: TaskManager): ToolDefinition[] {
         interval: params.interval as string,
         at: params.at as string,
         after: params.after as string,
+        cron: params.cron as string,
         prompt: params.prompt as string,
         max_runs: params.maxRuns as number,
         on_failure: (params.onFailure as "ignore" | "alert" | "retry") || "alert",
@@ -90,7 +92,7 @@ export function createTaskTools(taskManager: TaskManager): ToolDefinition[] {
   // ================================================================
   const updateTaskTool: ToolDefinition = {
     name: "imtoagent_update_task",
-    description: "Update a small task's interval, prompt, or other properties.",
+    description: "Update a task's interval, cron, prompt, or other properties.",
     parameters: {
       type: "object",
       properties: {
@@ -107,6 +109,7 @@ export function createTaskTools(taskManager: TaskManager): ToolDefinition[] {
       if (params.interval) updates.interval = params.interval as string;
       if (params.prompt) updates.prompt = params.prompt as string;
       if (params.at) updates.at = params.at as string;
+      if (params.cron) updates.cron = params.cron as string;
       if (params.onFailure) updates.on_failure = params.onFailure as "ignore" | "alert" | "retry";
       const result = taskManager.updateTask(params.name as string, updates);
       return result.success

@@ -68,6 +68,8 @@ export interface PromptBuilderContext {
   caps?: IMCapabilities | null;
   /** Bot 名称，用于加载 Soul */
   botKey: string;
+  /** Bot ID (workspace directory name), used to resolve HEARTBEAT.md path */
+  botId?: string;
   /** Agent 特有的额外系统提示（如工具使用指南、工作目录约束等） */
   agentInstructions?: string;
   /** Optional: Available MCP servers summary */
@@ -167,12 +169,16 @@ You can use the \`imtoagent\` CLI to introspect your own runtime:
 These commands let you answer user questions like "what model am I using?" or "show me recent activity" without guessing.`);
 
   // 3.5. Scheduled Tasks
+  const botId = (ctx as Record<string, unknown>).botId as string | undefined;
+  const heartbeatPath = botId ? `~/.imtoagent/workspaces/${botId}/HEARTBEAT.md` : `~/.imtoagent/workspaces/<botId>/HEARTBEAT.md`;
   sections.push(`# Scheduled Tasks
 
 - Scheduled tasks are managed by the **TaskPoller** — an independent scheduler that detects due tasks and invokes the Agent (LLM) to execute them.
 - The **HeartbeatScheduler** schedules Goal/Task reminders (does not directly invoke the LLM).
+- Your heartbeat/task file: \`${heartbeatPath}\`
 - Use the \`imtoagent task\` CLI to manage: \`imtoagent task list\` / \`imtoagent task add name=X type=interval interval=5m prompt='...'\` / \`imtoagent task remove name=X\` / \`imtoagent task update name=X 字段=值\`
 - Run \`imtoagent task help\` for full usage.
+- Do NOT edit HEARTBEAT.md directly; always use the CLI.
 
 For operational procedures (startup, restart, upgrade, troubleshooting), refer to the operations manual at:
 \`~/.imtoagent/ops.md\`.`);
@@ -271,8 +277,10 @@ export function buildPromptContext(
   const currentBot = getCurrentBot();
   const modelInfo = currentBot?.activeModel || _getActiveModel();
   const workingDir = opts.workingDir || _extractCwdFromRawText(opts.rawText);
+  const botId = (base as any).botId || currentBot?.botId;
   return {
     ...base,
+    botId,
     modelInfo,
     runtimeContext: {
       currentTime: _formatShanghaiTime(),

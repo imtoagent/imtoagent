@@ -1273,6 +1273,7 @@ export async function handleCodexRequest(
       const systemPromptCtx = buildPromptContext({
         caps: ctx?.caps || null,
         botName,
+        botId: ctx?.botId,
         mcpInfo: ctx?.mcpInfo,
         skillsInfo: ctx?.skillsInfo,
         promptsInfo: ctx?.promptsInfo,

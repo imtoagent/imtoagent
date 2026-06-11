@@ -2,6 +2,7 @@
 // Agent 产出文本 → 网关解析为结构化块 → IM 原生渲染
 
 import type { IMCapabilities } from './types';
+import MarkdownIt from 'markdown-it';
 
 export type UnifiedBlock =
   | { type: 'text'; content: string }
@@ -104,10 +105,135 @@ export function buildCapabilityPrompt(caps: IMCapabilities): string {
 // 输出解析：Agent 文本 → UnifiedBlock[]
 // ================================================================
 
+type RangeMatch = { index: number; end: number; block: UnifiedBlock };
+
+/**
+ * 从 markdown-it inline token 提取纯文本内容
+ */
+function extractInlineText(token: { children?: Array<{ content?: string }> }): string {
+  if (!token.children) return '';
+  return token.children.map(c => c.content || '').join('');
+}
+
+/**
+ * 使用 markdown-it AST 解析文本中的表格
+ * 返回表格匹配的位置和结构化数据（headers 和 rows 均保留空单元格）
+ */
+function extractTablesAST(text: string, enabled: boolean): RangeMatch[] {
+  if (!enabled) return [];
+
+  const md = new MarkdownIt();
+  const tokens = md.parse(text, {});
+
+  const matches: RangeMatch[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    if (tok.type === 'table_open') {
+      // 找到对应的 table_close
+      let j = i + 1;
+      while (j < tokens.length && tokens[j].type !== 'table_close') j++;
+      if (j >= tokens.length) { i++; continue; }
+
+      // 解析表格结构
+      const headers: string[] = [];
+      const rows: string[][] = [];
+
+      let k = i + 1;
+      while (k < j) {
+        const inner = tokens[k];
+        if (inner.type === 'tr_open') {
+          // 找到 tr_close
+          let trEnd = k + 1;
+          while (trEnd < j && tokens[trEnd].type !== 'tr_close') trEnd++;
+
+          // 提取 tr 内的所有单元格内容（th 或 td）
+          const cells: string[] = [];
+          let cell = k + 1;
+          while (cell < trEnd) {
+            const cellTok = tokens[cell];
+            if (cellTok.type === 'th_open' || cellTok.type === 'td_open') {
+              // 找到 cell_close
+              let cellEnd = cell + 1;
+              const closeType = cellTok.type.replace('_open', '_close');
+              while (cellEnd < trEnd && tokens[cellEnd].type !== closeType) cellEnd++;
+              // inline token 在 open/close 之间
+              const inlineTok = tokens.slice(cell + 1, cellEnd).find((t: { type: string }) => t.type === 'inline');
+              cells.push(inlineTok ? extractInlineText(inlineTok) : '');
+              cell = cellEnd + 1;
+            } else {
+              cell++;
+            }
+          }
+
+          // 第一行是 header，后续是 data rows
+          if (headers.length === 0) {
+            headers.push(...cells);
+          } else {
+            rows.push(cells);
+          }
+
+          k = trEnd + 1;
+        } else {
+          k++;
+        }
+      }
+
+      if (headers.length > 0 && rows.length > 0) {
+        // 对齐所有行的列数
+        const colCount = headers.length;
+        const paddedRows = rows.map(r => {
+          if (r.length < colCount) {
+            const padded = [...r];
+            while (padded.length < colCount) padded.push('');
+            return padded;
+          }
+          return r.slice(0, colCount);
+        });
+
+        // 估算表格在原文中的起止位置
+        const firstInline = tokens.slice(i + 1, j).find((t: { type: string }) => t.type === 'inline');
+        let startIdx = 0;
+        if (firstInline?.map?.[0] !== undefined) {
+          startIdx = firstInline.map[0];
+        } else if (headers.length > 0) {
+          const headerText = headers[0];
+          const found = text.indexOf(headerText);
+          startIdx = found >= 0 ? found : 0;
+        }
+        const endSearch = Math.min(startIdx + 3000, text.length);
+        const searchArea = text.slice(startIdx, endSearch);
+        // 查找最后一个 data row 的内容来定位结束位置
+        const lastRow = rows[rows.length - 1] || [];
+        const lastCellText = lastRow.find(c => c) || '';
+        let endOffset = endSearch;
+        if (lastCellText) {
+          const lastIdx = text.lastIndexOf(lastCellText, endSearch);
+          if (lastIdx > startIdx) endOffset = lastIdx + lastCellText.length;
+        }
+
+        matches.push({
+          index: startIdx,
+          end: Math.min(endOffset, text.length),
+          block: { type: 'table', headers, rows: paddedRows },
+        });
+      }
+
+      i = j + 1;
+    } else {
+      i++;
+    }
+  }
+  return matches;
+}
+
 export function parseToBlocks(text: string, caps: IMCapabilities): UnifiedBlock[] {
   const blocks: UnifiedBlock[] = [];
 
-  // 构建所有匹配模式
+  // Step 1: 使用 markdown-it AST 解析表格（优先，不丢失空单元格）
+  const tableMatches: RangeMatch[] = extractTablesAST(text, caps.cardMessage);
+
+  // Step 2: 构建正则匹配模式（按钮、图片、文件、代码块、分割线等）
   type MatchDef = { regex: RegExp; make: (m: RegExpExecArray) => UnifiedBlock };
   const patterns: MatchDef[] = [];
   if (caps.codeBlock) {
@@ -151,39 +277,10 @@ export function parseToBlocks(text: string, caps: IMCapabilities): UnifiedBlock[
     });
   }
 
-  // 表格：仅在有 cardMessage 能力时解析
-  // 匹配 markdown 表格：表头行 | 分隔行 | 数据行...
-  const tableRegex = caps.cardMessage
-    ? /(?:^[^\n]*\n)?\|[^|\n]+\|[^|\n]*\|\n\|[-: |]+\|\n(?:\|[^|\n]+\|[^|\n]*\|\n?)+/gm
-    : null;
-
-  // 第一遍：收集表格匹配位置（标记为"占位"，避免被其他正则误匹配）
-  type TableMatch = { index: number; end: number; block: UnifiedBlock };
-  const tableMatches: TableMatch[] = [];
-  const tableMasked = text; // 保存原文本用于表格内容提取
-  if (tableRegex) {
-    tableRegex.lastIndex = 0;
-    let tm: RegExpExecArray | null;
-    while ((tm = tableRegex.exec(text)) !== null) {
-      const lines = tm[0].split('\n').filter(l => l.startsWith('|'));
-      if (lines.length < 3) continue; // 至少需要 header + separator + 1 row
-      const headerCells = lines[0].split('|').map(c => c.trim()).filter(Boolean);
-      const rows = lines.slice(2).map(l =>
-        l.split('|').map(c => c.trim()).filter(Boolean)
-      );
-      if (headerCells.length === 0 || rows.length === 0) continue;
-      tableMatches.push({
-        index: tm.index,
-        end: tm.index + tm[0].length,
-        block: { type: 'table', headers: headerCells, rows },
-      });
-    }
-  }
-
   if (patterns.length === 0 && tableMatches.length === 0) return [{ type: 'text', content: text }];
 
-  // 收集所有匹配，按位置排序
-  const hits: { index: number; end: number; block: UnifiedBlock }[] = [];
+  // Step 3: 收集所有匹配，按位置排序
+  const hits: RangeMatch[] = [];
   for (const p of patterns) {
     p.regex.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -194,14 +291,14 @@ export function parseToBlocks(text: string, caps: IMCapabilities): UnifiedBlock[
   hits.push(...tableMatches);
   hits.sort((a, b) => a.index - b.index);
 
-  // 去重（重叠匹配只保留第一个，表格优先因为可能更长）
-  const deduped: typeof hits = [];
+  // 去重（重叠匹配只保留第一个）
+  const deduped: RangeMatch[] = [];
   for (const h of hits) {
     if (deduped.length > 0 && h.index < deduped[deduped.length - 1].end) continue;
     deduped.push(h);
   }
 
-  // 按位置切分
+  // Step 4: 按位置切分文本
   let lastIndex = 0;
   for (const h of deduped) {
     const before = text.slice(lastIndex, h.index).trim();

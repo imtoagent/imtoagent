@@ -120,7 +120,7 @@ export interface TaskRunState {
 }
 
 /** 任务类型 */
-export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional' | 'stopwatch';
+export type TaskType = 'interval' | 'once' | 'scheduled' | 'countdown' | 'conditional' | 'stopwatch' | 'cron';
 
 /** 失败策略 */
 export type OnFailureStrategy = 'ignore' | 'alert' | 'retry';
@@ -135,6 +135,8 @@ export interface ScheduledTask {
   at?: string;                      // once: "YYYY-MM-DD HH:MM", scheduled: "HH:MM"
   after?: string;                   // once 专用：相对延迟
   on?: string;                      // scheduled 专用："monday" / "1st"
+  // cron
+  cron?: string;                    // cron 表达式：分 时 日 月 星期
   // countdown
   max_runs?: number;
   deadline?: string;                // "YYYY-MM-DD HH:MM"

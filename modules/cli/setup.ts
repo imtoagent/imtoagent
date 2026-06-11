@@ -725,8 +725,7 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   // ===== Step 7: Generate soul files =====
   console.log('\n📌 Step 7: Generate soul files\n');
 
-  // Compute workspace soul dirs based on configured workspace mode
-  const home = process.env.HOME || process.env.USERPROFILE?.replace(/\\/g, '/') || '';
+  // Compute workspace soul dirs based on configured workspace mode (home already declared above)
 
   for (const bot of bots) {
     let botSoulDir: string;

@@ -354,6 +354,46 @@ export function parseTimeToday(timeStr: string): number {
   return parseTimeTodayShanghai(timeStr);
 }
 
+// ================================================================
+// Cron 表达式完整解析（支持 5 字段 + */N + 范围 + 逗号列表）
+// ================================================================
+
+/**
+ * 匹配单个 cron 字段值。
+ * 支持: * (通配) / 精确值 / 1,3,5 (列表) / 1-5 (范围) / 每N步长 / 范围+步长
+ */
+function matchCronField(field: string, value: number): boolean {
+  if (field === '*') return true;
+
+  // 步长: */N 或 A-B/N
+  if (field.includes('/')) {
+    const [range, stepStr] = field.split('/');
+    const step = parseInt(stepStr, 10);
+    if (isNaN(step) || step <= 0) return false;
+    if (range === '*') return value % step === 0;
+    const rm = range.match(/^(\d+)-(\d+)$/);
+    if (!rm) return false;
+    const start = parseInt(rm[1], 10), end = parseInt(rm[2], 10);
+    return value >= start && value <= end && (value - start) % step === 0;
+  }
+
+  // 逗号列表
+  if (field.includes(',')) {
+    return field.split(',').map(s => parseInt(s.trim(), 10)).includes(value);
+  }
+
+  // 范围: A-B
+  const rm = field.match(/^(\d+)-(\d+)$/);
+  if (rm) {
+    const start = parseInt(rm[1], 10), end = parseInt(rm[2], 10);
+    return value >= start && value <= end;
+  }
+
+  // 精确值
+  const num = parseInt(field, 10);
+  return !isNaN(num) && value === num;
+}
+
 export interface TaskDueResult {
   due: boolean;
   reason?: string;
@@ -517,37 +557,31 @@ export function isTaskDue(
     }
 
     case 'cron': {
-      // P2-7: cron 表达式支持（简化版：只支持 "分 时 * * *" 格式）
+      // 完整 cron 表达式：分 时 日 月 星期
       if (!task.cron) return { due: false, reason: 'missing cron expression' };
       const parts = task.cron.trim().split(/\s+/);
       if (parts.length !== 5) return { due: false, reason: 'invalid cron format (need 5 fields)' };
 
-      const [minuteStr, hourStr] = parts;
-      const minute = parseInt(minuteStr, 10);
-      const hour = parseInt(hourStr, 10);
+      const [minF, hourF, domF, monthF, dowF] = parts;
+      const sh = getShanghaiDateParts(now);
 
-      if (isNaN(minute) || isNaN(hour)) return { due: false, reason: 'invalid cron minute/hour' };
+      if (!matchCronField(minF, sh.minute))
+        return { due: false, reason: `cron minute not matched (current: ${sh.minute}, field: ${minF})` };
+      if (!matchCronField(hourF, sh.hour))
+        return { due: false, reason: `cron hour not matched (current: ${sh.hour}, field: ${hourF})` };
+      if (!matchCronField(domF, sh.day))
+        return { due: false, reason: `cron day-of-month not matched (current: ${sh.day}, field: ${domF})` };
+      if (!matchCronField(monthF, sh.month))
+        return { due: false, reason: `cron month not matched (current: ${sh.month}, field: ${monthF})` };
+      if (!matchCronField(dowF, sh.weekday))
+        return { due: false, reason: `cron day-of-week not matched (current: ${sh.weekday}, field: ${dowF})` };
 
-      const shParts = getShanghaiDateParts(now);
-      const currentMinute = shParts.minute;
-      const currentHour = shParts.hour;
-
-      // 检查是否匹配当前时间（精确到分钟）
-      const matchesTime = (minute === -1 || minute === currentHour) && (hour === -1 || hour === currentHour);
-      if (!matchesTime) {
-        return { due: false, reason: `cron time not matched (current: ${currentHour}:${currentMinute}, need: ${hour}:${minute})` };
-      }
-
-      // 检查是否本周期已执行（上海时间同一天同一小时已执行）
+      // 检查是否本周期已执行（同一分钟）
       if (lastRunAt !== undefined) {
-        const lastParts = getShanghaiDateParts(lastRunAt);
-        if (
-          lastParts.year === shParts.year &&
-          lastParts.month === shParts.month &&
-          lastParts.day === shParts.day &&
-          lastParts.hour === shParts.hour
-        ) {
-          return { due: false, reason: 'already executed this hour' };
+        const lp = getShanghaiDateParts(lastRunAt);
+        if (lp.year === sh.year && lp.month === sh.month && lp.day === sh.day
+          && lp.hour === sh.hour && lp.minute === sh.minute) {
+          return { due: false, reason: 'already executed this minute' };
         }
       }
 
@@ -648,16 +682,16 @@ export function removeTaskFromHeartbeatFile(filePath: string, taskName: string):
         continue;
       }
 
-      // 正在删除目标任务，跳过所有缩进行
+      // 正在删除目标任务，跳过所有属于该任务的行
       if (inTargetTask) {
-        // 下一行没有缩进或遇到新任务名 → 目标任务结束
-        if (line === '' || (!line.startsWith('  ') && !line.startsWith('\t'))) {
+        // 终止条件：新任务名、新 ## 标题、或 tasks: 块结束
+        if (/^##\s/.test(trimmed) || trimmed.match(/^-\s+name:\s/)) {
           inTargetTask = false;
-          // 保留空行/非缩进行
+          // 保留新任务/新标题行
           result.push(line);
           continue;
         }
-        // 跳过缩进子行
+        // 跳过所有其他行（包括无缩进的多行续行）
         continue;
       }
 

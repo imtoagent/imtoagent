@@ -1351,6 +1351,7 @@ async function main() {
       const capturedChatId = chatId;
       setCurrentBot({
         botName: bot.name,
+        botId: bot.id,
         caps: bot.im.getCapabilities(),
         activeModel: bot.activeModel,
         modelAliases: bot.modelAliases,

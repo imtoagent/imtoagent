@@ -244,8 +244,9 @@ export class FeishuIMModule implements IMModule {
         }
 
         case 'table': {
-          const mdTable = this.renderMarkdownTable(block.headers, block.rows, block.caption);
-          paragraphs.push([{ tag: 'md', text: mdTable }]);
+          // Post 路径默认使用 bullets 模式，比原生 markdown 表格在飞书帖子中更可靠
+          const tableMd = this.renderTableAsBullets(block.headers, block.rows, block.caption);
+          paragraphs.push([{ tag: 'md', text: tableMd }]);
           break;
         }
 
@@ -454,7 +455,7 @@ ${b.code}
           case 'text': return b.content;
           case 'card': return `**${b.title}**
 ${b.content || ''}`;
-          case 'table': return this.renderMarkdownTable(b.headers, b.rows, b.caption);
+          case 'table': return this.renderTableAsBullets(b.headers, b.rows, b.caption);
           case 'divider': return '---';
           default: return '';
         }
@@ -840,6 +841,76 @@ ${b.content || ''}`;
   // 代码块内容：保护内部的三反引号不被解析器截断
   private escapeCodeBlock(code: string): string {
     return code.replace(/```/g, '\\`\\`\\`');
+  }
+
+  // ================================================================
+  // 表格渲染策略：两种模式用于 Post 路径
+  // ================================================================
+
+  /**
+   * Bullets 模式（Post 路径默认）：每行数据转为 bullet 列表
+   * 格式：**首列值**
+   * • 列名: 值
+   * • 列名: 值
+   */
+  private renderTableAsBullets(headers: string[], rows: string[][], caption?: string): string {
+    const lines: string[] = [];
+    if (caption) lines.push(`**${this.escapeCardMarkdown(caption)}**\n`);
+
+    for (const row of rows) {
+      // 首列作为 bullet 标题
+      const firstCol = row[0] || '(empty)';
+      lines.push(`**${this.escapeCardMarkdown(firstCol)}**`);
+
+      // 后续列作为 bullet 子项
+      for (let i = 1; i < headers.length; i++) {
+        const value = i < row.length ? row[i] : '';
+        lines.push(`• ${this.escapeCardMarkdown(headers[i])}: ${this.escapeCardMarkdown(value)}`);
+      }
+      lines.push(''); // 空行分隔每行
+    }
+    return lines.join('\n').trimEnd();
+  }
+
+  /**
+   * Code 模式（可选）：计算每列最大宽度，生成对齐的文本表格
+   * 适合列数少、内容较短的表格
+   */
+  private renderTableAsCode(headers: string[], rows: string[][], caption?: string): string {
+    const lines: string[] = [];
+    if (caption) lines.push(`**${this.escapeCardMarkdown(caption)}**\n`);
+
+    // 计算每列最大宽度
+    const colWidths = headers.map((h, i) => {
+      let max = h.length;
+      for (const row of rows) {
+        const cell = i < row.length ? row[i] : '';
+        if (cell.length > max) max = cell.length;
+      }
+      return Math.min(max, 40); // 最大 40 字符
+    });
+
+    // 表头行
+    const headerLine = headers.map((h, i) => this.padRight(this.escapeCardMarkdown(h), colWidths[i])).join(' | ');
+    lines.push(`\`${headerLine}\``);
+
+    // 分隔线
+    const sepLine = colWidths.map(w => '-'.repeat(w)).join('-|-');
+    lines.push(`\`${sepLine}\``);
+
+    // 数据行
+    for (const row of rows) {
+      const cells = headers.map((_, i) => {
+        const val = i < row.length ? row[i] : '';
+        return this.padRight(this.escapeCardMarkdown(val), colWidths[i]);
+      });
+      lines.push(`\`${cells.join(' | ')}\``);
+    }
+    return lines.join('\n');
+  }
+
+  private padRight(str: string, len: number): string {
+    return str + ' '.repeat(Math.max(0, len - str.length));
   }
 
   // 渲染飞书原生卡片 table 元素（解决 markdown 表格列宽过小问题）

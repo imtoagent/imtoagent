@@ -19,13 +19,13 @@ export function createGoalTools(
 
   const createGoalTool: ToolDefinition = {
     name: "imtoagent_create_goal",
-    description: "Create a scheduled task or goal. Supports reminders, periodic reports, monitoring alerts.",
+    description: "Create a conditional goal for intelligent orchestration. Use when Agent needs to make decisions, check conditions, or chain tools — not for simple time-based reminders (use create_task instead).",
     parameters: {
       type: "object",
       properties: {
         type: { type: "string", description: "Goal type: reminder, periodic_report, monitor_alert, one_shot" },
         rawInput: { type: "string", description: "User original input for logging" },
-        triggerType: { type: "string", description: "Trigger type: time, cron, interval" },
+        triggerType: { type: "string", description: "Trigger type: time (daily at X), cron (custom expression), interval (every N seconds), event" },
         triggerTime: { type: "string", description: "Time for time trigger, e.g. 09:00" },
         triggerCron: { type: "string", description: "Cron expression, e.g. 0 9 * * *" },
         triggerInterval: { type: "number", description: "Interval seconds" },

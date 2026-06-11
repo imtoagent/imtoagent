@@ -10,6 +10,8 @@ export type { ModelAliases };
 
 export interface BotContextData {
   botName: string;
+  /** Bot ID (used in workspace directory path: ~/.imtoagent/workspaces/<botId>/) */
+  botId?: string;
   caps: IMCapabilities | null;
   /** 当前 Bot 正在使用的模型（如 "deepseek/deepseek-v4-flash"） */
   activeModel?: string;
