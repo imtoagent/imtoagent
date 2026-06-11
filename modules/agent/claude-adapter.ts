@@ -11,6 +11,7 @@ import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/typ
 import { buildAttachmentHint } from '../core/types';
 import type { ParsedToolCall, AgentToolSupport } from './agent-loop';
 import type { ToolRegistry } from './tool-registry';
+import { injectContextMemory } from '../core/rotation';
 
 
 // ================================================================

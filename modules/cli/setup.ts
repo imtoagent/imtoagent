@@ -711,15 +711,9 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     const val = await promptText('Default model', existingDefault);
     defaultModel = val === null ? existingDefault : (val || existingDefault);
   } else {
+    // No providers configured — prompt user to enter manually
     const val = await promptText('Default model (provider/model)');
-    // 🔧 从已选 provider 中取第一个模型作为默认提示
-    const presets = loadProviderPresets();
-    const selectedPreset = presets.find(p => p.name === selectedName);
-    const fallbackModel = selectedPreset && selectedPreset.models.length > 0
-      ? selectedPreset.name.split(' ')[0].toLowerCase() + '/' + (typeof selectedPreset.models[0] === 'string' ? selectedPreset.models[0] : selectedPreset.models[0].id)
-      : '';
-    const val2 = await promptText('Default model (provider/model)', fallbackModel);
-    defaultModel = val2 === null ? fallbackModel : (val2 || fallbackModel);
+    defaultModel = val === null ? '' : val.trim();
   }
 
   // ===== Step 7: Generate soul files =====
@@ -796,6 +790,9 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
       reportedModel: 'gpt-5.5',
       model: defaultModel.split('/')[1] || 'default-model',
       upstream: (providers[defaultModel.split('/')[0]]?.baseUrl || 'https://api.deepseek.com/v1') + '/chat/completions',
+    },
+    claude: existingConfig?.claude || {
+      reportedModel: 'claude-sonnet-4-20250514',
     },
     opencode: existingConfig?.opencode || {
       serverUrl: 'http://localhost:4096',

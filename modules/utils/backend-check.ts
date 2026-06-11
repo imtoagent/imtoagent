@@ -317,7 +317,7 @@ export async function upgradeBackend(
  * 流式输出安装进度，支持 Ctrl+C 中断
  */
 export async function installBackend(
-  type: 'claude' | 'codex' | 'opencode',
+  type: 'claude' | 'codex' | 'opencode' | 'gemini',
 ): Promise<boolean> {
   const b = BACKEND_DEFS.find((x) => x.type === type);
   if (!b) {
