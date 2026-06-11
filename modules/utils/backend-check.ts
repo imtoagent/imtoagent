@@ -106,10 +106,14 @@ export function getNpmGlobalBin(): string | null {
  */
 function findBackendBinary(type: string): { binaryPath: string; version: string } | null {
   const versionCmd: Record<string, string> = {
-    claude: 'claude --version',
     codex: 'codex --version',
     opencode: 'opencode version',
   };
+
+  // Claude SDK: 不走 CLI 命令，检查 SDK 是否已安装 + 平台二进制是否存在
+  if (type === 'claude') {
+    return findClaudeSdk();
+  }
 
   // 1) PATH 中的命令（最常见）
   try {
@@ -144,6 +148,48 @@ function findBackendBinary(type: string): { binaryPath: string; version: string 
   }
 
   return null;
+}
+
+/**
+ * 检查 Claude Agent SDK 是否已安装
+ * SDK 不走 CLI 命令，走 JS API。验证条件：
+ * 1. npm global 下有 @anthropic-ai/claude-agent-sdk
+ * 2. 平台特定的原生二进制存在（darwin-arm64 或 darwin-x64）
+ */
+function findClaudeSdk(): { binaryPath: string; version: string } | null {
+  const npmPrefix = getNpmGlobalBin();
+  if (!npmPrefix) return null;
+  // npm global bin = <prefix>/bin, so node_modules = <prefix>/lib/node_modules
+  const nodeModules = path.resolve(npmPrefix, '..', 'lib', 'node_modules');
+  const sdkPkgJson = path.join(nodeModules, '@anthropic-ai', 'claude-agent-sdk', 'package.json');
+  if (!fs.existsSync(sdkPkgJson)) return null;
+
+  let version = 'unknown';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(sdkPkgJson, 'utf-8'));
+    version = pkg.version || 'unknown';
+  } catch {}
+
+  // 检查平台特定原生二进制
+  const platform = process.platform;
+  const arch = process.arch;
+  const platformPkgs = [
+    `claude-agent-sdk-${platform}-${arch}`,
+    // fallback for arm
+    `claude-agent-sdk-${platform}-arm64`,
+    `claude-agent-sdk-${platform}-x64`,
+  ];
+
+  for (const pkgName of platformPkgs) {
+    const binaryPath = path.join(nodeModules, '@anthropic-ai', pkgName, 'claude');
+    if (fs.existsSync(binaryPath)) {
+      return { binaryPath, version };
+    }
+  }
+
+  // SDK installed but no platform binary — still counts as installed (SDK may resolve dynamically)
+  const sdkDir = path.join(nodeModules, '@anthropic-ai', 'claude-agent-sdk');
+  return { binaryPath: sdkDir, version };
 }
 
 function checkOne(b: Omit<BackendInfo, 'installed' | 'version' | 'installSource' | 'binaryPath' | 'upgradeCommand'>): BackendInfo {
@@ -367,38 +413,8 @@ export async function installBackend(
       return false;
     }
 
-    // 安装完成后验证 — 按优先级依次检查
-    // 1) npm global bin
-    if (npmBinDir) {
-      const binPath = path.join(npmBinDir, b.type);
-      try {
-        if (fs.existsSync(binPath)) {
-          const version = execSync(`"${binPath}" --version`, { encoding: 'utf-8', timeout: 5000 }).trim();
-          console.log(`\n✅ ${b.label} installed successfully! Version: ${version}`);
-          return true;
-        }
-      } catch {}
-    }
-
-    // 2) OpenCode custom install path
-    if (type === 'opencode') {
-      const opencodeBinDir = path.join(os.homedir(), '.opencode', 'bin');
-      const opencodePath = path.join(opencodeBinDir, 'opencode');
-      if (fs.existsSync(opencodePath)) {
-        try {
-          const version = execSync(`"${opencodePath}" version`, { encoding: 'utf-8', timeout: 5000 }).trim();
-          // 自动配置 PATH（如果 shell 配置文件存在且未包含该行）
-          const shellConfig = getShellConfigFile();
-          if (shellConfig) {
-            ensurePathInConfig(shellConfig, opencodeBinDir);
-          }
-          console.log(`\n✅ ${b.label} installed successfully! Version: ${version}`);
-          return true;
-        } catch {}
-      }
-    }
-
-    // 3) via PATH
+    // 安装完成后验证
+    // Claude SDK 不走 CLI 命令，复用 checkOne（内部会走 findClaudeSdk）
     const info = checkOne(b);
     if (info.installed) {
       console.log(`\n✅ ${b.label} installed successfully! Version: ${info.version}`);
@@ -407,10 +423,8 @@ export async function installBackend(
       console.error(`\n❌ ${b.label} not detected after installation`);
       if (npmBinDir) {
         console.error(`   npm global bin: ${npmBinDir}`);
-        console.error(`   Consider adding it to PATH, or run manually: ${b.installHint}`);
-      } else {
-        console.error(`   Run manually: ${b.installHint}`);
       }
+      console.error(`   Run manually: ${b.installHint}`);
       return false;
     }
   } catch (e: unknown) {
