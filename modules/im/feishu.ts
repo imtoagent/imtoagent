@@ -10,7 +10,7 @@ import type { FeishuMessageEvent, FeishuCardMessage, FeishuPostParagraph, Feishu
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDataDir } from '../utils/paths';
-import { logEvent } from '../utils/logger';
+import { logEvent, logger } from '../utils/logger';
 import { FeishuInboundAdapter, MediaStore, InboundMediaResolver, InboundMediaAdapter } from '../media';
 
 export interface FeishuConfig {
@@ -139,7 +139,7 @@ export class FeishuIMModule implements IMModule {
       });
       logEvent({ event: 'im_message_sent', adapter: 'feishu', chatId, textLength: safe.length });
     } catch (e: unknown) {
-      console.error(`[Feishu] Reply failed: ${e.message}`);
+      logger.error('im/feishu', 'Reply failed', { chatId, error: e.message });
       logEvent({ event: 'im_send_error', adapter: 'feishu', chatId, error: (e as Error).message });
     }
   }
@@ -151,7 +151,7 @@ export class FeishuIMModule implements IMModule {
         data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) },
       });
     } catch (e: unknown) {
-      console.error(`[Feishu] Progress notification failed: ${e.message}`);
+      logger.error('im/feishu', 'Progress notification failed', { chatId, error: e.message });
     }
   }
 
@@ -231,7 +231,7 @@ export class FeishuIMModule implements IMModule {
                 paragraphs.push([{ tag: 'img', image_key: imageKey }]);
               }
             } catch (e: unknown) {
-              console.error(`[Feishu] Image upload in post failed: ${e.message}`);
+              logger.error('im/feishu', 'Image upload in post failed', { error: e.message });
             }
           }
           break;
@@ -287,7 +287,7 @@ export class FeishuIMModule implements IMModule {
         content: JSON.stringify(payload),
       },
     });
-    console.log(`[Feishu] Post message sent (${blocks.length} blocks → ${paragraphs.length} paragraphs${title ? ', with title' : ''})`);
+    logger.debug('im/feishu', 'Post message sent', { blocks: blocks.length, paragraphs: paragraphs.length, hasTitle: !!title });
   }
 
   // ================================================================
@@ -310,13 +310,13 @@ export class FeishuIMModule implements IMModule {
           }
           if (fileKey) await this.sendFile(chatId, fileKey, fb.filename);
         } catch (e: unknown) {
-          console.error(`[Feishu] File send failed: ${fb.filename} - ${(e as Error).message}`);
+          logger.error('im/feishu', 'File send failed', { filename: fb.filename, error: (e as Error).message });
         }
       }
       try {
         await this.sendAsPost(chatId, nonFileBlocks);
       } catch (e: unknown) {
-        console.error(`[Feishu] Post send failed: ${(e as Error).message}, falling back to interactive`);
+        logger.error('im/feishu', 'Post send failed, falling back to interactive', { error: (e as Error).message });
         await this._sendCard(chatId, blocks);
       }
       return;
@@ -344,10 +344,10 @@ export class FeishuIMModule implements IMModule {
         }
         if (fileKey) {
           await this.sendFile(chatId, fileKey, fb.filename);
-          console.log(`[Feishu] File sent: ${fb.filename}`);
+          logger.debug('im/feishu', 'File sent', { filename: fb.filename });
         }
       } catch (e: unknown) {
-        console.error(`[Feishu] File send failed: ${fb.filename} - ${e.message}`);
+        logger.error('im/feishu', 'File send failed', { filename: fb.filename, error: e.message });
       }
     }
 
@@ -391,7 +391,7 @@ ${this.escapeCodeBlock(block.code)}
                 cardElements.push({ tag: 'img', img_key: imageKey, alt: { tag: 'plain_text', content: block.alt || '' } });
               }
             } catch (e: unknown) {
-              console.error(`[Feishu] Image upload failed: ${e.message}`);
+              logger.error('im/feishu', 'Image upload failed', { error: e.message });
               cardElements.push({ tag: 'markdown', content: `⚠️ Image load failed` });
             }
           }
@@ -442,9 +442,9 @@ ${this.escapeCardMarkdown(block.content || '')}`,
           content: JSON.stringify(card),
         },
       });
-      console.log(`[Feishu] Card message sent (${cardBlocks.length} blocks)`);
+      logger.debug('im/feishu', 'Card message sent', { blocks: cardBlocks.length });
     } catch (e: unknown) {
-      console.error(`[Feishu] Card send failed: ${e.message}`);
+      logger.error('im/feishu', 'Card send failed', { error: e.message });
       // 降级：拼接为纯文本发送
       const fallback = cardBlocks.map(b => {
         switch (b.type) {
@@ -479,7 +479,7 @@ ${b.content || ''}`;
         },
       });
     } catch (e: unknown) {
-      console.error(`[Feishu] Image send failed: ${e.message}`);
+      logger.error('im/feishu', 'Image send failed', { error: e.message });
     }
   }
 
@@ -494,7 +494,7 @@ ${b.content || ''}`;
         const filePath = url.replace('file://', '');
         const stat = require('fs').statSync(filePath);
         if (stat.size > this.maxFileSize) {
-          console.error(`[Feishu] File too large: ${filePath} (${stat.size} bytes, max ${this.maxFileSize})`);
+          logger.warn('im/feishu', 'File too large', { filePath, size: stat.size, max: this.maxFileSize });
           return null;
         }
         buffer = require('fs').readFileSync(filePath);
@@ -514,10 +514,10 @@ ${b.content || ''}`;
       });
       const key = r?.image_key || r?.data?.image_key;
       if (key) return key;
-      console.error(`[Feishu] Image upload failed: image_key missing`);
+      logger.error('im/feishu', 'Image upload failed: image_key missing');
       return null;
     } catch (e: unknown) {
-      console.error(`[Feishu] Image upload error: ${e.message}`);
+      logger.error('im/feishu', 'Image upload error', { error: e.message });
       return null;
     }
   }
@@ -527,7 +527,7 @@ ${b.content || ''}`;
     try {
       const stat = fs.statSync(filePath);
       if (stat.size > this.maxFileSize) {
-        console.error(`[Feishu] File too large: ${filePath} (${stat.size} bytes, max ${this.maxFileSize})`);
+        logger.warn('im/feishu', 'File too large', { filePath, size: stat.size, max: this.maxFileSize });
         return null;
       }
       const buffer = fs.readFileSync(filePath);
@@ -537,10 +537,10 @@ ${b.content || ''}`;
       });
       const key = r?.image_key || r?.data?.image_key;
       if (key) return key;
-      console.error(`[Feishu] Image upload failed: image_key missing`);
+      logger.error('im/feishu', 'Image upload failed: image_key missing');
       return null;
     } catch (e: unknown) {
-      console.error(`[Feishu] Image upload failed: ${e.message}`);
+      logger.error('im/feishu', 'Image upload failed', { error: e.message });
       return null;
     }
   }
@@ -556,7 +556,7 @@ ${b.content || ''}`;
       if (!buffer) return null;
       return this.uploadFileFromBuffer(buffer, filename || path.basename(new URL(url).pathname) || 'file');
     } catch (e: unknown) {
-      console.error(`[Feishu] File upload error: ${e.message}`);
+      logger.error('im/feishu', 'File upload error', { error: e.message });
       return null;
     }
   }
@@ -566,13 +566,13 @@ ${b.content || ''}`;
     try {
       const stat = fs.statSync(filePath);
       if (stat.size > this.maxFileSize) {
-        console.error(`[Feishu] File too large: ${filePath} (${stat.size} bytes, max ${this.maxFileSize})`);
+        logger.warn('im/feishu', 'File too large', { filePath, size: stat.size, max: this.maxFileSize });
         return null;
       }
       const buffer = fs.readFileSync(filePath);
       return this.uploadFileFromBuffer(buffer, path.basename(filePath));
     } catch (e: unknown) {
-      console.error(`[Feishu] File upload failed: ${e.message}`);
+      logger.error('im/feishu', 'File upload failed', { error: e.message });
       return null;
     }
   }
@@ -595,10 +595,10 @@ ${b.content || ''}`;
       if (data.code === 0 && data.data?.file_key) {
         return data.data.file_key;
       }
-      console.error(`[Feishu] File upload failed: ${data.code} ${data.msg}`);
+      logger.error('im/feishu', 'File upload failed', { code: data.code, msg: data.msg });
       return null;
     } catch (e: unknown) {
-      console.error(`[Feishu] File upload error: ${e.message}`);
+      logger.error('im/feishu', 'File upload error', { error: e.message });
       return null;
     }
   }
@@ -615,7 +615,7 @@ ${b.content || ''}`;
         },
       });
     } catch (e: unknown) {
-      console.error(`[Feishu] File send failed: ${e.message}`);
+      logger.error('im/feishu', 'File send failed', { error: e.message });
     }
   }
 
@@ -650,7 +650,7 @@ ${b.content || ''}`;
     this.running = false;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     try { this.wsClient?.stop?.(); } catch {}
-    console.log(`[Feishu] WS stopped (appId=${this.appId.slice(-8)})`);
+    logger.info('im/feishu', 'WS stopped', { appId: this.appId.slice(-8) });
   }
 
   private _connect() {
@@ -744,7 +744,7 @@ ${b.content || ''}`;
               break;
 
             default:
-              console.log(`[Feishu] Unhandled message type: ${msgType}`);
+              logger.debug('im/feishu', 'Unhandled message type', { msgType });
               return;
           }
 
@@ -763,7 +763,7 @@ ${b.content || ''}`;
           });
           await this.messageHandler!(chatId, text, userId, attachments.length > 0 ? attachments : undefined);
         } catch (e: unknown) {
-          console.error(`[Feishu] Message processing error: ${e.message}`);
+          logger.error('im/feishu', 'Message processing error', { error: e.message });
           // Don't throw to prevent SDK dispatcher unhandled rejection from crashing the process
         }
       },
@@ -777,7 +777,7 @@ ${b.content || ''}`;
         const msg = args.join(' ');
         // 过滤已知的 SDK 内部 WS 重连噪音（不影响功能，SDK 自带自动重连）
         if (msg.includes('[ws]') && (msg.includes('ECONNREFUSED') || msg.includes('connect failed') || msg.includes('system busy') || msg.includes('repeat connection'))) return;
-        console.error(`[Feishu-SDK] ${msg}`);
+        logger.error('im/feishu', 'SDK logger error', { msg });
       },
       debug: (..._args: unknown[]) => { /* silent debug */ },
     };
@@ -792,25 +792,25 @@ ${b.content || ''}`;
     this.wsClient.start({ eventDispatcher: dispatcher })
       .then(() => {
         this.reconnectAttempts = 0;
-        console.log(`[Feishu] WS connected`);
+        logger.info('im/feishu', 'WS connected');
       })
       .catch((e: unknown) => {
-        console.error(`[Feishu] WS connection failed: ${e.message}`);
+        logger.error('im/feishu', 'WS connection failed', { error: e.message });
         this._scheduleReconnect();
       });
 
     this.wsClient.on?.('close', () => {
-      console.log('[Feishu] WS disconnected');
+      logger.debug('im/feishu', 'WS disconnected');
       this._scheduleReconnect();
     });
     this.wsClient.on?.('reconnect', () => {
       // SDK internally reconnected — reset backoff counter
       this.reconnectAttempts = 0;
-      console.log('[Feishu] WS reconnected');
+      logger.info('im/feishu', 'WS reconnected');
     });
     this.wsClient.on?.('error', (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[Feishu] WS error: ${msg}`);
+      logger.error('im/feishu', 'WS error', { msg });
     });
   }
 
@@ -820,7 +820,7 @@ ${b.content || ''}`;
 
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
     this.reconnectAttempts++;
-    console.log(`[Feishu] Reconnecting in ${delay/1000}s (attempt ${this.reconnectAttempts})`);
+    logger.info('im/feishu', 'Reconnecting', { delay: `${delay / 1000}s`, attempt: this.reconnectAttempts });
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -973,13 +973,13 @@ ${b.content || ''}`;
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
       if (!resp.ok) {
-        console.error(`[Feishu] Download failed: HTTP ${resp.status}, url=${url.slice(0, 80)}`);
+        logger.error('im/feishu', 'Download failed', { status: resp.status, url: url.slice(0, 80) });
         return null;
       }
       const buf = await resp.arrayBuffer();
       return Buffer.from(buf);
     } catch (e) {
-      console.error(`[Feishu] Download error: ${(e as Error).message}, url=${url.slice(0, 80)}`);
+      logger.error('im/feishu', 'Download error', { error: (e as Error).message, url: url.slice(0, 80) });
       return null;
     }
   }

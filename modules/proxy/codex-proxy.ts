@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import { getDataDir, getBotConfigPath } from '../utils/paths';
 import { resolveModel, buildCodexResolveContext, type ResolvedModel } from '../core/model-resolver';
 import { logUsage } from './usage-logger';
+import { logger } from '../utils/logger';
 import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
 import { hasLocalTool, isLocalTool, parseToolCalls, executeLocalTools, generateRemotePlaceholders, buildToolMessages, type ToolExecutionResult } from './tool-interceptor';
@@ -41,7 +42,7 @@ function notifyUserError(status: number) {
   const last = errorCooldowns.get(key) || 0;
   if (now - last < ERROR_COOLDOWN_MS) return; // still in cooldown
   errorCooldowns.set(key, now);
-  bot.notifyUser(msg).catch(e => console.error(`[Codex] notifyUser failed: ${e.message}`));
+  bot.notifyUser(msg).catch(e => logger.error('proxy/codex-proxy', 'notifyUser failed', { error: e.message }));
 }
 
 // ================================================================
@@ -108,7 +109,7 @@ function getCodexContextManager(): ContextManager {
         : {}),
     });
     _codexContextManagerProvider = currentProvider;
-    console.log(`[ContextManager] Initialized (provider=${currentProvider}, baseUrl=${providerBaseUrl ? 'configured' : 'none'}, apiKey=${apiKey ? 'yes' : 'no'})`);
+    logger.debug('proxy/codex-proxy', 'ContextManager initialized', { provider: currentProvider, baseUrl: providerBaseUrl ? 'configured' : 'none', apiKey: apiKey ? 'yes' : 'no' });
   }
 
   return _codexContextManager;
@@ -116,7 +117,7 @@ function getCodexContextManager(): ContextManager {
 
 export function initCodexProxyConfig(cfg: CodexProxyConfig) {
   _codexConfig = cfg;
-  console.log(`[Codex Proxy] Config loaded: model=${cfg.model}, upstream=${cfg.upstream}`);
+  logger.info('proxy/codex-proxy', 'Config loaded', { model: cfg.model, upstream: cfg.upstream });
 }
 
 /**
@@ -128,7 +129,7 @@ export function updateCodexConfig(modelSpec: string) {
     const parts = modelSpec.split('/');
     const modelName = parts[parts.length - 1] || modelSpec;
     _codexConfig.model = modelName;
-    console.log(`[Codex Proxy] Model hot-switched to: ${modelName}`);
+    logger.info('proxy/codex-proxy', 'Model hot-switched', { model: modelName });
   }
 }
 
@@ -204,7 +205,7 @@ function getConfig(): CodexProxyConfig {
 
     resolved = resolveModel('default', ctx);
   } catch (e: unknown) {
-    console.error(`[Codex Proxy] Model resolver failed: ${(e as Error).message}`);
+    logger.error('proxy/codex-proxy', 'Model resolver failed', { error: (e as Error).message });
     // fallback 到旧版 _codexConfig
     if (!_codexConfig) _codexConfig = _buildConfig();
     return _codexConfig!;
@@ -236,7 +237,7 @@ function getConfig(): CodexProxyConfig {
       supportedInputTypes: resolveSupportedInputTypes(providers, resolved.model),
     };
   } catch (e: unknown) {
-    console.error(`[Codex Proxy] Failed to build Bot-level config: ${(e as Error).message}`);
+    logger.error('proxy/codex-proxy', 'Failed to build Bot-level config', { error: (e as Error).message });
     if (!_codexConfig) _codexConfig = _buildConfig();
     return _codexConfig!;
   }
@@ -317,7 +318,7 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
   // 工具转换
   if (body.tools?.length) {
     const allNames = body.tools.map((t) => (t as OpenAITool).function?.name || (t as { name?: string }).name || '').filter((n) => n && n.length > 0).join(', ');
-    console.log(`[Codex] tools: ${allNames}`);
+    logger.debug('proxy/codex-proxy', 'tools', { tools: allNames });
     chat.tools = body.tools
       .map((t) => {
         if ((t as OpenAITool).function) return t as OpenAITool;
@@ -341,11 +342,11 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
       const nonSystem = input.filter((m) => m.role !== 'system' && m.role !== 'developer');
       const kept = nonSystem.slice(-(MAX_INPUT_ITEMS - systemItems.length));
       input = [...systemItems, ...kept];
-      console.log(`[Codex] ⚠️ Truncated input: ${input.length + truncated} → ${input.length} items (discarded oldest ${truncated})`);
+      logger.warn('proxy/codex-proxy', 'Truncated input', { before: input.length + truncated, after: input.length, discarded: truncated });
     }
     const types = input.map((m) => m.type || ('msg:' + m.role)).join(',');
-    console.log(`[Codex] input types: [${types}]`);
-    console.log(`[Codex] input items: ${input.length}`);
+    logger.debug('proxy/codex-proxy', 'input types', { types });
+    logger.debug('proxy/codex-proxy', 'input items', { count: input.length });
   }
   let pendingReasoning = '';
   let i = 0;
@@ -391,7 +392,7 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
     // Unsupported standalone types — degrade to text
     if (msg.type === 'input_image') {
       const mime = msg.media_type || msg.mime_type || 'image/png';
-      console.log(`[Codex] ⚠️ Degrading standalone input_image to text hint (mime=${mime})`);
+      logger.debug('proxy/codex-proxy', 'Degrading standalone input_image to text hint', { mime });
       const reasonText = `[Image received (${mime}), current model does not support image input]`;
       const role: string = msg.role === 'developer' ? 'system' : (msg.role || 'user');
       const last = chat.messages[chat.messages.length - 1];
@@ -407,7 +408,7 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
       const name = msg.filename || msg.file_name || 'unknown file';
       const textContent = msg.text || msg.content || '';
       const fileText = textContent || `[File received: ${name}, current model does not support file input]`;
-      console.log(`[Codex] ⚠️ Degrading standalone input_file to text hint (${name})`);
+      logger.debug('proxy/codex-proxy', 'Degrading standalone input_file to text hint', { name });
       const role: string = msg.role === 'developer' ? 'system' : (msg.role || 'user');
       const last = chat.messages[chat.messages.length - 1];
       if (last && last.role === role && role === 'user') {
@@ -489,11 +490,13 @@ function responsesToChat(body: OpenAIRequestBody): { model: string; messages: Ch
   // Validate tool_call/tool pairing before returning
   chat.messages = validateToolPairing(chat.messages);
   // DEBUG: log converted messages
-  console.log(`[Codex] converted ${chat.messages.length} messages:`);
-  chat.messages.forEach((m: ChatMessage, idx: number) => {
-    const tcs = m.tool_calls?.map(tc => tc.id.slice(0,16)).join(',') || '';
-    const tci = m.tool_call_id?.slice(0,16) || '';
-    console.log(`[Codex]   [${idx}] ${m.role}${tcs ? ' tool_calls=['+tcs+']' : ''}${tci ? ' tool_call_id='+tci : ''}`);
+  logger.debug('proxy/codex-proxy', 'converted messages', {
+    count: chat.messages.length,
+    details: chat.messages.map((m: ChatMessage, idx: number) => {
+      const tcs = m.tool_calls?.map(tc => tc.id.slice(0,16)).join(',') || '';
+      const tci = m.tool_call_id?.slice(0,16) || '';
+      return `[${idx}] ${m.role}${tcs ? ' tool_calls=['+tcs+']' : ''}${tci ? ' tool_call_id='+tci : ''}`;
+    })
   });
   return chat;
 }
@@ -517,7 +520,7 @@ function cleanOrphanTools(messages: ChatMessage[]): ChatMessage[] {
   const filtered = messages.filter(m => {
     if (m.role !== 'tool') return true;
     if (allToolCallIds.has(m.tool_call_id || '')) return true;
-    console.warn(`[Codex] 🗑️ Discarded orphan tool message: call_id=${(m.tool_call_id || '').slice(0,16)}`);
+    logger.warn('proxy/codex-proxy', 'Discarded orphan tool message', { call_id: (m.tool_call_id || '').slice(0,16) });
     return false;
   });
   return filtered.length === messages.length ? messages : filtered;
@@ -549,11 +552,12 @@ function validateToolPairing(messages: ChatMessage[]): ChatMessage[] {
       const unmatchedTools = collectedTools.filter(t => !expectedIds.has(t.tool_call_id || ''));
 
       if (unmatchedCalls.length > 0 || unmatchedTools.length > 0) {
-        console.warn(`[Codex] ⚠️ Tool pairing mismatch:`);
-        console.warn(`[Codex]   expected: [${[...expectedIds].map(id=>id.slice(0,16)).join(', ')}]`);
-        console.warn(`[Codex]   found:    [${[...seenIds].map(id=>id.slice(0,16)).join(', ')}]`);
-        if (unmatchedCalls.length > 0) console.warn(`[Codex]   unmatched calls: [${unmatchedCalls.map(tc=>tc.id.slice(0,16)).join(', ')}]`);
-        if (unmatchedTools.length > 0) console.warn(`[Codex]   unmatched tools: [${unmatchedTools.map(t=>t.tool_call_id?.slice(0,16)).join(', ')}]`);
+        logger.warn('proxy/codex-proxy', 'Tool pairing mismatch', {
+          expected: [...expectedIds].map(id=>id.slice(0,16)).join(', '),
+          found: [...seenIds].map(id=>id.slice(0,16)).join(', '),
+          unmatchedCalls: unmatchedCalls.map(tc=>tc.id.slice(0,16)).join(', '),
+          unmatchedTools: unmatchedTools.map(t=>t.tool_call_id?.slice(0,16)).join(', '),
+        });
         const matchingTools = collectedTools.filter(t => expectedIds.has(t.tool_call_id || ''));
         if (matchingTools.length > 0) {
           // Strip unmatched tool_calls from assistant, keep only those with matching tools
@@ -566,7 +570,7 @@ function validateToolPairing(messages: ChatMessage[]): ChatMessage[] {
           // P1 fix: don't discard entire assistant message, preserve original content with warning
           // So downstream context isn't completely lost
           const warning = '[⚠️ IMtoAgent WARNING: tool_call has no matching tool response, preserving original message to prevent context loss]';
-          console.warn(`[Codex] ⚠️ Keeping original assistant message (with warning), not discarding`);
+          logger.warn('proxy/codex-proxy', 'Keeping original assistant message (with warning), not discarding');
           const preserved: ChatMessage = {
             role: 'assistant',
             content: warning + '\n' + (msg.content || ''),
@@ -724,9 +728,9 @@ async function parseStreamToolCalls(upstreamRes: Response): Promise<StreamToolCa
           type: 'function',
           function: { name: call.name, arguments: JSON.stringify(call.arguments) },
         });
-        console.log(`[Codex] 📦 Parsed DSML XML tool call: ${call.name} (${isLocalTool(call.name, getCurrentBot()?.toolRegistry) ? 'local' : 'remote'})`);
+        logger.debug('proxy/codex-proxy', 'Parsed DSML XML tool call', { name: call.name, local: isLocalTool(call.name, getCurrentBot()?.toolRegistry) ? 'local' : 'remote' });
       } else {
-        console.log(`[Codex] ⏭️ DSML XML tool ${call.name} already in standard tool_calls, skipping`);
+        logger.debug('proxy/codex-proxy', 'DSML XML tool already in standard tool_calls, skipping', { name: call.name });
       }
     }
     // 从 assistantText 中移除 DSML XML 内容
@@ -750,7 +754,7 @@ interface StreamResponseResult {
 // ================================================================
 async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDefaultWriter<Uint8Array>, reqBody?: OpenAIRequestBody, opts?: { suppressToolCalls?: boolean }): Promise<StreamResponseResult> {
   const suppressToolCalls = opts?.suppressToolCalls ?? false;
-  if (suppressToolCalls) console.log('[Codex] 🔇 streamResponse: suppressing tool_call emission (post-intercept mode)');
+  if (suppressToolCalls) logger.debug('proxy/codex-proxy', 'streamResponse: suppressing tool_call emission (post-intercept mode)');
   const collectedToolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }> = [];
   const enc = new TextEncoder();
   let accumulatedText = '';
@@ -830,7 +834,7 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
           if (suppressToolCalls) {
             // Post-intercept re-fetch: model may still emit tool_calls due to history context.
             // Silently discard them — we already handled all tools in the intercept phase.
-            console.log(`[Codex] 🔇 Suppressed ${delta.tool_calls.length} tool_call(s) from re-fetch response`);
+            logger.debug('proxy/codex-proxy', 'Suppressed tool_call(s) from re-fetch response', { count: delta.tool_calls.length });
           } else {
             ensureStarted();
             for (const tc of delta.tool_calls) {
@@ -886,7 +890,7 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
           // 过滤 DSML XML 后转发给客户端
           let contentToEmit = stripDSMLXML(delta.content);
           if (contentToEmit !== delta.content) {
-            console.log(`[Codex] 🔇 Filtered DSML XML from content delta (${delta.content.length} → ${contentToEmit.length} chars)`);
+            logger.debug('proxy/codex-proxy', 'Filtered DSML XML from content delta', { before: delta.content.length, after: contentToEmit.length });
           }
           
           if (contentToEmit) {
@@ -947,7 +951,7 @@ async function streamResponse(upstreamRes: Response, resWriter: WritableStreamDe
                   type: 'function',
                   function: { name: call.name, arguments: rawArgs },
                 });
-                console.log(`[Codex] 📦 streamResponse: parsed DSML XML tool call from content: ${call.name}`);
+                logger.debug('proxy/codex-proxy', 'streamResponse: parsed DSML XML tool call from content', { name: call.name });
               }
             }
             // 从 accumulatedText 中彻底移除 DSML XML
@@ -1256,8 +1260,8 @@ export async function handleCodexRequest(
         rawText,
       });
       const systemPrompt = buildSystemPrompt(systemPromptCtx);
-      console.log(`[Codex] SkillsInfo: ${JSON.stringify(ctx?.skillsInfo)}`);
-      console.log(`[Codex] 📝 System prompt built (${systemPrompt.length} chars, bot=${botName}, model=${systemPromptCtx.modelInfo})`);
+      logger.debug('proxy/codex-proxy', 'SkillsInfo', { skillsInfo: ctx?.skillsInfo });
+      logger.debug('proxy/codex-proxy', 'System prompt built', { bot: botName, model: systemPromptCtx.modelInfo, chars: systemPrompt.length });
 
       let sysMsg = chatReq.messages.find((m: ChatMessage) => m.role === 'system');
       if (!sysMsg) {
@@ -1276,7 +1280,7 @@ export async function handleCodexRequest(
       const savings = preEst - postEst;
       // Always log and always apply — processAsync may restructure messages (normalizeToolOutputs,
       // enforceMessageCap) even when char savings are zero.
-      console.log(`[Codex] 🔧 ContextManager: ${preMsgs}→${postMsgs} msgs, ~${preEst.toLocaleString()}→~${postEst.toLocaleString()} chars (saved ${savings.toLocaleString()})`);
+      logger.debug('proxy/codex-proxy', 'ContextManager', { preMsgs, postMsgs, preChars: preEst, postChars: postEst, saved: savings });
       Object.assign(chatReq, processed);
 
       // 🔧 Inject IMtoAgent local tools into the request
@@ -1295,13 +1299,13 @@ export async function handleCodexRequest(
             }
           }
           if (added > 0) {
-            console.log(`[Codex] 🔧 Injected ${added} IMtoAgent local tools: ${localTools.map((t: any) => t.function?.name).join(', ')}`);
+            logger.debug('proxy/codex-proxy', 'Injected IMtoAgent local tools', { count: added, tools: localTools.map((t: any) => t.function?.name).join(', ') });
           }
         }
       }
 
       const roles = chatReq.messages?.map((m: ChatMessage) => m.role).join(',');
-      console.log(`[Codex] → ${chatReq.model} [${roles}] tools:${chatReq.tools?.length || 0}`);
+      logger.debug('proxy/codex-proxy', 'request', { model: chatReq.model, roles, tools: chatReq.tools?.length || 0 });
 
       // ---- Phase 3 V2: Cache-First Tool Intercept ----
       // 核心思路：第一轮完全缓存 SSE，不转发给客户端
@@ -1316,7 +1320,7 @@ export async function handleCodexRequest(
       try {
         if (hasAnyTools) {
           // 有工具定义 → 完全缓存第一轮 SSE，分析 tool_calls 后再决定输出
-          console.log(`[Codex] 🔧 Phase 3 V2: tools detected (${chatReq.tools!.length} defined, ${hasLocal ? 'has local' : 'remote only'}), cache-first mode`);
+          logger.debug('proxy/codex-proxy', 'Phase 3 V2: tools detected, cache-first mode', { toolsDefined: chatReq.tools!.length, hasLocal });
 
           // Step 1: 发请求给 LLM，完全缓存 SSE 流
           const upstreamRes = await fetch(UPSTREAM(), {
@@ -1328,10 +1332,10 @@ export async function handleCodexRequest(
 
           if (!upstreamRes.ok) {
             const errText = await upstreamRes.text();
-            console.error(`[Codex] ❌ ${upstreamRes.status}: ${errText.slice(0, 200)}`);
+            logger.error('proxy/codex-proxy', 'upstream error', { status: upstreamRes.status, error: errText.slice(0, 200) });
             // 400 with unknown variant — retry with filtered content
             if (upstreamRes.status === 400 && errText.includes('unknown variant')) {
-              console.log('[Codex] ⚠️ Upstream rejected unknown variant, retrying with filtered content...');
+              logger.warn('proxy/codex-proxy', 'Upstream rejected unknown variant, retrying with filtered content');
               const filteredChat = filterUnsupportedTypes(chatReq, SUPPORTED_INPUT_TYPES());
               const retryRes = await fetch(UPSTREAM(), {
                 method: 'POST',
@@ -1341,7 +1345,7 @@ export async function handleCodexRequest(
               });
               if (!retryRes.ok) {
                 const retryErrText = await retryRes.text();
-                console.error(`[Codex] ❌ Retry also failed ${retryRes.status}: ${retryErrText.slice(0, 200)}`);
+                logger.error('proxy/codex-proxy', 'Retry also failed', { status: retryRes.status, error: retryErrText.slice(0, 200) });
                 notifyUserError(retryRes.status);
                 res.writeHead(retryRes.status, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: `Upstream rejected request twice: ${retryErrText.slice(0, 500)}` }));
@@ -1359,7 +1363,7 @@ export async function handleCodexRequest(
 
           // Step 2: 解析缓存的 SSE 流
           const parsed = await parseStreamToolCalls(upstreamRes);
-          console.log(`[Codex] 📦 Phase 3 V2: cached ${parsed.toolCalls.length} tool_calls, ${parsed.assistantText.length} chars text, ${parsed.reasoningContent.length} chars reasoning`);
+          logger.debug('proxy/codex-proxy', 'Phase 3 V2: cached', { toolCalls: parsed.toolCalls.length, textChars: parsed.assistantText.length, reasoningChars: parsed.reasoningContent.length });
 
           // Step 3: 根据 tool_calls 类型分支处理
           return handleParsedResponse(parsed, chatReq, body, interceptRegistry, res);
@@ -1375,7 +1379,7 @@ export async function handleCodexRequest(
 
           if (!upstreamRes.ok) {
             const errText = await upstreamRes.text();
-            console.error(`[Codex] ❌ ${upstreamRes.status}: ${errText.slice(0, 200)}`);
+            logger.error('proxy/codex-proxy', 'upstream error', { status: upstreamRes.status, error: errText.slice(0, 200) });
             notifyUserError(upstreamRes.status);
             res.writeHead(upstreamRes.status, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: errText.slice(0, 500) }));
@@ -1391,12 +1395,12 @@ export async function handleCodexRequest(
           });
           const writer = writable.getWriter();
           await streamResponse(upstreamRes, writer, body).catch((e: unknown) => {
-            console.error(`[Codex] streamResponse error: ${e?.message || e}`);
+            logger.error('proxy/codex-proxy', 'streamResponse error', { error: e?.message || String(e) });
           }).finally(() => { try { writer.close(); } catch {} });
           return;
         }
       } catch (e: unknown) {
-        console.error(`[Codex] ❌ fetch failed: ${(e as Error).message}`);
+        logger.error('proxy/codex-proxy', 'fetch failed', { error: (e as Error).message });
         notifyUserError(502);
         res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream unavailable' })); return;
       } finally {
@@ -1406,7 +1410,7 @@ export async function handleCodexRequest(
 
     res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not found' })); return;
   } catch (e: unknown) {
-    console.error(`[Codex] 💥 unhandled: ${e.message}`);
+    logger.error('proxy/codex-proxy', 'unhandled error', { error: e.message });
     res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'internal error' })); return;
   }
 }
@@ -1426,7 +1430,7 @@ async function handleParsedResponse(
 
   // 无 tool_calls → 直接返回缓存的 text
   if (toolCalls.length === 0) {
-    console.log(`[Codex] ✅ Phase 3 V2: no tool_calls, returning synthetic stream (${assistantText.length} chars)`);
+    logger.debug('proxy/codex-proxy', 'Phase 3 V2: no tool_calls, returning synthetic stream', { chars: assistantText.length });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.end(buildSyntheticStream(assistantText, reasoningContent, model));
     return;
@@ -1437,14 +1441,14 @@ async function handleParsedResponse(
   const localCalls = allParsed.filter(tc => isLocalTool(tc.name, interceptRegistry));
   const remoteCalls = allParsed.filter(tc => !isLocalTool(tc.name, interceptRegistry));
 
-  console.log(`[Codex] 🔧 Phase 3 V2: ${localCalls.length} local, ${remoteCalls.length} remote tool_calls`);
+  logger.debug('proxy/codex-proxy', 'Phase 3 V2: tool_calls classified', { local: localCalls.length, remote: remoteCalls.length });
 
   // 纯本地工具 → 代理层自闭环执行
   if (localCalls.length > 0 && remoteCalls.length === 0) {
-    console.log(`[Codex] 🔄 Phase 3 V2: pure local tools, executing and re-fetching`);
+    logger.debug('proxy/codex-proxy', 'Phase 3 V2: pure local tools, executing and re-fetching');
 
     if (!interceptRegistry) {
-      console.error(`[Codex] ❌ Phase 3 V2: no toolRegistry for local tools`);
+      logger.error('proxy/codex-proxy', 'Phase 3 V2: no toolRegistry for local tools');
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'no tool registry available' }));
       return;
@@ -1453,7 +1457,7 @@ async function handleParsedResponse(
     // 执行本地工具
     const hookRunner = getCurrentBot()?.hookRunner;
     const localResults = await executeLocalTools(localCalls, interceptRegistry, hookRunner);
-    console.log(`[Codex] ✅ Phase 3 V2: executed ${localResults.length} local tool(s)`);
+    logger.debug('proxy/codex-proxy', 'Phase 3 V2: executed local tools', { count: localResults.length });
 
     // 构造第二轮 messages
     const round2Messages = [...chatReq.messages];
@@ -1497,7 +1501,7 @@ async function handleParsedResponse(
 
       if (!round2Res.ok) {
         const errText = await round2Res.text();
-        console.error(`[Codex] ❌ Round 2 failed ${round2Res.status}: ${errText.slice(0, 200)}`);
+        logger.error('proxy/codex-proxy', 'Round 2 failed', { status: round2Res.status, error: errText.slice(0, 200) });
         notifyUserError(round2Res.status);
         res.writeHead(round2Res.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: errText.slice(0, 500) }));
@@ -1506,13 +1510,13 @@ async function handleParsedResponse(
 
       // 第二轮响应：完全缓存，解析后再判断
       const round2Parsed = await parseStreamToolCalls(round2Res);
-      console.log(`[Codex] 📦 Phase 3 V2: round 2 cached ${round2Parsed.toolCalls.length} tool_calls, ${round2Parsed.assistantText.length} chars text`);
+      logger.debug('proxy/codex-proxy', 'Phase 3 V2: round 2 cached', { toolCalls: round2Parsed.toolCalls.length, textChars: round2Parsed.assistantText.length });
 
       // 递归处理（可能还有更多工具调用）
       // 但为了防止无限循环，最多递归 3 次
       return handleParsedResponseRecursive(round2Parsed, chatReq, originalBody, interceptRegistry, res, 1);
     } catch (e: unknown) {
-      console.error(`[Codex] ❌ Round 2 fetch failed: ${(e as Error).message}`);
+      logger.error('proxy/codex-proxy', 'Round 2 fetch failed', { error: (e as Error).message });
       notifyUserError(502);
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'upstream unavailable' }));
@@ -1525,7 +1529,7 @@ async function handleParsedResponse(
   // 有远端工具（可能混合本地工具）→ 返回远端 tool_calls 给客户端
   // TODO: 混合场景下，本地工具也执行并缓存，等客户端返回远端工具结果时再合并
   if (remoteCalls.length > 0) {
-    console.log(`[Codex] 📤 Phase 3 V2: returning ${remoteCalls.length} remote tool_calls to client`);
+    logger.debug('proxy/codex-proxy', 'Phase 3 V2: returning remote tool_calls to client', { count: remoteCalls.length });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.end(buildToolCallsResponseStream(
       remoteCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.rawArgs } })),
@@ -1537,7 +1541,7 @@ async function handleParsedResponse(
   }
 
   // 兜底：不应该到这里
-  console.error(`[Codex] ❌ Phase 3 V2: unexpected state, falling back to synthetic stream`);
+  logger.error('proxy/codex-proxy', 'Phase 3 V2: unexpected state, falling back to synthetic stream');
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   res.end(buildSyntheticStream(assistantText, reasoningContent, model));
 }
@@ -1559,7 +1563,7 @@ async function handleParsedResponseRecursive(
 
   // 无 tool_calls → 返回最终文本
   if (toolCalls.length === 0) {
-    console.log(`[Codex] ✅ Phase 3 V2: round ${round} no tool_calls, returning final stream`);
+    logger.debug('proxy/codex-proxy', 'Phase 3 V2: round no tool_calls, returning final stream', { round });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.end(buildSyntheticStream(assistantText, reasoningContent, model));
     return;
@@ -1567,7 +1571,7 @@ async function handleParsedResponseRecursive(
 
   // 超过最大轮次 → 强制返回当前文本
   if (round >= MAX_ROUNDS) {
-    console.warn(`[Codex] ⚠️ Phase 3 V2: exceeded max rounds (${MAX_ROUNDS}), forcing return`);
+    logger.warn('proxy/codex-proxy', 'Phase 3 V2: exceeded max rounds, forcing return', { maxRounds: MAX_ROUNDS });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.end(buildSyntheticStream(assistantText, reasoningContent, model));
     return;
@@ -1581,7 +1585,7 @@ async function handleParsedResponseRecursive(
   // 纯本地工具 → 继续执行
   if (localCalls.length > 0 && remoteCalls.length === 0) {
     if (!interceptRegistry) {
-      console.error(`[Codex] ❌ Phase 3 V2: no toolRegistry for local tools`);
+      logger.error('proxy/codex-proxy', 'Phase 3 V2: no toolRegistry for local tools');
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'no tool registry available' }));
       return;
@@ -1589,7 +1593,7 @@ async function handleParsedResponseRecursive(
 
     const hookRunner = getCurrentBot()?.hookRunner;
     const localResults = await executeLocalTools(localCalls, interceptRegistry, hookRunner);
-    console.log(`[Codex] ✅ Phase 3 V2: round ${round} executed ${localResults.length} local tool(s)`);
+    logger.debug('proxy/codex-proxy', 'Phase 3 V2: round executed local tools', { round, count: localResults.length });
 
     // 构造下一轮 messages
     const nextMessages = [...chatReq.messages];
@@ -1631,7 +1635,7 @@ async function handleParsedResponseRecursive(
 
       if (!nextRes.ok) {
         const errText = await nextRes.text();
-        console.error(`[Codex] ❌ Round ${round + 1} failed ${nextRes.status}: ${errText.slice(0, 200)}`);
+        logger.error('proxy/codex-proxy', 'Round failed', { round: round + 1, status: nextRes.status, error: errText.slice(0, 200) });
         notifyUserError(nextRes.status);
         res.writeHead(nextRes.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: errText.slice(0, 500) }));
@@ -1639,11 +1643,11 @@ async function handleParsedResponseRecursive(
       }
 
       const nextParsed = await parseStreamToolCalls(nextRes);
-      console.log(`[Codex] 📦 Phase 3 V2: round ${round + 1} cached ${nextParsed.toolCalls.length} tool_calls`);
+      logger.debug('proxy/codex-proxy', 'Phase 3 V2: round cached', { round: round + 1, toolCalls: nextParsed.toolCalls.length });
 
       return handleParsedResponseRecursive(nextParsed, chatReq, originalBody, interceptRegistry, res, round + 1);
     } catch (e: unknown) {
-      console.error(`[Codex] ❌ Round ${round + 1} fetch failed: ${(e as Error).message}`);
+      logger.error('proxy/codex-proxy', 'Round fetch failed', { round: round + 1, error: (e as Error).message });
       notifyUserError(502);
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'upstream unavailable' }));
@@ -1655,7 +1659,7 @@ async function handleParsedResponseRecursive(
 
   // 有远端工具 → 返回远端 tool_calls
   if (remoteCalls.length > 0) {
-    console.log(`[Codex] 📤 Phase 3 V2: round ${round} returning ${remoteCalls.length} remote tool_calls to client`);
+    logger.debug('proxy/codex-proxy', 'Phase 3 V2: round returning remote tool_calls to client', { round, count: remoteCalls.length });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.end(buildToolCallsResponseStream(
       remoteCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.rawArgs } })),

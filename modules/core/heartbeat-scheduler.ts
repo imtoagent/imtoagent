@@ -28,6 +28,7 @@ import { discoverTools, type ToolLoadContext } from './tool-discovery';
 import { discoverHooks } from './hook-discovery';
 import { HookRunner } from './hook-runner';
 import { TaskManager } from './task-manager';
+import { logger } from '../utils/logger';
 import { TaskLogger } from './task-logger';
 import { AgentLoop } from '../agent/agent-loop';
 
@@ -125,7 +126,7 @@ export class HeartbeatScheduler {
       },
       // P1-2: 任务错误回调，不再静默失败
       onTaskError: (task, error) => {
-        console.error(`[Cron] Task ${task.name} error:`, error.message);
+        logger.error('core/heartbeat-scheduler', 'Task error', { task: task.name, error: error.message });
         const strategy = task.on_failure ?? this.config.defaults?.on_failure ?? 'ignore';
         if (strategy === 'alert') {
           this.sendAlert(task, error.message).catch(() => {});
@@ -135,7 +136,7 @@ export class HeartbeatScheduler {
       onTaskTimeout: (task) => {
         // 锁超时：按 on_failure 策略处理
         const strategy = task.on_failure ?? this.config.defaults?.on_failure ?? 'ignore';
-        console.warn(`[Cron] Task ${task.name} lock timed out, strategy=${strategy}`);
+        logger.warn('core/heartbeat-scheduler', 'Task lock timed out', { task: task.name, strategy });
         if (strategy === 'alert') {
           this.sendAlert(task, 'Lock timeout after 120s').catch(() => {});
         }
@@ -245,12 +246,9 @@ export class HeartbeatScheduler {
     const discovered = await discoverTools([builtInToolsDir, userToolsDir], context);
     for (const tool of discovered) {
       this.toolRegistry.register(tool.definition);
-      console.log(
-        `[ToolDiscovery] Registered: ${tool.name} (${tool.sourceType}) ` +
-        `[${tool.sourceFile.replace(dataDir, '~/.imtoagent')}]`,
-      );
+      logger.debug('core/heartbeat-scheduler', 'Tool registered', { name: tool.name, sourceType: tool.sourceType, sourceFile: tool.sourceFile.replace(dataDir, '~/.imtoagent') });
     }
-    console.log(`[ToolDiscovery] Total discovered: ${discovered.length}`);
+    logger.debug('core/heartbeat-scheduler', 'Tool discovery complete', { total: discovered.length });
   }
 
   /**
@@ -259,15 +257,12 @@ export class HeartbeatScheduler {
   start(): void {
     const intervalMs = parseInterval(this.config.interval);
     if (!intervalMs) {
-      console.error(`[Heartbeat] Invalid interval: ${this.config.interval}`);
+      logger.error('core/heartbeat-scheduler', 'Invalid interval', { interval: this.config.interval });
       return;
     }
 
     const phaseOffset = getPhaseOffset(this.config.botName, intervalMs);
-    console.log(
-      `[Heartbeat] Started for ${this.config.botName} ` +
-      `interval=${this.config.interval} phaseOffset=${Math.round(phaseOffset / 1000)}s`,
-    );
+    logger.info('core/heartbeat-scheduler', 'Heartbeat started', { botName: this.config.botName, interval: this.config.interval, phaseOffset: `${Math.round(phaseOffset / 1000)}s` });
 
     this.running = true;
     // 启动任务轮询器（独立 1s tick）
@@ -290,7 +285,7 @@ export class HeartbeatScheduler {
     await this.taskPoller.stop();
     // Phase 1: 取消所有精确触发
     this.cancelAllPreciseTriggers();
-    console.log(`[Heartbeat] Stopped for ${this.config.botName}`);
+    logger.info('core/heartbeat-scheduler', 'Heartbeat stopped', { botName: this.config.botName });
   }
 
   /**
@@ -303,7 +298,7 @@ export class HeartbeatScheduler {
       try {
         await this.runHeartbeat();
       } catch (e: any) {
-        console.error(`[Heartbeat] Error for ${this.config.botName}:`, e.message);
+        logger.error('core/heartbeat-scheduler', 'Heartbeat error', { botName: this.config.botName, error: e.message });
       }
       // 下一次按固定 interval
       this.scheduleNext(intervalMs, intervalMs);
@@ -321,25 +316,21 @@ export class HeartbeatScheduler {
     try {
       const cleaned = this.goalStore.cleanup(); // 清理过期/已完成的 Goal
       if (cleaned > 0) {
-        console.log(`[Heartbeat] ${this.config.botName}: cleaned up ${cleaned} expired goal(s)`);
+        logger.info('core/heartbeat-scheduler', 'Expired goals cleaned', { botName: this.config.botName, cleaned });
       }
       this.goalStore.reload(); // P3: 每次 tick 前同步文件变更
       const now = new Date();
       const goalStats = await this.goalEngine.processDueGoals(now);
       if (goalStats.dueCount > 0) {
-        console.log(
-          `[Heartbeat] ${this.config.botName}: Goal Engine done=${goalStats.doneCount} ` +
-          `skip=${goalStats.skipCount} fail=${goalStats.failedCount} unknown=${goalStats.unknownCount}` +
-          ` (${goalStats.totalDurationMs}ms)`,
-        );
+        logger.info('core/heartbeat-scheduler', 'Goal Engine completed', { botName: this.config.botName, done: goalStats.doneCount, skip: goalStats.skipCount, fail: goalStats.failedCount, unknown: goalStats.unknownCount, durationMs: goalStats.totalDurationMs });
       } else {
-        console.log(`[Heartbeat] ${this.config.botName}: Goal Engine 0 due, ${goalStats.totalDurationMs}ms`);
+        logger.info('core/heartbeat-scheduler', 'Goal Engine no due goals', { botName: this.config.botName, durationMs: goalStats.totalDurationMs });
       }
 
       // 精确触发：为 30 分钟内的活跃 Goal 注册 setTimeout
       this.schedulePreciseTriggers();
     } catch (e: any) {
-      console.error(`[Heartbeat] ${this.config.botName}: Goal Engine error:`, e.message);
+      logger.error('core/heartbeat-scheduler', 'Goal Engine error', { botName: this.config.botName, error: e.message });
     }
   }
 
@@ -355,11 +346,11 @@ export class HeartbeatScheduler {
         const parseErrors = this.taskPoller.getLastParseErrors();
         if (parseErrors.length > 0) {
           const errorMsg = parseErrors.map(e => `• ${e.reason}`).join('\n');
-          console.error(`[Heartbeat] ${this.config.botName}: HEARTBEAT.md 解析失败 (${parseErrors.length} 个任务被丢弃):\n${errorMsg}`);
+          logger.error('core/heartbeat-scheduler', 'HEARTBEAT.md parse failed', { botName: this.config.botName, parseErrors: parseErrors.length, errorMsg });
         }
       }
     } catch (e: any) {
-      console.error(`[Heartbeat] Failed to sync tasks:`, e.message);
+      logger.error('core/heartbeat-scheduler', 'Failed to sync tasks', { error: e.message });
     }
   }
 
@@ -404,25 +395,19 @@ export class HeartbeatScheduler {
       const scheduledTime = nextRun.getTime();
       const leadMinutes = goal.trigger.leadMinutes ?? 10;
 
-      console.log(
-        `[GoalEngine] Scheduling precise trigger for ${goal.id} ` +
-        `in ${Math.round(delayMs / 1000)}s (at ${formatShanghaiTimeShort(nextRun.getTime())})`,
-      );
+      logger.debug('core/heartbeat-scheduler', 'Scheduling precise trigger', { goalId: goal.id, delayMs: `${Math.round(delayMs / 1000)}s`, scheduledAt: formatShanghaiTimeShort(nextRun.getTime()) });
 
       const timer = setTimeout(() => {
         // macOS 休眠处理：如果过期超过 leadMinutes，跳过，等心跳兜底
         if (Date.now() > scheduledTime + leadMinutes * 60 * 1000) {
-          console.log(
-            `[GoalEngine] Precise trigger for ${goal.id} expired (macOS sleep?), ` +
-            `skipping, heartbeat will handle`,
-          );
+          logger.debug('core/heartbeat-scheduler', 'Precise trigger expired (macOS sleep?)', { goalId: goal.id });
           this.preciseTimers.delete(goal.id);
           return;
         }
 
-        console.log(`[GoalEngine] Precise trigger firing for ${goal.id}`);
+        logger.debug('core/heartbeat-scheduler', 'Precise trigger firing', { goalId: goal.id });
         this.goalEngine.processDueGoals(now).catch(e => {
-          console.error(`[GoalEngine] Precise trigger error for ${goal.id}:`, e.message);
+          logger.error('core/heartbeat-scheduler', 'Precise trigger error', { goalId: goal.id, error: e.message });
         }).finally(() => {
           this.preciseTimers.delete(goal.id);
         });
@@ -480,7 +465,7 @@ export class HeartbeatScheduler {
         reply = text;
       },
       sendProgress: async (text: string) => {
-        console.log(`[GoalEngine] progress: ${text}`);
+        logger.debug('core/heartbeat-scheduler', 'Goal progress', { text });
       },
       // Phase 2: 传递工具列表
       tools: options?.tools,
@@ -522,7 +507,7 @@ export class HeartbeatScheduler {
       // 重试退避：1s → 2s → 4s → ...
       if (attempt > 1) {
         const backoffMs = Math.pow(2, attempt - 2) * 1000;
-        console.log(`[Cron] Task ${task.name} retry attempt ${attempt}/${maxRetries}, waiting ${backoffMs}ms`);
+        logger.info('core/heartbeat-scheduler', 'Task retry', { task: task.name, attempt, maxRetries, backoffMs, error: lastError });
         TaskLogger.log({
           event: 'task.retry',
           taskName: task.name,
@@ -539,16 +524,16 @@ export class HeartbeatScheduler {
         await this.executeTaskWithTimeout(task, timeoutMs);
         // 成功
         if (attempt > 1) {
-          console.log(`[Cron] Task ${task.name} succeeded on attempt ${attempt}`);
+          logger.info('core/heartbeat-scheduler', 'Task succeeded after retry', { task: task.name, attempt });
         }
         return;
       } catch (e: any) {
         lastError = e.message || String(e);
-        console.error(`[Cron] Task ${task.name} attempt ${attempt} failed: ${lastError}`);
+        logger.error('core/heartbeat-scheduler', 'Task attempt failed', { task: task.name, attempt, error: lastError });
 
         if (attempt > maxRetries) {
           // 所有重试耗尽
-          console.error(`[Cron] Task ${task.name} all ${maxRetries} retries exhausted`);
+          logger.error('core/heartbeat-scheduler', 'Task retries exhausted', { task: task.name, maxRetries });
           if (strategy === 'alert') {
             await this.sendAlert(task, lastError).catch(() => {});
           }
@@ -556,12 +541,12 @@ export class HeartbeatScheduler {
         }
         // on_failure=ignore 时不再重试
         if (strategy === 'ignore') {
-          console.log(`[Cron] Task ${task.name} failed, strategy=ignore, skipping`);
+          logger.info('core/heartbeat-scheduler', 'Task failed, ignoring', { task: task.name, strategy: 'ignore' });
           return;
         }
         // on_failure=alert 时，第一次失败就告警，不重试
         if (strategy === 'alert') {
-          console.log(`[Cron] Task ${task.name} failed, strategy=alert, sending alert`);
+          logger.info('core/heartbeat-scheduler', 'Task failed, alerting', { task: task.name, strategy: 'alert' });
           await this.sendAlert(task, lastError).catch(() => {});
           return;
         }
@@ -583,7 +568,7 @@ export class HeartbeatScheduler {
     const sessionAny = taskSession as Record<string, unknown>;
     const cronRounds = (sessionAny._cronRounds as number) ?? 0;
     if (cronRounds >= MAX_CRON_ROUNDS) {
-      console.log(`[Cron] Task ${task.name} session rotation (${cronRounds} >= ${MAX_CRON_ROUNDS}), starting fresh thread`);
+      logger.info('core/heartbeat-scheduler', 'Task session rotation', { task: task.name, cronRounds, maxRounds: MAX_CRON_ROUNDS });
       // 清除所有 adapter 特定的 session/thread ID
       delete sessionAny.codexThreadId;
       delete sessionAny._appServerGen;
@@ -603,7 +588,7 @@ export class HeartbeatScheduler {
         if (settled) return; // processMessage already won the race
         settled = true;
         abortController.abort();
-        console.log(`[Cron] Task ${task.name} timed out, cancelled`);
+        logger.info('core/heartbeat-scheduler', 'Task timed out', { task: task.name, timeoutMs });
         TaskLogger.log({
           event: 'task.timeout',
           taskName: task.name,
@@ -620,7 +605,7 @@ export class HeartbeatScheduler {
       if (state?.startedAt && state.elapsedMs !== undefined) {
         const autoStopMs = this.parseDuration(task.auto_stop);
         if (autoStopMs > 0 && state.elapsedMs >= autoStopMs) {
-          console.log(`[Cron] Task ${task.name} auto_stop reached (elapsed ${state.elapsedMs}ms >= ${autoStopMs}ms), stopping`);
+          logger.info('core/heartbeat-scheduler', 'Task auto_stop reached', { task: task.name, elapsedMs: state.elapsedMs, autoStopMs });
           return 'success'; // 正常结束，不触发错误
         }
       }
@@ -650,7 +635,7 @@ export class HeartbeatScheduler {
       reply: async (text: string) => {
         // P2-1: 识别 SKIP_TASK，不发送到 IM
         if (text.trim() === 'SKIP_TASK') {
-          console.log(`[Cron] Task ${task.name} condition not met, skipped`);
+          logger.info('core/heartbeat-scheduler', 'Task skipped (condition not met)', { task: task.name });
           TaskLogger.log({
             event: 'task.skipped',
             taskName: task.name,
@@ -659,7 +644,7 @@ export class HeartbeatScheduler {
           });
           return;
         }
-        console.log(`[Cron] Task ${task.name} → IM: ${text.slice(0, 200)}`);
+        logger.info('core/heartbeat-scheduler', 'Task reply to IM', { task: task.name, text: text.slice(0, 200) });
         const sendTarget = deliveryChatId ?? target.chatId;
         await this.sendToIM(text, sendTarget);
         TaskLogger.log({
@@ -671,11 +656,11 @@ export class HeartbeatScheduler {
         });
       },
       sendProgress: async (text: string) => {
-        console.log(`[Cron] Task ${task.name} progress: ${text}`);
+        logger.debug('core/heartbeat-scheduler', 'Task progress', { task: task.name, text });
       },
     };
 
-    console.log(`[Cron] Running task: ${task.name} prompt=${task.prompt.slice(0, 80)} timeout=${task.timeout ?? this.config.defaults?.timeout ?? '60s'}`);
+    logger.info('core/heartbeat-scheduler', 'Running task', { task: task.name, prompt: task.prompt.slice(0, 80), timeout: task.timeout ?? this.config.defaults?.timeout ?? '60s' });
     // 走 AgentLoop：adapter 带本地工具循环
     const taskInput = this._buildAgentInput(ctx, taskSession);
     // 通过 runtime 共享队列入队，防止与用户消息竞争同一 chatId
@@ -709,7 +694,7 @@ export class HeartbeatScheduler {
       `时间: ${formatShanghaiTimeShort(Date.now())}`,
     ].join('\n');
 
-    console.warn(`[Cron] ALERT: ${alertMsg.replace(/\n/g, ' | ')}`);
+    logger.warn('core/heartbeat-scheduler', 'ALERT', { alertMsg: alertMsg.replace(/\n/g, ' | ') });
 
     // 发送到 IM（使用最后活跃的真实 IM chatId）
     try {
@@ -717,10 +702,10 @@ export class HeartbeatScheduler {
       if (deliveryChatId) {
         await this.sendToIM(alertMsg, deliveryChatId);
       } else {
-        console.warn(`[Cron] No active IM chatId for alert, skipping delivery`);
+        logger.warn('core/heartbeat-scheduler', 'No active IM chatId for alert, skipping delivery');
       }
     } catch (e: any) {
-      console.error(`[Cron] Failed to send alert:`, e.message);
+      logger.error('core/heartbeat-scheduler', 'Failed to send alert', { error: e.message });
     }
   }
 
@@ -763,7 +748,7 @@ export class HeartbeatScheduler {
         } catch {}
       }
     } catch (e: any) {
-      console.error(`[Heartbeat] Failed to read HEARTBEAT.md:`, e.message);
+      logger.error('core/heartbeat-scheduler', 'Failed to read HEARTBEAT.md', { error: e.message });
     }
     return '';
   }

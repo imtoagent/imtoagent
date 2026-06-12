@@ -60,10 +60,41 @@ export interface LogEvent {
 let _logStream: fs.WriteStream | null = null;
 let _logPath: string | null = null;
 
+// ================================================================
+// Plain-text human-readable log (imtoagent.log)
+// ================================================================
+
+let _textLogStream: fs.WriteStream | null = null;
+let _textLogPath: string | null = null;
+
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
 /**
  * Get or create the write stream for events.jsonl.
  * Lazily initialized on first call.
  */
+/**
+ * Get or create the write stream for imtoagent.log.
+ * Lazily initialized on first call.
+ */
+function getTextLogStream(): fs.WriteStream {
+  if (_textLogStream) return _textLogStream;
+
+  try {
+    const logsDir = getLogsDir();
+    _textLogPath = path.join(logsDir, 'imtoagent.log');
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    rotateTextLogIfNeeded();
+
+    _textLogStream = fs.createWriteStream(_textLogPath, { flags: 'a' });
+  } catch (err) {
+    _textLogStream = null as NodeJS.WriteStream | null;
+  }
+
+  return _textLogStream;
+}
+
 function getLogStream(): fs.WriteStream {
   if (_logStream) return _logStream;
 
@@ -74,6 +105,7 @@ function getLogStream(): fs.WriteStream {
 
     // Check rotation on startup
     rotateLogIfNeeded();
+    rotateTextLogIfNeeded();
 
     _logStream = fs.createWriteStream(_logPath, { flags: 'a' });
   } catch (err) {
@@ -138,29 +170,38 @@ function rotateLogIfNeeded(): void {
 
 /**
  * Delete rotated log files older than RETENTION_DAYS.
+ * Covers both events.jsonl.* and imtoagent.log.*.
  */
 function cleanOldLogs(): void {
-  if (!_logPath) return;
-  const logsDir = path.dirname(_logPath);
-  const baseName = path.basename(_logPath);
+  const candidates: string[] = [];
+  if (_logPath) candidates.push(path.basename(_logPath));
+  if (_textLogPath) candidates.push(path.basename(_textLogPath));
+  if (candidates.length === 0) return;
+
+  const logsDirs = new Set<string>();
+  if (_logPath) logsDirs.add(path.dirname(_logPath));
+  if (_textLogPath) logsDirs.add(path.dirname(_textLogPath));
+
   const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-  try {
-    const files = fs.readdirSync(logsDir);
-    for (const file of files) {
-      if (!file.startsWith(baseName)) continue;
-      const filePath = path.join(logsDir, file);
-      try {
-        const stats = fs.statSync(filePath);
-        if (stats.mtimeMs < cutoff) {
-          fs.unlinkSync(filePath);
+  for (const dir of logsDirs) {
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        if (!candidates.some((b) => file.startsWith(b))) continue;
+        const filePath = path.join(dir, file);
+        try {
+          const stats = fs.statSync(filePath);
+          if (stats.mtimeMs < cutoff) {
+            fs.unlinkSync(filePath);
+          }
+        } catch {
+          // Skip files we can't stat
         }
-      } catch {
-        // Skip files we can't stat
       }
+    } catch {
+      // Directory may not exist yet
     }
-  } catch {
-    // Directory may not exist yet
   }
 }
 
@@ -282,3 +323,110 @@ export function readRecentLogs(maxLines: number = 50): LogEvent[] {
     return [];
   }
 }
+
+// ================================================================
+// Log rotation for plain-text log
+// ================================================================
+
+/**
+ * Check if the plain-text log needs rotation.
+ */
+function rotateTextLogIfNeeded(): void {
+  if (!_textLogPath) return;
+
+  try {
+    if (!fs.existsSync(_textLogPath)) return;
+    const stats = fs.statSync(_textLogPath);
+    if (stats.size < MAX_LOG_SIZE) return;
+
+    const logsDir = path.dirname(_textLogPath);
+    const baseName = path.basename(_textLogPath);
+
+    for (let i = MAX_ROTATED_FILES - 1; i >= 1; i--) {
+      const src = path.join(logsDir, `${baseName}.${i}`);
+      const dst = path.join(logsDir, `${baseName}.${i + 1}`);
+      if (fs.existsSync(src)) {
+        if (i + 1 > MAX_ROTATED_FILES) {
+          fs.unlinkSync(src);
+        } else {
+          fs.renameSync(src, dst);
+        }
+      }
+    }
+
+    fs.renameSync(_textLogPath, path.join(logsDir, `${baseName}.1`));
+
+    // Close old stream so next call creates a fresh one
+    if (_textLogStream) {
+      _textLogStream.end();
+      _textLogStream = null;
+    }
+    _textLogPath = path.join(logsDir, baseName);
+  } catch (err) {
+    console.error(`[Logger] Text log rotation failed: ${(err as Error).message}`);
+  }
+}
+
+// ================================================================
+// Level-based logger API
+// ================================================================
+
+/**
+ * Format a line for imtoagent.log:
+ * [2026-06-12T06:00:00.000Z] [INFO] [module] msg
+ */
+function formatTextLogLine(level: LogLevel, module: string, msg: string): string {
+  const ts = new Date().toISOString();
+  return `[${ts}] [${level}] [${module}] ${msg}`;
+}
+
+function writeTextLog(level: LogLevel, module: string, msg: string, meta?: Record<string, unknown>): void {
+  const line = formatTextLogLine(level, module, msg) +
+    (meta ? ` ${JSON.stringify(meta)}` : '');
+  const stream = getTextLogStream();
+  if (stream && !stream.destroyed) {
+    try {
+      stream.write(line + '\n');
+    } catch {
+      // Silently drop
+    }
+  }
+}
+
+export const logger = {
+  debug(module: string, msg: string, meta?: Record<string, unknown>): void {
+    writeTextLog('DEBUG', module, msg, meta);
+    const ts = new Date().toISOString().substring(11, 19);
+    console.error(`[${ts}] [DEBUG] [${module}] ${msg}`);
+  },
+
+  info(module: string, msg: string, meta?: Record<string, unknown>): void {
+    writeTextLog('INFO', module, msg, meta);
+    const ts = new Date().toISOString().substring(11, 19);
+    console.error(`[${ts}] [INFO] [${module}] ${msg}`);
+  },
+
+  warn(module: string, msg: string, meta?: Record<string, unknown>): void {
+    writeTextLog('WARN', module, msg, meta);
+    const ts = new Date().toISOString().substring(11, 19);
+    console.error(`[${ts}] [WARN] [${module}] ${msg}`);
+  },
+
+  error(module: string, msg: string, meta?: Record<string, unknown>, err?: Error): void {
+    const fullMsg = err ? `${msg} — ${err.message}` : msg;
+    writeTextLog('ERROR', module, fullMsg, meta);
+    const ts = new Date().toISOString().substring(11, 19);
+    console.error(`[${ts}] [ERROR] [${module}] ${fullMsg}`);
+    if (err?.stack) {
+      const stream = getTextLogStream();
+      if (stream && !stream.destroyed) {
+        try {
+          stream.write(err.stack + '\n');
+        } catch {
+          // Silently drop
+        }
+      }
+      console.error(err.stack);
+    }
+  },
+};

@@ -20,7 +20,7 @@ import { buildSystemPrompt, buildPromptContext, resolveCapabilities, DEFAULT_TER
 import { handleCodexRequest } from './codex-proxy';
 import { getDataDir, getSessionsDir } from '../utils/paths';
 import { CircuitBreaker, CircuitBreakerManager } from './circuit-breaker';
-import { logEvent } from '../utils/logger';
+import { logEvent, logger } from '../utils/logger';
 import { logUsage } from './usage-logger';
 import { ContextManager } from './context-manager';
 import type {
@@ -69,7 +69,7 @@ function notifyUserError(status: number) {
   const last = errorCooldowns.get(key) || 0;
   if (now - last < ERROR_COOLDOWN_MS) return; // still in cooldown
   errorCooldowns.set(key, now);
-  bot.notifyUser(msg).catch(e => console.error(`[Proxy] notifyUser failed: ${e.message}`));
+  bot.notifyUser(msg).catch(e => logger.error('proxy/anthropic-proxy', 'notifyUser failed', { error: e.message }));
 }
 
 // ===== 共享状态 =====
@@ -135,7 +135,7 @@ export function loadProviders(): { providers: Map<string, ProviderConfig>; defau
   try {
     const configPath = path.join(getDataDir(), 'config.json');
     if (!existsSync(configPath)) {
-      console.log(`[Proxy] config.json not found, no default model configured`);
+      logger.debug('proxy/anthropic-proxy', config.json not found, no default model configured);
       return { providers, defaultModel };
     }
     const raw = fs.readFileSync(configPath, 'utf-8');
@@ -171,11 +171,11 @@ export function loadProviders(): { providers: Map<string, ProviderConfig>; defau
         format: (p.format as string) || 'anthropic',
       });
     }
-    console.log(`[Proxy] Loaded ${providers.size} provider(s) from config.json: ${[...providers.keys()].join(', ')}`);
+    logger.info('proxy/anthropic-proxy', Loaded ${providers.size} provider(s) from config.json: ${.join(', ')});
   } catch (e: unknown) {
-    console.error(`[Proxy] Failed to load providers from config.json: ${(e as Error).message}`);
+    logger.error('proxy/anthropic-proxy', Failed to load providers from config.json: ${(e as Error).message});
   }
-  console.log(`[Proxy] Default model: ${defaultModel}`);
+  logger.debug('proxy/anthropic-proxy', Default model: ${defaultModel});
   return { providers, defaultModel };
 }
 
@@ -191,9 +191,9 @@ export function saveActiveModel(modelSpec: string): void {
     const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     raw.activeModel = modelSpec;
     fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
-    console.log(`[saveActiveModel] config.json.activeModel → ${modelSpec}`);
+    logger.debug('proxy/anthropic-proxy', config.json.activeModel → ${modelSpec});
   } catch (e: unknown) {
-    console.error(`[saveActiveModel] Failed: ${(e as Error).message}`);
+    logger.error('proxy/anthropic-proxy', Failed: ${(e as Error).message});
   }
 }
 
@@ -240,7 +240,7 @@ export function loadSessionConfig(customPath?: string): { activeModel: string; m
       modelAliases: cfg.modelAliases || defaultAliases,
     };
   } catch (e: unknown) {
-    console.error(`[Proxy] Failed to load session config (${customPath || '_default.json'}): ${e.message}`);
+    logger.error('proxy/anthropic-proxy', Failed to load session config (${customPath || '_default.json'}): ${e.message});
     return { activeModel: defaultAliases.default, modelAliases: defaultAliases };
   }
 }
@@ -261,7 +261,7 @@ export function saveSessionConfig(userId: string, activeModel: string, modelAlia
     };
     fs.writeFileSync(sessionPath, JSON.stringify(cfg, null, 2) + '\n');
   } catch (e: unknown) {
-    console.error(`[Proxy] Failed to save session config (${userId}): ${e.message}`);
+    logger.error('proxy/anthropic-proxy', Failed to save session config (${userId}): ${e.message});
   }
 }
 
@@ -682,7 +682,7 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
       const fp = conversationFingerprint(_reqBody.messages);
       if (fp) {
         reasoningCache.set(fp, cachedReasoningContent);
-        console.log(`[Proxy] 🧠 reasoning_content cached (fingerprint: ${fp.slice(0, 50)}...)`);
+        logger.debug('proxy/anthropic-proxy', 🧠 reasoning_content cached (fingerprint: ${fp.slice(0, 50)}...));
       }
     }
     sendEvent('message_delta', {
@@ -810,7 +810,7 @@ function openAIStreamToAnthropic(openAIStream: NodeJS.ReadableStream, res: http.
   });
 
   openAIStream.on('error', (err) => {
-    console.error(`[Proxy] OpenAI stream error: ${err.message}`);
+    logger.error('proxy/anthropic-proxy', OpenAI stream error: ${err.message});
     notifyUserError(502);
     if (!res.writableEnded) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -830,7 +830,7 @@ export function calculateCost(modelSpec: string, inputTokens: number, outputToke
       return (inputTokens * p.inputPerMillion + outputTokens * p.outputPerMillion) / 1_000_000;
     }
     // 未知供应商 — 输出警告日志
-    console.warn(`[calculateCost] ⚠️ Unknown provider "${provider}", using default pricing ($0.55/M input, $2.19/M output)`);
+    logger.warn('proxy/anthropic-proxy', ⚠️ Unknown provider "${provider}", using default pricing ($0.55/M input, $2.19/M output));
   } catch {}
   return (inputTokens * 0.55 + outputTokens * 2.19) / 1_000_000;
 }
@@ -883,7 +883,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     // Bot 级别 activeModel 优先（如 deepseek/deepseek-v4-flash）
     cfg = getProviderConfig(botCtx.activeModel);
     if (!cfg) {
-      console.warn(`[Proxy] ⚠️ Bot activeModel '${botCtx.activeModel}' not found in providers, falling back to global`);
+      logger.warn('proxy/anthropic-proxy', ⚠️ Bot activeModel '${botCtx.activeModel}' not found in providers, falling back to global);
     }
   }
 
@@ -918,7 +918,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(response));
-    console.log(`[Proxy] → ${cfg.providerName}/${cfg.model} GET /v1/models (simulated, returning ${modelList.length} models)`);
+    logger.debug('proxy/anthropic-proxy', → ${cfg.providerName}/${cfg.model} GET /v1/models (simulated, returning ${modelList.length} models));
     return;
   }
 
@@ -982,12 +982,12 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         parsedBody.system = injected as any;
       }
       bodyStr = JSON.stringify(parsedBody);
-      console.log(`[Proxy] 🧠 System prompt injected (${injected.length} chars)`);
+      logger.debug('proxy/anthropic-proxy', 🧠 System prompt injected (${injected.length} chars));
     }
 
     // 根据 Claude Code 传的模型名前缀，识别角色并替换为完整规格
     const resolvedSpec = resolveModelByPrefix(originalModel);
-    console.log(`[Proxy] Model resolved: ${originalModel} → ${resolvedSpec}`);
+    logger.debug('proxy/anthropic-proxy', Model resolved: ${originalModel} → ${resolvedSpec});
 
     // 🌐 Web Search：DeepSeek 使用版本化工具名 web_search_20250305，Claude Code 发的是 web_search
     if (parsedBody.tools) {
@@ -995,16 +995,16 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         const tn = (t.name || t.type || '').toLowerCase();
         // 调试：WebSearch 工具的完整定义
         if ((t.name || '').toLowerCase().includes('search')) {
-          console.log(`[Proxy] 🔍 WebSearch original definition: ${JSON.stringify(t)}`);
+          logger.debug('proxy/anthropic-proxy', 🔍 WebSearch original definition: ${JSON.stringify(t)});
         }
         if (tn === 'web_search' || tn === 'websearch') {
           t.name = 'web_search_20250305';
-          console.log(`[Proxy] 🔍 web_search → web_search_20250305 ✅`);
+          logger.debug('proxy/anthropic-proxy', 🔍 web_search → web_search_20250305 ✅);
         }
       }
     }
     if (parsedBody.tools && parsedBody.tools.length > 0) {
-      console.log(`[Proxy] 🔍 tools definition: ${(parsedBody.tools as AnthropicTool[]).map((t) => t.name || (t as AnthropicTool).type).join(', ')}`);
+      logger.debug('proxy/anthropic-proxy', 🔍 tools definition: ${(parsedBody.tools as AnthropicTool).map((t) => t.name || (t as AnthropicTool).type).join(', ')});
     }
 
     // 解析供应商和模型名
@@ -1024,7 +1024,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     // 根据目标供应商获取配置
     let targetProvider = providers.get(targetProviderName);
     if (!targetProvider) {
-      console.error(`[Proxy] Unknown provider: ${targetProviderName}`);
+      logger.error('proxy/anthropic-proxy', Unknown provider: ${targetProviderName});
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `Unknown provider: ${targetProviderName}` }));
       return;
@@ -1034,7 +1034,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     const cm = getCircuitManager();
     let breaker = cm.get(targetProviderName);
     if (breaker && !breaker.canRequest()) {
-      console.log(`[Proxy] ⚡ Circuit breaker OPEN for ${targetProviderName}, trying failover...`);
+      logger.warn('proxy/anthropic-proxy', ⚡ Circuit breaker OPEN for ${targetProviderName}, trying failover...);
       logEvent({
         event: 'proxy_circuit_open',
         provider: targetProviderName,
@@ -1043,7 +1043,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       const fallbackName = cm.findAvailable(allProviderNames.filter((n) => n !== targetProviderName));
       if (fallbackName) {
         const fallbackProvider = providers.get(fallbackName)!;
-        console.log(`[Proxy] 🔄 Failing over: ${targetProviderName} → ${fallbackName}`);
+        logger.debug('proxy/anthropic-proxy', 🔄 Failing over: ${targetProviderName} → ${fallbackName});
         // Switch all target variables to the fallback provider
         targetProviderName = fallbackName;
         targetProvider = fallbackProvider;
@@ -1088,7 +1088,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     if (preMsgCount !== postMsgCount || Math.abs(preEstChars - postEstChars) > 100) {
       const savings = preEstChars - postEstChars;
-      console.log(`[Proxy] 🧠 ContextManager: ${preMsgCount}→${postMsgCount} msgs, ~${preEstChars.toLocaleString()}→~${postEstChars.toLocaleString()} chars (saved ${savings.toLocaleString()})`);
+      logger.debug('proxy/anthropic-proxy', 🧠 ContextManager: ${preMsgCount}→${postMsgCount} msgs, ~${preEstChars.toLocaleString()}→~${postEstChars.toLocaleString()} chars (saved ${savings.toLocaleString()}));
     }
     parsedBody = processedBody;
 
@@ -1112,7 +1112,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
                   thinking: cached,
                   signature: Buffer.from('cc-gw').toString('base64'),
                 });
-                console.log(`[Proxy] 🧠 Injected thinking block (cache hit, length: ${cached.length})`);
+                logger.debug('proxy/anthropic-proxy', 🧠 Injected thinking block (cache hit, length: ${cached.length}));
               }
             }
           }
@@ -1138,7 +1138,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
           }
         }
         if (added > 0) {
-          console.log(`[Proxy] 🔧 Injected ${added} IMtoAgent local tools: ${localTools.map((t: any) => t.function?.name).join(', ')}`);
+          logger.debug('proxy/anthropic-proxy', 🔧 Injected ${added} IMtoAgent local tools: ${localTools.map((t: any) => t.function?.name).join(', ')});
         }
       }
     }
@@ -1150,7 +1150,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     });
 
     if (hasLocal && toolRegistry) {
-      console.log(`[Proxy] 🔧 Tool-Call Loop: ${toolsList?.map(t => t.function?.name).join(', ')} — entering shared loop`);
+      logger.debug('proxy/anthropic-proxy', 🔧 Tool-Call Loop: ${toolsList?.map(t => t.function?.name).join(', ')} — entering shared loop);
       const { executeToolCallLoop } = await import('./tool-call-loop');
       const { createHttpRequestAdapter } = await import('./http-request-adapter');
 
@@ -1170,7 +1170,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       );
 
       if (loopResult.hadLocalTools) {
-        console.log(`[Proxy] ✅ Tool-Call Loop completed (${loopResult.loops} loops, messages modified)`);
+        logger.debug('proxy/anthropic-proxy', ✅ Tool-Call Loop completed (${loopResult.loops} loops, messages modified));
       }
       // 用 loop 后的最终 messages 重建请求体
       finalBody = JSON.stringify(parsedBody);
@@ -1193,7 +1193,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     const isStream = parsedBody.stream !== false;
 
-    console.log(`[Proxy] → ${targetProviderName}/${targetModelName} (${targetProvider.format}) ${req.method} ${req.url}${originalModel ? ` (original: ${originalModel})` : ''}`);
+    logger.debug('proxy/anthropic-proxy', → ${targetProviderName}/${targetModelName} (${targetProvider.format}) ${req.method} ${req.url}${originalModel ? ` (original: ${originalModel})` : ''});
 
     logEvent({
       event: 'proxy_upstream_request',
@@ -1255,7 +1255,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
           const respStr = Buffer.concat(respChunks).toString('utf-8');
 
           if (upstreamRes.statusCode !== 200) {
-            console.error(`[Proxy] Upstream error ${upstreamRes.statusCode}: ${respStr.slice(0, 500)}`);
+            logger.error('proxy/anthropic-proxy', Upstream error ${upstreamRes.statusCode}: ${respStr.slice(0, 500)});
             if (breaker) breaker.recordFailure();
             notifyUserError(upstreamRes.statusCode || 500);
             res.writeHead(upstreamRes.statusCode || 500, { 'Content-Type': 'application/json' });
@@ -1299,7 +1299,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
           } else {
             let openAIJson: OpenAIRequestBody;
             try { openAIJson = JSON.parse(respStr); } catch {
-              console.error(`[Proxy] OpenAI JSON parse failed: ${respStr.slice(0, 200)}`);
+              logger.error('proxy/anthropic-proxy', OpenAI JSON parse failed: ${respStr.slice(0, 200)});
               res.writeHead(502, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Invalid upstream response', type: 'api_error' }));
               return;
@@ -1332,7 +1332,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     upstreamReq.on('timeout', () => {
       upstreamReq.destroy();
-      console.error(`[Proxy] Request timeout (${REQUEST_TIMEOUT}ms)`);
+      logger.error('proxy/anthropic-proxy', Request timeout (${REQUEST_TIMEOUT}ms));
       logEvent({ event: 'proxy_upstream_error', provider: targetProviderName, error: 'timeout' });
       if (breaker) breaker.recordFailure();
       notifyUserError(504);
@@ -1343,7 +1343,7 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
     });
 
     upstreamReq.on('error', (err) => {
-      console.error(`[Proxy] Upstream request failed: ${err.message}`);
+      logger.error('proxy/anthropic-proxy', Upstream request failed: ${err.message});
       logEvent({ event: 'proxy_upstream_error', provider: targetProviderName, error: err.message });
       if (breaker) breaker.recordFailure();
       notifyUserError(502);
@@ -1430,7 +1430,7 @@ export function saveSessionMemory(memoryPath: string, data: SessionMemoryData): 
   try {
     fs.writeFileSync(memoryPath, JSON.stringify(data, null, 2));
   } catch (e: unknown) {
-    console.error(`[Memory] Failed to save session: ${e.message}`);
+    logger.error('proxy/anthropic-proxy', Failed to save session: ${e.message});
   }
 }
 
@@ -1439,7 +1439,7 @@ export function loadSessionMemory(memoryPath: string): SessionMemoryData | null 
     if (!fs.existsSync(memoryPath)) return null;
     return JSON.parse(fs.readFileSync(memoryPath, 'utf-8'));
   } catch (e: unknown) {
-    console.error(`[Memory] Failed to load session: ${e.message}`);
+    logger.error('proxy/anthropic-proxy', Failed to load session: ${e.message});
     return null;
   }
 }
@@ -1449,7 +1449,7 @@ export function deleteSessionMemory(chatId: string): void {
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   } catch (e: unknown) {
-    console.error(`[Memory] Failed to delete session ${chatId}: ${e.message}`);
+    logger.error('proxy/anthropic-proxy', Failed to delete session ${chatId}: ${e.message});
   }
 }
 
@@ -1461,7 +1461,7 @@ export function listPersistedSessions(): string[] {
       .filter(f => f.endsWith('.memory.json'))
       .map(f => f.replace('.memory.json', ''));
   } catch (e: unknown) {
-    console.error(`[Memory] Failed to scan session directory: ${e.message}`);
+    logger.error('proxy/anthropic-proxy', Failed to scan session directory: ${e.message});
     return [];
   }
 }

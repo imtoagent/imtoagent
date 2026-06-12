@@ -4,6 +4,7 @@
 
 import type { ScheduledTask, TaskRunState, OnFailureStrategy, TaskType } from './types';
 import { parseShanghaiTime, parseTimeTodayShanghai, getShanghaiDateParts } from './timezone';
+import { logger } from '../utils/logger';
 
 /** 心跳轮次硬上限 */
 export const HEARTBEAT_ROUNDS_MAX = 5;
@@ -258,7 +259,7 @@ export function parseHeartbeatTasks(
       // 校验
       if ((task.type === 'interval' || task.type === 'countdown') && !task.interval) {
         const msg = `Task "${task.name}" (${task.type}) missing interval, skipping`;
-        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        logger.warn('core/heartbeat', msg, { task: task.name, type: task.type });
         errors.push({ taskName: task.name, reason: msg });
         continue;
       }
@@ -267,26 +268,26 @@ export function parseHeartbeatTasks(
         const intervalMs = parseInterval(task.interval);
         if (intervalMs !== null && intervalMs < MIN_AGENT_INTERVAL_MS) {
           const msg = `Task "${task.name}" (${task.type}) interval "${task.interval}" is below minimum ${MIN_AGENT_INTERVAL}, skipping`;
-          console.warn(`[parseHeartbeatTasks] ${msg}`);
+          logger.warn('core/heartbeat', msg, { task: task.name, type: task.type, interval: task.interval });
           errors.push({ taskName: task.name, reason: msg });
           continue;
         }
       }
       if (task.type === 'once' && !task.at && !task.after) {
         const msg = `Task "${task.name}" (once) missing at/after, skipping`;
-        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        logger.warn('core/heartbeat', msg, { task: task.name });
         errors.push({ taskName: task.name, reason: msg });
         continue;
       }
       if (task.type === 'scheduled' && !task.at) {
         const msg = `Task "${task.name}" (scheduled) missing at, skipping`;
-        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        logger.warn('core/heartbeat', msg, { task: task.name });
         errors.push({ taskName: task.name, reason: msg });
         continue;
       }
       if (task.type === 'cron' && !task.cron) {
         const msg = `Task "${task.name}" (cron) missing cron expression, skipping`;
-        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        logger.warn('core/heartbeat', msg, { task: task.name });
         errors.push({ taskName: task.name, reason: msg });
         continue;
       }
@@ -295,7 +296,7 @@ export function parseHeartbeatTasks(
         tasks.push(task);
       } else if (!task.prompt) {
         const msg = `Task "${task.name}" missing prompt, skipping`;
-        console.warn(`[parseHeartbeatTasks] ${msg}`);
+        logger.warn('core/heartbeat', msg, { task: task.name });
         errors.push({ taskName: task.name, reason: msg });
       }
     } else {
@@ -640,7 +641,7 @@ import * as fs from 'fs';
 export function removeTaskFromHeartbeatFile(filePath: string, taskName: string): boolean {
   try {
     if (!fs.existsSync(filePath)) {
-      console.warn(`[removeTask] HEARTBEAT.md not found: ${filePath}`);
+      logger.warn('core/heartbeat', 'HEARTBEAT.md not found', { filePath });
       return false;
     }
 
@@ -699,7 +700,7 @@ export function removeTaskFromHeartbeatFile(filePath: string, taskName: string):
     }
 
     if (!removed) {
-      console.warn(`[removeTask] Task "${taskName}" not found in ${filePath}`);
+      logger.warn('core/heartbeat', 'Task not found', { taskName, filePath });
       return false;
     }
 
@@ -708,10 +709,10 @@ export function removeTaskFromHeartbeatFile(filePath: string, taskName: string):
     fs.writeFileSync(tmpPath, result.join('\n'), 'utf-8');
     fs.renameSync(tmpPath, filePath);
 
-    console.log(`[removeTask] Task "${taskName}" removed from ${filePath}`);
+    logger.info('core/heartbeat', 'Task removed', { taskName, filePath });
     return true;
   } catch (e: any) {
-    console.error(`[removeTask] Failed to remove task "${taskName}":`, e.message);
+    logger.error('core/heartbeat', 'Failed to remove task', { taskName, error: e.message });
     return false;
   }
 }

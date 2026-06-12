@@ -9,7 +9,7 @@ import type { IMModule, IMCapabilities, MessageHandler } from '../types';
 import type { UnifiedBlock } from '../capabilities';
 import type { MessageAttachment } from '../core/types';
 import { TelegramInboundAdapter, MediaStore, InboundMediaResolver } from '../media';
-import { logEvent } from '../utils/logger';
+import { logEvent, logger } from '../utils/logger';
 
 export interface TelegramConfig {
   /** Bot Token（从 @BotFather 获取） */
@@ -121,7 +121,7 @@ export class TelegramAdapter implements IMModule {
     this.apiUrl = `https://api.telegram.org/bot${this.token}`;
 
     if (cfg.proxy) {
-      console.log(`[Telegram] Proxy configured: ${cfg.proxy} (local only, does not affect other modules)`);
+      logger.info('im/telegram', 'Proxy configured', { proxy: cfg.proxy });
     }
   }
 
@@ -165,7 +165,7 @@ export class TelegramAdapter implements IMModule {
         // 降级：设置环境变量（影响全局，但总比没有好）
         if (!process.env.HTTPS_PROXY && !process.env.https_proxy) {
           process.env.HTTPS_PROXY = this.proxy;
-          console.log(`[Telegram] Set HTTPS_PROXY=${this.proxy}`);
+          logger.info('im/telegram', 'Set HTTPS_PROXY', { proxy: this.proxy });
         }
       }
     }
@@ -197,13 +197,13 @@ export class TelegramAdapter implements IMModule {
     this.handler = handler;
     this.running = true;
     this._poll();
-    console.log('[Telegram] Long polling started');
+    logger.info('im/telegram', 'Long polling started');
   }
 
   stop(): void {
     this.running = false;
     if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
-    console.log('[Telegram] Stopped');
+    logger.info('im/telegram', 'Stopped');
   }
 
   // ================================================================
@@ -243,7 +243,7 @@ export class TelegramAdapter implements IMModule {
           });
           if (this.handler) {
             this.handler(chatId, text, userId, attachments.length > 0 ? attachments : undefined).catch(e =>
-              console.error('[Telegram] Message processing error:', e.message)
+              logger.error('im/telegram', 'Message processing error', { error: e.message })
             );
           }
         }
@@ -251,7 +251,7 @@ export class TelegramAdapter implements IMModule {
       }
     } catch (e: unknown) {
       if (!this.warnedPollError) {
-        console.error('[Telegram] Long poll error:', e.message);
+        logger.error('im/telegram', 'Long poll error', { error: e.message });
         this.warnedPollError = true;
       }
     }
@@ -351,7 +351,7 @@ export class TelegramAdapter implements IMModule {
           if (voiceAtt) voiceAtt.durationMs = msg.voice.duration * 1000;
         }
       } catch (e: unknown) {
-        console.error('[Telegram] Media resolution error:', e.message);
+        logger.error('im/telegram', 'Media resolution error', { error: e.message });
       }
     }
 
@@ -380,7 +380,7 @@ export class TelegramAdapter implements IMModule {
   /** 成功后重置所有状态 */
   private _onSuccess(): void {
     if (this.circuitOpen) {
-      console.log('[Telegram] Network recovered, long polling restored');
+      logger.info('im/telegram', 'Network recovered, long polling restored');
     }
     this.circuitOpen = false;
     this.consecutiveFailures = 0;
@@ -397,7 +397,7 @@ export class TelegramAdapter implements IMModule {
       this.circuitOpen = true;
       this.backoffMs = this.recoveryInterval;
       if (!this.warnedCircuitOpen) {
-        console.error('[Telegram] ⚠️ Consecutive failures, circuit breaker activated (probing recovery every 30s)');
+        logger.error('im/telegram', 'Circuit breaker activated', { consecutiveFailures: this.consecutiveFailures, recoveryInterval: `${this.recoveryInterval}ms` });
         this.warnedCircuitOpen = true;
       }
     } else if (!this.circuitOpen) {
@@ -529,7 +529,7 @@ export class TelegramAdapter implements IMModule {
       photo: imageKey,
       caption: alt || '',
     }).catch(async () => {
-      console.error(`[Telegram] Image send failed`);
+      logger.error('im/telegram', 'Image send failed');
     });
   }
 
@@ -563,7 +563,7 @@ export class TelegramAdapter implements IMModule {
       document: fileKey,
       caption: fileName,
     }).catch(() => {
-      console.error(`[Telegram] File send failed: ${fileName}`);
+      logger.error('im/telegram', 'File send failed', { fileName });
     });
   }
 
