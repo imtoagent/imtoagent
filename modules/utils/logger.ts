@@ -7,13 +7,14 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as zlib from 'zlib';
 import { getLogsDir } from './paths';
 
 // ================================================================
 // Log rotation config
 // ================================================================
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB
-const MAX_ROTATED_FILES = 7;
+const MAX_ROTATED_FILES = 5;
 const RETENTION_DAYS = 30;
 
 // ================================================================
@@ -59,6 +60,7 @@ export interface LogEvent {
 
 let _logStream: fs.WriteStream | null = null;
 let _logPath: string | null = null;
+let _currentLogDate: string | null = null; // Tracks the date of the current log file (YYYY-MM-DD)
 
 // ================================================================
 // Plain-text human-readable log (imtoagent.log)
@@ -95,12 +97,29 @@ function getTextLogStream(): fs.WriteStream {
   return _textLogStream;
 }
 
+/**
+ * Get today's dated log file path: events-YYYY-MM-DD.jsonl
+ */
+function getDatedLogFileName(): string {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  return `events-${yyyy}-${mm}-${dd}.jsonl`;
+}
+
+/**
+ * Get or create the write stream for events-YYYY-MM-DD.jsonl.
+ * Lazily initialized on first call.
+ */
 function getLogStream(): fs.WriteStream {
   if (_logStream) return _logStream;
 
   try {
     const logsDir = getLogsDir();
-    _logPath = path.join(logsDir, 'events.jsonl');
+    const datedFile = getDatedLogFileName();
+    _currentLogDate = datedFile.replace(/^events-/, '').replace(/\.jsonl$/, '');
+    _logPath = path.join(logsDir, datedFile);
     fs.mkdirSync(logsDir, { recursive: true });
 
     // Check rotation on startup
@@ -140,14 +159,14 @@ function rotateLogIfNeeded(): void {
     const stats = fs.statSync(_logPath);
     if (stats.size < MAX_LOG_SIZE) return;
 
-    // Rotate: events.jsonl → events.jsonl.1 → .2 → ...
+    // Rotate: events.jsonl → events.jsonl.1.gz → events.jsonl.2.gz → ...
     const logsDir = path.dirname(_logPath);
     const baseName = path.basename(_logPath); // events.jsonl
 
-    // Shift existing rotated files
+    // Shift existing rotated .gz files
     for (let i = MAX_ROTATED_FILES - 1; i >= 1; i--) {
-      const src = path.join(logsDir, `${baseName}.${i}`);
-      const dst = path.join(logsDir, `${baseName}.${i + 1}`);
+      const src = path.join(logsDir, `${baseName}.${i}.gz`);
+      const dst = path.join(logsDir, `${baseName}.${i + 1}.gz`);
       if (fs.existsSync(src)) {
         if (i + 1 > MAX_ROTATED_FILES) {
           fs.unlinkSync(src); // Delete if exceeds max
@@ -157,14 +176,58 @@ function rotateLogIfNeeded(): void {
       }
     }
 
-    // Move current to .1
-    fs.renameSync(_logPath, path.join(logsDir, `${baseName}.1`));
+    // Compress current file to .1.gz, then remove uncompressed original
+    try {
+      const raw = fs.readFileSync(_logPath);
+      const compressed = zlib.gzipSync(raw);
+      fs.writeFileSync(path.join(logsDir, `${baseName}.1.gz`), compressed);
+      fs.unlinkSync(_logPath);
+    } catch (compressErr) {
+      console.error(`[Logger] Log compression failed: ${(compressErr as Error).message}`);
+    }
 
     // Update internal path and stream references
     // The caller will create a new stream after this
     _logPath = path.join(logsDir, baseName);
   } catch (err) {
     console.error(`[Logger] Log rotation failed: ${(err as Error).message}`);
+  }
+}
+
+// ================================================================
+// Daily log rotation
+// ================================================================
+
+/**
+ * Check if the date has changed since the current log file was created.
+ * If so, close the old stream and open a new dated file.
+ */
+function rotateDailyIfNeeded(): void {
+  if (!_logPath) return;
+
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const todayDate = `${yyyy}-${mm}-${dd}`;
+
+  // Same day, nothing to do
+  if (_currentLogDate === todayDate) return;
+
+  try {
+    // Close old stream
+    if (_logStream && !_logStream.destroyed) {
+      _logStream.end();
+      _logStream = null;
+    }
+
+    const logsDir = getLogsDir();
+    const datedFile = `events-${todayDate}.jsonl`;
+    _currentLogDate = todayDate;
+    _logPath = path.join(logsDir, datedFile);
+    fs.mkdirSync(logsDir, { recursive: true });
+  } catch (err) {
+    console.error(`[Logger] Daily rotation failed: ${(err as Error).message}`);
   }
 }
 
@@ -188,10 +251,26 @@ function cleanOldLogs(): void {
     try {
       const files = fs.readdirSync(dir);
       for (const file of files) {
-        if (!candidates.some((b) => file.startsWith(b))) continue;
+        // Match events.jsonl.* (rotated), events-YYYY-MM-DD.jsonl (dated), and imtoagent.log.*
+        const isDated = /^events-\d{4}-\d{2}-\d{2}\.jsonl$/.test(file);
+        const isRotated = candidates.some((b) => file.startsWith(b));
+        if (!isDated && !isRotated) continue;
+
         const filePath = path.join(dir, file);
         try {
           const stats = fs.statSync(filePath);
+          // For dated files, use the date embedded in the filename for more accurate cleanup
+          if (isDated) {
+            const dateMatch = file.match(/^events-(\d{4}-\d{2}-\d{2})\.jsonl$/);
+            if (dateMatch) {
+              const fileDate = new Date(dateMatch[1] + 'T00:00:00Z').getTime();
+              if (fileDate < cutoff) {
+                fs.unlinkSync(filePath);
+              }
+              continue;
+            }
+          }
+          // Fallback: use mtime for rotated files
           if (stats.mtimeMs < cutoff) {
             fs.unlinkSync(filePath);
           }
@@ -219,7 +298,10 @@ export function logEvent(event: LogEvent): void {
     console.error(summary);
   }
 
-  // Check rotation before writing (handles daily rotation + size-based)
+  // Check daily rotation before writing
+  rotateDailyIfNeeded();
+
+  // Check size-based rotation before writing
   rotateLogIfNeeded();
 
   // Append to JSONL file
@@ -292,6 +374,7 @@ export function flushLogs(): Promise<void> {
       _logStream.end(() => {
         _logStream = null;
         _logPath = null;
+        _currentLogDate = null;
         resolve();
       });
     } else {
@@ -302,26 +385,118 @@ export function flushLogs(): Promise<void> {
 
 /**
  * Read recent log entries (for CLI display or debugging).
+ * Tries: current dated file → compressed archives → latest dated file → yesterday's dated file.
  */
 export function readRecentLogs(maxLines: number = 50): LogEvent[] {
-  if (!_logPath || !fs.existsSync(_logPath)) {
-    return [];
+  // Try current dated JSONL first
+  if (_logPath && fs.existsSync(_logPath)) {
+    try {
+      const content = fs.readFileSync(_logPath, 'utf-8');
+      const events = parseJsonlLines(content, maxLines);
+      // If we got enough lines, return
+      if (events.length >= maxLines) return events;
+
+      // Not enough — try yesterday's dated file
+      const yesterdayPath = getYesterdayDatedLogFile(_logPath);
+      if (yesterdayPath && fs.existsSync(yesterdayPath)) {
+        try {
+          const yesterdayContent = fs.readFileSync(yesterdayPath, 'utf-8');
+          const yesterdayEvents = parseJsonlLines(yesterdayContent, maxLines);
+          const needed = maxLines - events.length;
+          const yesterdaySlice = yesterdayEvents.slice(-needed);
+          return [...yesterdaySlice, ...events];
+        } catch {
+          // Ignore yesterday read errors
+        }
+      }
+      return events;
+    } catch {
+      // fall through to gz archives
+    }
   }
 
-  try {
-    const content = fs.readFileSync(_logPath, 'utf-8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    const recent = lines.slice(-maxLines);
-    return recent.map((line) => {
-      try {
-        return JSON.parse(line) as LogEvent;
-      } catch {
-        return null;
+  // Try compressed archives (.1.gz, .2.gz, ...)
+  if (_logPath) {
+    const logsDir = path.dirname(_logPath);
+    const baseName = path.basename(_logPath);
+    for (let i = 1; i <= MAX_ROTATED_FILES; i++) {
+      const gzPath = path.join(logsDir, `${baseName}.${i}.gz`);
+      if (fs.existsSync(gzPath)) {
+        try {
+          const compressed = fs.readFileSync(gzPath);
+          const content = zlib.gunzipSync(compressed).toString('utf-8');
+          return parseJsonlLines(content, maxLines);
+        } catch {
+          continue;
+        }
       }
-    }).filter(Boolean) as LogEvent[];
-  } catch {
-    return [];
+    }
   }
+
+  // Fallback: find the latest dated file
+  const latestDated = findLatestDatedLogFile();
+  if (latestDated && fs.existsSync(latestDated)) {
+    try {
+      const content = fs.readFileSync(latestDated, 'utf-8');
+      return parseJsonlLines(content, maxLines);
+    } catch {
+      // ignore
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Find the most recent dated log file.
+ * Returns the file path or null if none found.
+ */
+function findLatestDatedLogFile(): string | null {
+  if (!_logPath) return null;
+  const logsDir = path.dirname(_logPath);
+
+  try {
+    const files = fs.readdirSync(logsDir);
+    const datedFiles = files
+      .filter((f) => /^events-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+      .sort((a, b) => b.localeCompare(a)); // Descending (newest first)
+
+    if (datedFiles.length > 0) {
+      return path.join(logsDir, datedFiles[0]);
+    }
+  } catch {
+    // Directory may not exist
+  }
+  return null;
+}
+
+/**
+ * Get the dated log file path for the day before the given file.
+ */
+function getYesterdayDatedLogFile(todayPath: string): string | null {
+  const baseName = path.basename(todayPath);
+  const match = baseName.match(/^events-(\d{4})-(\d{2})-(\d{2})\.jsonl$/);
+  if (!match) return null;
+
+  const [, yyyy, mm, dd] = match;
+  const date = new Date(`${yyyy}-${mm}-${dd}T00:00:00Z`);
+  date.setDate(date.getDate() - 1);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return path.join(path.dirname(todayPath), `events-${y}-${m}-${d}.jsonl`);
+}
+
+function parseJsonlLines(content: string, maxLines: number): LogEvent[] {
+  const lines = content.trim().split('\n').filter(Boolean);
+  const recent = lines.slice(-maxLines);
+  return recent.map((line) => {
+    try {
+      return JSON.parse(line) as LogEvent;
+    } catch {
+      return null;
+    }
+  }).filter(Boolean) as LogEvent[];
 }
 
 // ================================================================
@@ -343,8 +518,8 @@ function rotateTextLogIfNeeded(): void {
     const baseName = path.basename(_textLogPath);
 
     for (let i = MAX_ROTATED_FILES - 1; i >= 1; i--) {
-      const src = path.join(logsDir, `${baseName}.${i}`);
-      const dst = path.join(logsDir, `${baseName}.${i + 1}`);
+      const src = path.join(logsDir, `${baseName}.${i}.gz`);
+      const dst = path.join(logsDir, `${baseName}.${i + 1}.gz`);
       if (fs.existsSync(src)) {
         if (i + 1 > MAX_ROTATED_FILES) {
           fs.unlinkSync(src);
@@ -354,7 +529,15 @@ function rotateTextLogIfNeeded(): void {
       }
     }
 
-    fs.renameSync(_textLogPath, path.join(logsDir, `${baseName}.1`));
+    // Compress current text log to .1.gz, then remove uncompressed original
+    try {
+      const raw = fs.readFileSync(_textLogPath);
+      const compressed = zlib.gzipSync(raw);
+      fs.writeFileSync(path.join(logsDir, `${baseName}.1.gz`), compressed);
+      fs.unlinkSync(_textLogPath);
+    } catch (compressErr) {
+      console.error(`[Logger] Text log compression failed: ${(compressErr as Error).message}`);
+    }
 
     // Close old stream so next call creates a fresh one
     if (_textLogStream) {
