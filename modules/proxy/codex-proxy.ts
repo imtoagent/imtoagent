@@ -6,6 +6,7 @@ import { buildSystemPrompt, buildPromptContext, resolveCapabilities, DEFAULT_TER
 import * as path from 'path';
 import * as fs from 'fs';
 import { getDataDir, getBotConfigPath } from '../utils/paths';
+import { resolveModel, buildCodexResolveContext, type ResolvedModel } from '../core/model-resolver';
 import { logUsage } from './usage-logger';
 import { ContextManager } from './context-manager';
 import type { OpenAIRequestBody, OpenAITool, OpenAIStreamChunk, AnthropicResponseUsage } from './proxy-types';
@@ -150,24 +151,23 @@ function _buildConfig(overrides?: Partial<CodexProxyConfig>): CodexProxyConfig {
   const codex = raw.codex || {};
   const providers = raw.providers || {};
 
-  // 优先从 activeModel 解析（统一模型选择），fallback 到 codex.model（旧版兼容）
-  // 🔧 不再硬编码默认模型，从已配置的 providers 中动态获取
-  let modelId = codex.model || '';
-  let providerName = '';
-  if (raw.activeModel) {
-    const parsed = parseActiveModel(raw.activeModel);
-    if (parsed.model) {
-      modelId = parsed.model;
-      providerName = parsed.provider;
-    }
+  // 统一模型解析：通过 model-resolver 解析默认模型
+  const dataDir = getDataDir();
+  let resolved: ResolvedModel;
+  try {
+    const ctx = buildCodexResolveContext('CodexBot', dataDir);
+    resolved = resolveModel('default', ctx);
+  } catch {
+    // 解析失败时保留旧版行为（从 codex.model 取）
+    const modelId = codex.model || '';
+    const parsed = parseActiveModel(modelId);
+    resolved = { spec: modelId, provider: parsed.provider, model: parsed.model };
   }
 
   let apiKey = '';
-  // 优先用解析出的 provider 名称找 apiKey
-  if (providerName && providers[providerName]) {
-    apiKey = (providers[providerName] as Record<string, unknown>).apiKey as string || '';
+  if (resolved.provider && providers[resolved.provider]) {
+    apiKey = (providers[resolved.provider] as Record<string, unknown>).apiKey as string || '';
   }
-  // fallback：取第一个有 apiKey 的 provider
   if (!apiKey) {
     for (const name of Object.keys(providers)) {
       apiKey = (providers[name] as Record<string, unknown>).apiKey as string || '';
@@ -176,12 +176,12 @@ function _buildConfig(overrides?: Partial<CodexProxyConfig>): CodexProxyConfig {
   }
 
   const base: CodexProxyConfig = {
-    model: modelId,
+    model: resolved.model,
     reportedModel: codex.reportedModel || 'gpt-5.5',
     upstream: codex.upstream || 'https://api.deepseek.com/v1/chat/completions',
     apiKey,
-    activeModelProvider: providerName || undefined,
-    supportedInputTypes: resolveSupportedInputTypes(providers, modelId),
+    activeModelProvider: resolved.provider || undefined,
+    supportedInputTypes: resolveSupportedInputTypes(providers, resolved.model),
   };
   return overrides ? { ...base, ...overrides } : base;
 }
@@ -190,80 +190,56 @@ function getConfig(): CodexProxyConfig {
   // Bot 独立配置文件作为唯一真相源 — 每次实时读取
   const botCtx = getCurrentBot();
   const botId = botCtx?.botId || 'CodexBot';
-  const botConfigPath = getBotConfigPath(botId);
+  const dataDir = getDataDir();
 
-  let activeModel: string | undefined;
-
-  // 优先读 bot.json（唯一真相源）
+  // 通过 model-resolver 统一解析（bot 级优先，零硬编码）
+  let resolved: ResolvedModel | null = null;
   try {
-    if (fs.existsSync(botConfigPath)) {
-      const botCfg = JSON.parse(fs.readFileSync(botConfigPath, 'utf-8'));
-      activeModel = botCfg.activeModel;
-    }
-  } catch (e: unknown) {
-    console.error(`[Codex Proxy] Failed to read bot.json: ${(e as Error).message}`);
-  }
+    const ctx = buildCodexResolveContext(botId, dataDir);
 
-  // Fallback: 用 botCtx.activeModel（内存变量）或 config.json.activeModel
-  if (!activeModel) {
+    // 如果 botCtx 有内存中的 activeModel，覆盖到 ctx
     if (botCtx?.activeModel) {
-      activeModel = botCtx.activeModel;
-    } else {
-      try {
-        const configPath = path.join(getDataDir(), 'config.json');
-        const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        activeModel = raw.activeModel;
-      } catch {
-        // 最终 fallback 到 _codexConfig
-        if (!_codexConfig) _codexConfig = _buildConfig();
-        return _codexConfig!;
-      }
+      ctx.botActiveModel = botCtx.activeModel;
     }
+
+    resolved = resolveModel('default', ctx);
+  } catch (e: unknown) {
+    console.error(`[Codex Proxy] Model resolver failed: ${(e as Error).message}`);
+    // fallback 到旧版 _codexConfig
+    if (!_codexConfig) _codexConfig = _buildConfig();
+    return _codexConfig!;
   }
 
-  // 用 activeModel 构建配置
-  if (activeModel) {
-    const parsed = parseActiveModel(activeModel);
-    const providersPath = path.join(getDataDir(), 'config.json');
-    try {
-      const raw = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
-      const providers = raw.providers || {};
-      const codex = raw.codex || {};
+  const providersPath = path.join(dataDir, 'config.json');
+  try {
+    const raw = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
+    const providers = raw.providers || {};
+    const codex = raw.codex || {};
 
-      let apiKey = '';
-      if (parsed.provider && providers[parsed.provider]) {
-        apiKey = (providers[parsed.provider] as Record<string, unknown>).apiKey as string || '';
-      }
-      if (!apiKey) {
-        for (const name of Object.keys(providers)) {
-          apiKey = (providers[name] as Record<string, unknown>).apiKey as string || '';
-          if (apiKey) break;
-        }
-      }
-
-      return {
-        model: parsed.model,
-        reportedModel: codex.reportedModel || 'gpt-5.5',
-        upstream: codex.upstream || 'https://api.deepseek.com/v1/chat/completions',
-        apiKey,
-        activeModelProvider: parsed.provider || undefined,
-        supportedInputTypes: resolveSupportedInputTypes(providers, parsed.model),
-      };
-    } catch (e: unknown) {
-      console.error(`[Codex Proxy] Failed to build Bot-level config: ${(e as Error).message}`);
+    let apiKey = '';
+    if (resolved.provider && providers[resolved.provider]) {
+      apiKey = (providers[resolved.provider] as Record<string, unknown>).apiKey as string || '';
     }
-  }
-
-  // fallback：用 _codexConfig（启动时 initCodexProxyConfig 设置的全局配置）
-  if (!_codexConfig) {
-    try {
-      _codexConfig = _buildConfig();
-      console.log(`[Codex Proxy] Loaded config from config.json (activeModel → model=${_codexConfig.model})`);
-    } catch (e: unknown) {
-      console.error(`[Codex Proxy] Unable to load config: ${(e as Error).message}`);
+    if (!apiKey) {
+      for (const name of Object.keys(providers)) {
+        apiKey = (providers[name] as Record<string, unknown>).apiKey as string || '';
+        if (apiKey) break;
+      }
     }
+
+    return {
+      model: resolved.model,
+      reportedModel: codex.reportedModel || 'gpt-5.5',
+      upstream: codex.upstream || 'https://api.deepseek.com/v1/chat/completions',
+      apiKey,
+      activeModelProvider: resolved.provider || undefined,
+      supportedInputTypes: resolveSupportedInputTypes(providers, resolved.model),
+    };
+  } catch (e: unknown) {
+    console.error(`[Codex Proxy] Failed to build Bot-level config: ${(e as Error).message}`);
+    if (!_codexConfig) _codexConfig = _buildConfig();
+    return _codexConfig!;
   }
-  return _codexConfig!;
 }
 
 const MODEL = () => getConfig().model;

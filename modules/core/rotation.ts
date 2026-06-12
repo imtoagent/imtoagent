@@ -5,7 +5,7 @@
 // 解决长周期运行（heartbeat/cron）导致的上下文无限膨胀问题。
 // ================================================================
 
-import type { Session } from ./types;
+import type { Session } from './types';
 
 /** 轮转配置 */
 export interface RotationConfig {
