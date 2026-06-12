@@ -11,7 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
-import { getDataDir, getConfigPath } from './paths';
+import { getDataDir, getConfigPath, getBotConfigPath, getRestartSignalPath } from './paths';
 import crypto from 'crypto';
 
 // ================================================================
@@ -238,8 +238,32 @@ export async function cmdConfigAdd(): Promise<void> {
   config.bots.push(newBot);
   saveConfig(config, configPath);
 
+  // 自动创建 bot.json
+  try {
+    const botCfgPath = getBotConfigPath(name);
+    const botDir = path.dirname(botCfgPath);
+    if (!fs.existsSync(botDir)) {
+      fs.mkdirSync(botDir, { recursive: true });
+    }
+    if (!fs.existsSync(botCfgPath)) {
+      fs.writeFileSync(botCfgPath, JSON.stringify({}, null, 2));
+      console.log(`   Created bots/${name}/bot.json`);
+    }
+  } catch (e: unknown) {
+    console.error(`   ⚠️  Failed to create bot.json: ${(e as Error).message}`);
+  }
+
   console.log(`\n✅ Bot "${name}" created!`);
-  console.log(`   Run "imtoagent restore" to hot-reload the gateway.\n`);
+
+  // 自动触发热重载
+  try {
+    const signalPath = getRestartSignalPath();
+    fs.writeFileSync(signalPath, JSON.stringify({ reason: `Bot "${name}" added`, timestamp: Date.now() }));
+    console.log(`   🔄 Hot-reload signal written (gateway will auto-reload)`);
+  } catch (e: unknown) {
+    console.log(`   Run "imtoagent restore" to hot-reload the gateway.`);
+  }
+
   rl.close();
 }
 
@@ -268,7 +292,16 @@ export async function cmdConfigRemove(name: string): Promise<void> {
   saveConfig(config, configPath);
 
   console.log(`\n✅ Bot "${name}" removed`);
-  console.log(`   Run "imtoagent restore" to hot-reload the gateway.\n`);
+
+  // 自动触发热重载
+  try {
+    const signalPath = getRestartSignalPath();
+    fs.writeFileSync(signalPath, JSON.stringify({ reason: `Bot "${name}" removed`, timestamp: Date.now() }));
+    console.log(`   🔄 Hot-reload signal written (gateway will auto-reload)`);
+  } catch (e: unknown) {
+    console.log(`   Run "imtoagent restore" to hot-reload the gateway.`);
+  }
+
   rl.close();
 }
 
@@ -355,7 +388,16 @@ export async function cmdConfigModify(name: string): Promise<void> {
 
   saveConfig(config, configPath);
   console.log(`\n✅ Bot "${name}" updated`);
-  console.log(`   Run "imtoagent restore" to hot-reload the gateway.\n`);
+
+  // 自动触发热重载
+  try {
+    const signalPath = getRestartSignalPath();
+    fs.writeFileSync(signalPath, JSON.stringify({ reason: `Bot "${name}" modified`, timestamp: Date.now() }));
+    console.log(`   🔄 Hot-reload signal written (gateway will auto-reload)`);
+  } catch (e: unknown) {
+    console.log(`   Run "imtoagent restore" to hot-reload the gateway.`);
+  }
+
   rl.close();
 }
 

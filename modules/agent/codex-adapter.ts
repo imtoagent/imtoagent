@@ -402,7 +402,7 @@ export class CodexAdapter implements AgentAdapter {
         return `❌ 未知供应商：${providerName}\n使用 /model list 查看可用供应商`;
       }
 
-      // 持久化到 bot-config.json（唯一真相源）
+      // 持久化到 bot.json（唯一真相源）
       const botCfgPath = getBotConfigPath(this.ctx.botName);
       const botDir = path.dirname(botCfgPath);
       if (!fs.existsSync(botDir)) {
@@ -416,7 +416,7 @@ export class CodexAdapter implements AgentAdapter {
       fs.writeFileSync(botCfgPath, JSON.stringify(botCfg, null, 2));
 
       console.log(`[CodexAdapter] /model command: ${currentActiveModel} → ${resolvedSpec}`);
-      console.log(`[CodexAdapter] 已写入 bot-config.json: ${botCfgPath}`);
+      console.log(`[CodexAdapter] 已写入 bot.json: ${botCfgPath}`);
 
       return `✅ 模型已切换：${resolvedSpec}`;
     } catch (e: unknown) {

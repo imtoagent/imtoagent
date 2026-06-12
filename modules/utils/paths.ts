@@ -196,9 +196,9 @@ export function getBotsDir(): string {
   return path.join(getDataDir(), 'bots');
 }
 
-/** Bot 级别配置文件路径：~/.imtoagent/bots/<botId>/bot-config.json */
+/** Bot 级别配置文件路径：~/.imtoagent/bots/<botId>/bot.json */
 export function getBotConfigPath(botId: string): string {
-  return path.join(getDataDir(), 'bots', botId, 'bot-config.json');
+  return path.join(getDataDir(), 'bots', botId, 'bot.json');
 }
 
 export function getOpencodeConfigPath(): string {
@@ -242,4 +242,9 @@ export function getTemplateSoulPath(filename: string): string {
 export function resetPathCache(): void {
   _dataDir = null;
   _pkgDir = null;
+}
+
+/** 热重载信号文件路径：~/.imtoagent/.restart_requested */
+export function getRestartSignalPath(): string {
+  return path.join(process.env.HOME!, '.imtoagent', '.restart_requested');
 }

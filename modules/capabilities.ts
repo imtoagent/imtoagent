@@ -119,6 +119,16 @@ function extractInlineText(token: { children?: Array<{ content?: string }> }): s
  * 使用 markdown-it AST 解析文本中的表格
  * 返回表格匹配的位置和结构化数据（headers 和 rows 均保留空单元格）
  */
+/** Convert line number to character offset in text */
+function lineToOffset(text: string, line: number): number {
+  const lines = text.split('\n');
+  let offset = 0;
+  for (let i = 0; i < Math.min(line, lines.length); i++) {
+    offset += lines[i].length + 1; // +1 for the newline char
+  }
+  return offset;
+}
+
 function extractTablesAST(text: string, enabled: boolean): RangeMatch[] {
   if (!enabled) return [];
 
@@ -191,25 +201,23 @@ function extractTablesAST(text: string, enabled: boolean): RangeMatch[] {
           return r.slice(0, colCount);
         });
 
-        // 估算表格在原文中的起止位置
-        const firstInline = tokens.slice(i + 1, j).find((t: { type: string }) => t.type === 'inline');
+        // 使用 table token 的 map 属性（行号范围）定位原文中的起止位置
+        const tableMap = tok.map;
         let startIdx = 0;
-        if (firstInline?.map?.[0] !== undefined) {
-          startIdx = firstInline.map[0];
-        } else if (headers.length > 0) {
+        let endOffset = text.length;
+        if (tableMap && tableMap[0] !== undefined) {
+          startIdx = lineToOffset(text, tableMap[0]);
+          // 结束位置在 tableMap[1] 行的开头（map[1] 是结束行的下一行）
+          if (tableMap[1] !== undefined) {
+            endOffset = lineToOffset(text, tableMap[1]);
+          }
+        }
+        if (endOffset <= startIdx) {
+          // fallback: 用文本搜索
           const headerText = headers[0];
           const found = text.indexOf(headerText);
           startIdx = found >= 0 ? found : 0;
-        }
-        const endSearch = Math.min(startIdx + 3000, text.length);
-        const searchArea = text.slice(startIdx, endSearch);
-        // 查找最后一个 data row 的内容来定位结束位置
-        const lastRow = rows[rows.length - 1] || [];
-        const lastCellText = lastRow.find(c => c) || '';
-        let endOffset = endSearch;
-        if (lastCellText) {
-          const lastIdx = text.lastIndexOf(lastCellText, endSearch);
-          if (lastIdx > startIdx) endOffset = lastIdx + lastCellText.length;
+          endOffset = text.length;
         }
 
         matches.push({

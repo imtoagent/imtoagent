@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getDataDir, initDataDir, getPkgDir, getTemplatePath, getSoulDir } from '../utils/paths';
+import { getDataDir, initDataDir, getPkgDir, getTemplatePath, getSoulDir, getBotConfigPath, getRestartSignalPath } from '../utils/paths';
 import { randomUUID } from 'crypto';
 import { checkAllBackends, formatBackendStatus } from '../utils/backend-check';
 
@@ -292,8 +292,36 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   const dotDir = path.join(home, '.imtoagent');
   const dotConfigPath = path.join(dotDir, 'config.json');
   if (fs.existsSync(dotDir) && !fs.existsSync(dotConfigPath)) {
+    console.error('');
     console.error('⚠️  ~/.imtoagent/ exists but config.json is missing');
-    console.error('   Initializing fresh config...\n');
+    console.error('   This may happen if the config file was accidentally deleted.');
+    console.error('');
+
+    // 1. Backup existing data directory first
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const backupDir = `${dotDir}.bak.${timestamp}`;
+    try {
+      copyDirSync(dotDir, backupDir);
+      console.error(`✅ Data directory backed up to: ${backupDir}`);
+    } catch (e: unknown) {
+      console.error(`⚠️  Backup failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // 2. Give user a choice
+    const choice = await selectMenu('How to proceed?', [
+      'Create fresh config from template (continue setup)',
+      'Exit and restore manually from backup',
+    ]);
+    if (choice === -1 || choice === 1) {
+      console.error('');
+      console.error('👋 Exiting. To restore manually:');
+      console.error(`   cp ${backupDir}/config.json ${dotConfigPath}`);
+      console.error('');
+      process.exit(0);
+    }
+
+    // choice === 0: continue with fresh config
+    console.error('');
     initDataDir(dotDir, process.env.IMTOAGENT_HOME || '');
   }
 
@@ -461,8 +489,9 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
       isAdmin: bots.length === 0,  // 第一个 Bot 为 admin，后续为 false
     };
 
-    // Feishu needs appId + appSecret
+    // Feishu needs appId + appSecret + im field
     if (imType === 'feishu') {
+      bot.im = 'feishu';
       bot.appId = credentials.appId || '';
       bot.appSecret = credentials.appSecret || '';
     }
@@ -508,6 +537,21 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
     };
     bots.push(bot);
     console.log(`✅ Added: ${finalName}`);
+
+    // 自动创建 bot.json
+    try {
+      const botCfgPath = getBotConfigPath(finalName);
+      const botDir = path.dirname(botCfgPath);
+      if (!fs.existsSync(botDir)) {
+        fs.mkdirSync(botDir, { recursive: true });
+      }
+      if (!fs.existsSync(botCfgPath)) {
+        fs.writeFileSync(botCfgPath, JSON.stringify({}, null, 2));
+        console.log(`   Created bots/${finalName}/bot.json`);
+      }
+    } catch (e: unknown) {
+      console.error(`   ⚠️  Failed to create bot.json: ${(e as Error).message}`);
+    }
 
     // Whether to continue adding
     const r = await confirm('Add another Bot?', true);
@@ -847,6 +891,13 @@ export async function runSetupWizard(options?: SetupOptions): Promise<void> {
   console.log(`\nNext steps:`);
   console.log(`  imtoagent start    Start the gateway`);
   console.log(`  imtoagent status   Check status\n`);
+
+  // 如果当前已经在运行，自动触发热重载
+  try {
+    const signalPath = getRestartSignalPath();
+    fs.writeFileSync(signalPath, JSON.stringify({ reason: 'Setup wizard completed', timestamp: Date.now() }));
+    console.log('🔄 Hot-reload signal written (gateway will auto-reload if running)');
+  } catch {}
 }
 
 // ================================================================
@@ -862,4 +913,18 @@ function buildDefaultAliases(defaultModel: string): Record<string, string> {
     best: defaultModel,
     opencode: defaultModel,
   };
+}
+
+/** Sync copy of a directory (mirrored from paths.ts) */
+function copyDirSync(src: string, dst: string) {
+  if (!fs.existsSync(dst)) fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src)) {
+    const srcPath = path.join(src, entry);
+    const dstPath = path.join(dst, entry);
+    if (fs.statSync(srcPath).isDirectory()) {
+      copyDirSync(srcPath, dstPath);
+    } else {
+      fs.copyFileSync(srcPath, dstPath);
+    }
+  }
 }

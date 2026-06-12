@@ -33,6 +33,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "@larksuiteoapi/node-sdk": "^1.62.0",
     "@wecom/aibot-node-sdk": "^1.0.7",
+    "markdown-it": "^14.1.0",
     "qrcode": "^1.5.4"
   },
   "engines": {

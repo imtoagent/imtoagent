@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 import type { ConfigManager, BotConfig, ProviderConfig } from './types';
-import { getDataDir, getSessionsDir, getBotConfigPath } from '../utils/paths';
+import { getDataDir, getBotConfigPath } from '../utils/paths';
 import { migrateConfigs } from '../utils/config-migration';
 
 /** 全局 config.json 结构 */
@@ -110,40 +110,30 @@ export class FileConfigManager implements ConfigManager {
     }
   }
 
-  /** 加载 Bot 级别配置（统一路径：bots/<Bot>/bot-config.json，fallback 到旧路径兼容） */
+  /** 加载 Bot 级别配置（统一路径：bots/<Bot>/bot.json，启动时自动创建缺失文件） */
   private _loadBotConfig(botKey: string): void {
-    const dataDir = getDataDir();
-    const botsDir = path.join(dataDir, 'bots');
-    const sessionsDir = getSessionsDir();
-
-    // 优先：新统一路径 bots/<Bot>/bot-config.json
-    const newBotConfigPath = getBotConfigPath(botKey);
-    // Fallback：旧路径 bots/<Bot>.json
-    const oldBotConfigPath = path.join(botsDir, `${botKey}.json`);
-    // Fallback：更旧的 sessions/<Bot>_config.json
-    const fallbackConfigPath = path.join(sessionsDir, `${botKey}_config.json`);
-
-    let configPath = newBotConfigPath;
-    if (!fs.existsSync(configPath) && fs.existsSync(oldBotConfigPath)) {
-      configPath = oldBotConfigPath;
-    } else if (!fs.existsSync(configPath) && fs.existsSync(fallbackConfigPath)) {
-      configPath = fallbackConfigPath;
-    }
+    const configPath = getBotConfigPath(botKey);
+    const botDir = path.dirname(configPath);
 
     try {
-      if (fs.existsSync(configPath)) {
-        const raw = fs.readFileSync(configPath, 'utf-8');
-        this.botConfigs.set(botKey, JSON.parse(raw));
-      } else {
-        this.botConfigs.set(botKey, {});
+      // 不存在时自动创建 bot.json（空对象，后续 /model 命令会填充）
+      if (!fs.existsSync(configPath)) {
+        if (!fs.existsSync(botDir)) {
+          fs.mkdirSync(botDir, { recursive: true });
+        }
+        fs.writeFileSync(configPath, JSON.stringify({}, null, 2));
+        console.log(`[Config] Created default bot.json: ${configPath}`);
       }
+
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      this.botConfigs.set(botKey, JSON.parse(raw));
     } catch (e: unknown) {
       console.error(`[Config] Failed to load bot ${botKey} config: ${e.message}`);
       this.botConfigs.set(botKey, {});
     }
   }
 
-  /** 保存 Bot 级别配置到统一路径：bots/<Bot>/bot-config.json */
+  /** 保存 Bot 级别配置到统一路径：bots/<Bot>/bot.json */
   private _saveBotConfig(botKey: string, config: BotLevelConfig): void {
     const configPath = getBotConfigPath(botKey);
     const parentDir = path.dirname(configPath);

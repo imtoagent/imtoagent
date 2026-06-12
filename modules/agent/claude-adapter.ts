@@ -11,7 +11,7 @@ import type { AgentAdapter, AgentInput, AgentOutput, Session } from '../core/typ
 import { buildAttachmentHint } from '../core/types';
 import type { ParsedToolCall, AgentToolSupport } from './agent-loop';
 import type { ToolRegistry } from './tool-registry';
-import { injectContextMemory } from '../core/rotation';
+import { injectContextMemory, incrementTurnCount, checkAndRotate } from '../core/rotation';
 
 
 // ================================================================
@@ -123,8 +123,8 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     // Inject context memory
-    effectiveText = injectContextMemory(session, _turnCount, effectiveText);
-    incrementTurnCount(sessionAny2);
+    effectiveText = injectContextMemory(session, turnCount, effectiveText);
+    incrementTurnCount(sessionAny);
 
     // Claude SDK 环境变量（走本地 :18899 代理）
     const customEnv: Record<string, string> = {

@@ -194,14 +194,14 @@ function getConfig(): CodexProxyConfig {
 
   let activeModel: string | undefined;
 
-  // 优先读 bot-config.json（唯一真相源）
+  // 优先读 bot.json（唯一真相源）
   try {
     if (fs.existsSync(botConfigPath)) {
       const botCfg = JSON.parse(fs.readFileSync(botConfigPath, 'utf-8'));
       activeModel = botCfg.activeModel;
     }
   } catch (e: unknown) {
-    console.error(`[Codex Proxy] Failed to read bot-config.json: ${(e as Error).message}`);
+    console.error(`[Codex Proxy] Failed to read bot.json: ${(e as Error).message}`);
   }
 
   // Fallback: 用 botCtx.activeModel（内存变量）或 config.json.activeModel
@@ -1273,7 +1273,6 @@ export async function handleCodexRequest(
       const systemPromptCtx = buildPromptContext({
         caps: ctx?.caps || null,
         botName,
-        botId: ctx?.botId,
         mcpInfo: ctx?.mcpInfo,
         skillsInfo: ctx?.skillsInfo,
         promptsInfo: ctx?.promptsInfo,

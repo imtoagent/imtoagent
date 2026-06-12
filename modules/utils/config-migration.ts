@@ -166,11 +166,11 @@ export function migrateBotJsonConfigs(): void {
           const merged = { ...incoming, ...existing };
           if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
           fs.writeFileSync(dstPath, JSON.stringify(merged, null, 2));
-          console.log(`[Config Migration] sessions/${dirName}/_bot.json merged into bots/${dirName}/bot-config.json`);
+          console.log(`[Config Migration] sessions/${dirName}/_bot.json merged into bots/${dirName}/bot.json`);
         } else {
           if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
           fs.copyFileSync(srcPath, dstPath);
-          console.log(`[Config Migration] sessions/${dirName}/_bot.json → bots/${dirName}/bot-config.json`);
+          console.log(`[Config Migration] sessions/${dirName}/_bot.json → bots/${dirName}/bot.json`);
         }
 
         fs.renameSync(srcPath, migratedMarker);
