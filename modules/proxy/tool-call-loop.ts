@@ -143,7 +143,7 @@ export async function executeToolCallLoop(
     }
     if (hasReasoningContent) {
       body.thinking = { type: 'enabled' };
-      logger.debug('proxy/tool-call-loop', 🔧 Messages contain reasoning_content, forcing thinking to enabled);
+      logger.debug('proxy/tool-call-loop', '🔧 Messages contain reasoning_content, forcing thinking to enabled)';
     }
     if (tools && tools.length > 0) {
       body.tools = tools;
@@ -163,13 +163,13 @@ export async function executeToolCallLoop(
       });
     } catch (e: unknown) {
       const msg = (e as Error).message || String(e);
-      logger.error('proxy/tool-call-loop', ❌ request failed (loop ${loops}): ${msg});
+      logger.error('proxy/tool-call-loop', `❌ request failed (loop ${loops}): ${msg})`;
       return { messages, hadLocalTools: false, loops: 0 };
     }
 
     if (!upstreamRes.ok) {
       const errText = await upstreamRes.text().catch(() => '');
-      logger.error('proxy/tool-call-loop', ❌ upstream ${upstreamRes.status} (loop ${loops}): ${errText.slice(0, 200)});
+      logger.error('proxy/tool-call-loop', `❌ upstream ${upstreamRes.status} (loop ${loops}): ${errText.slice(0, 200)})`;
       return { messages, hadLocalTools: false, loops: 0 };
     }
 
@@ -195,7 +195,7 @@ export async function executeToolCallLoop(
     const reasoningContent: string | undefined = assistantMsg.reasoning_content;
 
     if (toolCalls.length === 0) {
-      logger.info('proxy/tool-call-loop', ✅ no tool_calls (loop ${loops}), finish_reason=${finishReason});
+      logger.info('proxy/tool-call-loop', `✅ no tool_calls (loop ${loops}), finish_reason=${finishReason})`;
       return { messages, hadLocalTools, loops };
     }
 
@@ -212,7 +212,7 @@ export async function executeToolCallLoop(
       }
     }
 
-    logger.info('proxy/tool-call-loop', loop ${loops}: ${localCalls.length} local, ${remoteCalls.length} remote tool_calls);
+    logger.info('proxy/tool-call-loop', `loop ${loops}: ${localCalls.length} local, ${remoteCalls.length} remote tool_calls)`;
 
     // ---- 追加 assistant 消息（保留 reasoning_content） ----
     const assistantMessageToPush: ChatMessage = {
@@ -233,7 +233,7 @@ export async function executeToolCallLoop(
       for (const msg of buildToolMessages(placeholders)) {
         messages.push(msg);
       }
-      logger.info('proxy/tool-call-loop', ℹ️ only remote tool_calls, returning to upstream: ${remoteCalls.map(tc => tc.function?.name || '').join(', ')});
+      logger.info('proxy/tool-call-loop', `ℹ️ only remote tool_calls, returning to upstream: ${remoteCalls.map(tc => tc.function?.name || '').join(', ')})`;
       return { messages, hadLocalTools, loops };
     }
 
@@ -254,7 +254,7 @@ export async function executeToolCallLoop(
       messages.push(msg);
     }
     hadLocalTools = true;
-    logger.info('proxy/tool-call-loop', ✅ executed ${localResults.length} local tool(s));
+    logger.info('proxy/tool-call-loop', `✅ executed ${localResults.length} local tool(s))`;
 
     // ---- 第 5 步：处理远端工具 ----
     if (remoteCalls.length > 0) {
@@ -264,12 +264,12 @@ export async function executeToolCallLoop(
       for (const msg of buildToolMessages(placeholders)) {
         messages.push(msg);
       }
-      logger.debug('proxy/tool-call-loop', ℹ️ ${remoteCalls.length} remote tool_calls (pass-through));
+      logger.debug('proxy/tool-call-loop', `ℹ️ ${remoteCalls.length} remote tool_calls (pass-through))`;
     }
 
-    logger.debug('proxy/tool-call-loop', 🔄 loop ${loops} done, continuing...);
+    logger.debug('proxy/tool-call-loop', `🔄 loop ${loops} done, continuing...)`;
   }
 
-  logger.warn('proxy/tool-call-loop', ⚠️ max loops (${MAX_LOOPS}) reached);
+  logger.warn('proxy/tool-call-loop', `⚠️ max loops (${MAX_LOOPS}) reached)`;
   return { messages, hadLocalTools, loops };
 }

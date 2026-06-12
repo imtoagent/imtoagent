@@ -685,7 +685,7 @@ export class ContextManager {
     const layers = this.config.compressionLayers || {};
     let result = messages;
 
-    logger.debug('proxy/context-manager', Budget: ${(budgetRatio * 100).toFixed(1)}% (${this.estimateTokens(messages)}/${this.config.budget.maxInputTokens} tokens));
+    logger.debug('proxy/context-manager', `Budget: ${(budgetRatio * 100).toFixed(1)}% (${this.estimateTokens(messages)}/${this.config.budget.maxInputTokens} tokens)`);
 
     // Layer 1: HISTORY_SNIP（>40% 预算时触发，零成本规则裁剪）
     if ((layers.historySnip !== false) && budgetRatio >= (thresholds.layer1Start ?? 0.40)) {
@@ -754,7 +754,7 @@ export class ContextManager {
 
     if (stats.total > 0) {
       const catStr = Object.entries(stats.categories).map(([k, v]) => `${k}:${v}`).join(', ');
-      logger.debug('proxy/context-manager', Layer 1: ${stats.total} tool outputs scanned, ${stats.compressed} compressed, saved ${stats.saved} chars [${catStr}]);
+      logger.debug('proxy/context-manager', `Layer 1: ${stats.total} tool outputs scanned, ${stats.compressed} compressed, saved ${stats.saved} chars [${catStr}]`);
     }
 
     return result;
@@ -1044,7 +1044,7 @@ export class ContextManager {
       return m;
     });
     if (normalized > 0) {
-      logger.debug('proxy/context-manager', Step 0: ${normalized} tool outputs normalized, saved ${savings} chars);
+      logger.debug('proxy/context-manager', `Step 0: ${normalized} tool outputs normalized, saved ${savings} chars`);
     }
     return result;
   }
@@ -1136,7 +1136,7 @@ export class ContextManager {
 
     if (!callback) {
       // 没有 LLM 回调 → 降级为简单截断
-      logger.debug('proxy/context-manager', 'Layer 4: No LLM callback, falling back to simple truncation');
+      logger.warn('proxy/context-manager', 'Layer 4: No LLM callback, falling back to simple truncation');
       return this.simpleTruncateToBudget(messages, keepRounds);
     }
 
@@ -1184,7 +1184,7 @@ export class ContextManager {
       const recentFlat = recentRounds.flat();
       return [...systemMsgs, summaryMsg, ...recentFlat];
     } catch (err) {
-      logger.error('proxy/context-manager', Layer 4: Auto-compact failed: ${err});
+      logger.error('proxy/context-manager', `Layer 4: Auto-compact failed: ${err}`);
       return this.simpleTruncateToBudget(messages, keepRounds);
     }
   }
@@ -1249,7 +1249,7 @@ export class ContextManager {
 
     const result = [...systemMsgs, truncationNotice, ...kept];
 
-    logger.debug('proxy/context-manager', Message cap: ${messages.length} → ${result.length} msgs (dropped ${droppedCount} oldest));
+    logger.debug('proxy/context-manager', `Message cap: ${messages.length} → ${result.length} msgs (dropped ${droppedCount} oldest)`);
     return result;
   }
 
@@ -1312,12 +1312,14 @@ export class ContextManager {
       const systemBudget = Math.max(1000, maxInputTokens - totalKept);
       result = this.trimSystemMessages(system, systemBudget).concat(kept);
       if (this.config.debugLog) {
-        logger.debug('proxy/context-manager', `System trim: system alone exceeds budget, trimmed to ~${systemBudget} tokens`);
+        logger.debug('proxy/context-manager', `System trim: system alone exceeds budget, ` +
+            `trimmed to ~${systemBudget} tokens`);
       }
     }
 
     if (this.config.debugLog) {
-      logger.debug('proxy/context-manager', `Budget trunc: ${messages.length} → ${result.length} msgs, ~${estimated} → ~${this.estimateTokens(result)} tokens`);
+      logger.debug('proxy/context-manager', `Budget trunc: ${messages.length} → ${result.length} msgs, ` +
+          `~${estimated} → ~${this.estimateTokens(result)} tokens`);
     }
 
     return result;
@@ -1725,7 +1727,8 @@ export class ContextManager {
     outputCount: number
   ): void {
     if (this.config.debugLog && inputCount !== outputCount) {
-      logger.debug('proxy/context-manager', `[${backend}] Items: ${inputCount} → ${outputCount} (${inputCount - outputCount} removed)`);
+      logger.debug('proxy/context-manager', `[ContextManager][${backend}] Items: ${inputCount} → ${outputCount} ` +
+          `(${inputCount - outputCount} removed)`);
     }
   }
 }
